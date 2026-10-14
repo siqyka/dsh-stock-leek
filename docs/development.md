@@ -3,11 +3,12 @@
 ## 跑测试
 
 ```bash
-npm test                      # 四个套件全跑
+npm test                      # 五个套件全跑
 node test/shared-drift.mjs    # 纯函数一致性（17 项）
-node test/config-path.mjs     # 配置路径与旧路径搬迁（11 项）
-node test/test-routes.mjs     # 路由层（50 项：备份/损坏/冲突/pnlCurve/SSE）
-node test/e2e-render.mjs      # 渲染层（148 项：指数栏/悬浮窗/详情/持仓/成本线/盈亏曲线/拖动排序）
+node test/config-path.mjs     # 配置路径与旧路径搬迁（14 项）
+node test/test-routes.mjs     # 路由层（49 项：备份/损坏/冲突/pnlCurve/SSE）
+node test/security.mjs        # 安全层（19 项：URL 注入 / 配置净化 / SSE 注入）
+node test/e2e-render.mjs      # 渲染层（162 项：指数栏/悬浮窗/详情/持仓/成本线/盈亏曲线/拖动排序）
 ```
 
 零 npm 依赖，直接 `node` 跑。测试会请求腾讯/东财真实行情接口，**需联网**。
@@ -19,6 +20,7 @@ node test/e2e-render.mjs      # 渲染层（148 项：指数栏/悬浮窗/详情
 | `shared-drift.mjs` | `lib/shared.js` ↔ `client.js` 内联副本是否漂移 | 花括号配平抠函数体 → `new Function` 求值 → 逐输入对拍 |
 | `config-path.mjs` | 默认路径、迁移链、兼容环境变量 | **子进程 + 假 HOME**（`HOME`/`USERPROFILE` 都改），因为默认路径分支只有不设 `DSH_STOCK_LEEK_CONFIG` 时才走得到 |
 | `test-routes.mjs` | Host 路由响应结构 | mock 一个最小 cordis ctx，起本地 http server 逐个请求 |
+| `security.mjs` | 四处攻击面回归：URL 拼接 / 配置 POST / XSS / SSE 注入 | 18 组恶意 code 对拍 `normalizeApiCode`；原型污染与超长 body 打 `/config`；断言无 `innerHTML` 等危险 API；端到端验证 SSE 首推恰 1 帧 |
 | `e2e-render.mjs` | Client 渲染与交互 | `test/e2e-render.mjs` 内置的 mini-React + 真实路由 |
 
 ## 写测试的几条硬规矩
@@ -82,4 +84,6 @@ node --check index.js
 npm test
 ```
 
-四个套件全绿才算完成。若改了 `client.js` 的内联纯函数，记得 `lib/shared.js` 也要同步——`shared-drift` 会拦住你。
+五个套件全绿才算完成（共 261 项）。若改了 `client.js` 的内联纯函数，记得 `lib/shared.js` 也要同步——`shared-drift` 会拦住你。
+
+改 `index.js` 的 SSE 广播时留意：`sseTick()` 必须在 `finally` 里调 `scheduleSse()` 续排下一轮，漏掉会导致某次拉取失败后广播链静默终止、永不再推（见 [architecture.md](architecture.md) 的「行情通道」）。

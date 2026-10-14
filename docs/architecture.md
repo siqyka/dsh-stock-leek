@@ -30,7 +30,7 @@ lib/shared.js（纯函数，Host 与测试共用）
 | `index.js` | Host 插件主体：webServer 路由、腾讯行情解析与编码、配置持久化、SSE 广播 |
 | `client.js` | Client 插件主体：`__ModuleLoader__` 工厂，挂载两个槽位并实现全部 UI |
 | `lib/shared.js` | 无副作用纯函数：格式化、代码显示、盈亏口径、常量。Host 与测试直接 import |
-| `test/` | 四个套件，全部 `node` 直接跑，零 npm 依赖 |
+| `test/` | 五个套件，全部 `node` 直接跑，零 npm 依赖 |
 | `docs/` | 本目录：架构、配置、行情通道等细节文档 |
 
 **两个入口文件刻意留在根目录**：`package.json` 的 `exports` 与 `dsh.client` 声明按路径引用它们，DSH 打包时也依赖这个约定。
@@ -62,6 +62,7 @@ lib/shared.js（纯函数，Host 与测试共用）
 
 - **订阅集合走 URL `?codes=`**。`EventSource` 只能 GET、无法发送请求体（`es.send()` 是 WebSocket 的 API，不存在），所以集合变化时只能「关掉再按新 URL 重开」——一次握手代价，可接受。
 - **断流自动回落轮询**。`onerror` 关闭流并恢复 `setTimeout` 轮询链；页面恢复可见再重连。代理不支持 SSE 时用户完全无感。
+- **广播轮次必须用 `finally` 续排**。`sseTick()` 无论拉取成功、抛错还是返回空数据，都要在 `finally` 里调 `scheduleSse()` 排下一轮。早先只在开头 `return` 前续排，导致任意一次 `fetchQuotes` 失败（`catch {}`）或空数据（`!rows.length`）都会**静默终止广播链且不排下一轮**，此后永不再推——表现是「行情突然不更新」，且无任何日志。改这一处前务必确认 `finally` 存在。
 - **页面隐藏时断开**。隐藏时关流 + 清轮询定时器，可见时立即刷一次并重连。
 - 心跳每 25s 发一次注释帧（`: ping`），避免中间层掐断长连接。
 
