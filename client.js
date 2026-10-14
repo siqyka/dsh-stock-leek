@@ -2340,7 +2340,15 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         return () => window.removeEventListener("keydown", onKey);
       }, []);
       if (!s.open) return null;
-      const style = pos ? { left: pos.x, top: pos.y, right: "auto" } : { right: 16, top: 52 };
+      // 手动位置同样只在渲染时钳进视口，**不回写 localStorage**：
+      // 缩小时贴边显示，放大后自动回到用户原来的位置。
+      const style = pos
+        ? {
+            left: clamp(pos.x, 8, Math.max(8, window.innerWidth - 120)),
+            top: clamp(pos.y, 8, Math.max(8, window.innerHeight - 60)),
+            right: "auto",
+          }
+        : { right: 16, top: 52 };
       const vars = s.config ? { "--sl-up": s.config.riseColor || "#f5455c", "--sl-down": s.config.fallColor || "#1eb980" } : undefined;
       const themeBtn = h("button", {
         className: "sl-icon", "data-sltip": "切换主题",
@@ -2698,29 +2706,46 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         toast("指数栏已回到自动锚定位置");
       };
 
-      // 视口变化（缩放窗口/旋转/开发者工具开合）时，把手动位置钳回可视范围。
-      // 否则最大化时拖到右侧（x≈1800），缩小窗口后悬浮窗会留在视口外"消失"。
+      // 视口尺寸 + 悬浮栏实测尺寸：用于**渲染时**把坐标钳进可视区。
+      // 关键：钳制只影响本次显示，绝不回写 localStorage —— 否则缩小窗口时
+      // 用户设定的原始坐标会被钳制值覆盖，再放大就回不到原位
+      // （用户报告："放大缩小放大，悬浮又不在原来的位置了"）。
+      const [vp, setVp] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }));
+      const [barSize, setBarSize] = useState({ w: 260, h: 28 });
       useEffect(() => {
-        if (!s.barPos) return undefined;
-        const reanchor = () => {
-          const pos = state.barPos;
-          if (!pos) return;
+        const sync = () => {
+          setVp((p) => (p.w === window.innerWidth && p.h === window.innerHeight ? p : { w: window.innerWidth, h: window.innerHeight }));
           const el = rootRef.current;
-          const w = el ? el.offsetWidth : 260;
-          const h = el ? el.offsetHeight : 28;
-          const x = clamp(pos.x, 4, Math.max(4, window.innerWidth - w - 4));
-          const y = clamp(pos.y, 4, Math.max(4, window.innerHeight - h - 4));
-          if (x !== pos.x || y !== pos.y) setBarPos({ x, y }, true); // 落盘，避免下次加载又跑偏
+          if (el && el.offsetWidth) {
+            const w = el.offsetWidth;
+            const h = el.offsetHeight;
+            setBarSize((p) => (p.w === w && p.h === h ? p : { w, h }));
+          }
         };
-        reanchor(); // 挂载时也校一次（跨会话恢复的旧坐标可能已超界）
-        window.addEventListener("resize", reanchor);
-        return () => window.removeEventListener("resize", reanchor);
-      }, [s.barPos !== null]); // 依赖"是否有手动位置"，避免拖动中每帧重挂
+        sync();
+        window.addEventListener("resize", sync);
+        return () => window.removeEventListener("resize", sync);
+      }, []);
+      // 每次渲染后补测实际尺寸（切换 full/compact 等会改变宽度）
+      useEffect(() => {
+        const el = rootRef.current;
+        if (!el || !el.offsetWidth) return;
+        const w = el.offsetWidth;
+        const h = el.offsetHeight;
+        setBarSize((p) => (p.w === w && p.h === h ? p : { w, h }));
+      });
 
       if (!cfg || !cfg.barVisible || s.barPlacement === "dock") return null;
       if (!rect && !s.barPos) return null;
-      const posStyle = s.barPos
-        ? { left: s.barPos.x, top: s.barPos.y }
+      // 手动位置：仅渲染时钳进视口（存储里始终保留用户的原位坐标）
+      const clampedPos = s.barPos
+        ? {
+            x: clamp(s.barPos.x, 4, Math.max(4, vp.w - barSize.w - 4)),
+            y: clamp(s.barPos.y, 4, Math.max(4, vp.h - barSize.h - 4)),
+          }
+        : null;
+      const posStyle = clampedPos
+        ? { left: clampedPos.x, top: clampedPos.y }
         : { left: rect.left, bottom: rect.bottom, maxWidth: rect.width };
       const base = rootProps(s, cfg);
       const gearProps = {

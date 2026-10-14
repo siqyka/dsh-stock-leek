@@ -382,7 +382,8 @@ if (gear) {
   check("双击回到自动锚定（bottom 恢复）", typeof bstyle.bottom === "number" && bstyle.top === undefined, JSON.stringify(bstyle).slice(0, 150));
 }
 
-// 回归：窗口从最大化缩小时，手动位置必须钳回视口内（否则悬浮窗留在视口外"消失"）
+// 回归：窗口缩小 → 悬浮栏贴边可见；窗口放大 → 回到用户原来的位置。
+// 反面教训：曾把钳制结果回写 localStorage，导致"放大缩小放大后位置回不去"。
 {
   // 1. 先拖一次，产生手动位置（前面的拖动测试最后被双击清掉了，这里重新造）
   const g = findNode(barNode, (n) => n.type === "button" && String((n.props && n.props.className) || "").indexOf("sl-gear") >= 0);
@@ -392,28 +393,35 @@ if (gear) {
     global.__winDispatch("pointermove", { clientX: 400, clientY: 300 }); // 拖到 x≈300, y≈300
     global.__winDispatch("pointerup", {});
   }
-  let cur = JSON.parse(global.localStorage.getItem("sl.bar.pos.v1") || "null");
+  const cur = JSON.parse(global.localStorage.getItem("sl.bar.pos.v1") || "null");
   check("已产生手动位置", !!cur, cur);
-  const beforeX = cur ? cur.x : 0;
-  const beforeY = cur ? cur.y : 0;
+  const origX = cur ? cur.x : 0;
+  const origY = cur ? cur.y : 0;
+  const origRaw = global.localStorage.getItem("sl.bar.pos.v1");
 
-  // 2. 缩小窗口：1400×900 → 400×300，然后派发 resize
+  // 2. 缩小窗口：1400×900 → 400×300 → 渲染位置必须被钳进视口
   global.window.innerWidth = 400;
   global.window.innerHeight = 300;
   global.__winDispatch("resize", {});
-  const after = floatReg.render({});
-  renderTree(after);
-  const clampedStyle = rootStyleOf(after);
-  const clamped = JSON.parse(global.localStorage.getItem("sl.bar.pos.v1") || "null");
-  console.log("   缩小前:", beforeX, beforeY, "→ 缩小后:", JSON.stringify(clamped));
-  check("缩小窗口后 x 被钳小（left ≤ innerWidth-100）", !!clamped && clamped.x <= global.window.innerWidth - 100, { beforeX, after: clamped });
-  check("缩小窗口后 y 被钳小（top ≤ innerHeight-100）", !!clamped && clamped.y <= global.window.innerHeight - 100, { beforeY, after: clamped });
-  check("钳制结果已落盘（下次加载不再跑偏）", global.localStorage.getItem("sl.bar.pos.v1") === JSON.stringify(clamped), global.localStorage.getItem("sl.bar.pos.v1"));
-  check("渲染位置 = 钳制后位置（bar 立刻回到可见区）", clampedStyle.left === clamped.x && clampedStyle.top === clamped.y, JSON.stringify(clampedStyle).slice(0, 120));
-  // 3. 恢复视口尺寸，避免影响后续用例
+  const smallTree = floatReg.render({});
+  renderTree(smallTree);
+  const smallStyle = rootStyleOf(smallTree);
+  console.log("   缩小后 rendered:", JSON.stringify({ left: smallStyle.left, top: smallStyle.top }), "| 存储:", global.localStorage.getItem("sl.bar.pos.v1"));
+  check("缩小时后渲染位置在视口内（left ≤ innerWidth-100）", typeof smallStyle.left === "number" && smallStyle.left <= 400 - 100, smallStyle.left);
+  check("缩小时后渲染位置在视口内（top ≤ innerHeight-60）", typeof smallStyle.top === "number" && smallStyle.top <= 300 - 60, smallStyle.top);
+  // 关键断言：存储里的**原始坐标必须原样保留**，不能被钳制值覆盖
+  check("存储保留用户原位坐标（未被钳制值覆盖）", global.localStorage.getItem("sl.bar.pos.v1") === origRaw, { orig: origRaw, now: global.localStorage.getItem("sl.bar.pos.v1") });
+
+  // 3. 放大回原尺寸 → 渲染位置必须回到原位（这正是用户报告的故障点）
   global.window.innerWidth = 1400;
   global.window.innerHeight = 900;
   global.__winDispatch("resize", {});
+  const bigTree = floatReg.render({});
+  renderTree(bigTree);
+  const bigStyle = rootStyleOf(bigTree);
+  console.log("   放大后 rendered:", JSON.stringify({ left: bigStyle.left, top: bigStyle.top }), "（原位:", origX, origY, "）");
+  check("放大后回到用户原位 x", bigStyle.left === origX, { want: origX, got: bigStyle.left });
+  check("放大后回到用户原位 y", bigStyle.top === origY, { want: origY, got: bigStyle.top });
 }
 // 锚定样式：fixed + left/bottom（穿透 ErrorBoundary 找到根 div style）
 const rootStyle = rootStyleOf(barNode);
