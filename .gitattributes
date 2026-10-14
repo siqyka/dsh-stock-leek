@@ -1,0 +1,8 @@
+# 统一按 LF 入库，避免 Windows 端 checkout 改写行尾
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.tar.gz binary

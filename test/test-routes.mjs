@@ -1,0 +1,240 @@
+/**
+ * 路由集成测试：mock 一个最小 cordis ctx（webServer.register + effect），
+ * 起本地 http server，逐个请求验证响应结构。
+ *   node test/test-routes.mjs
+ *   DSH_STOCK_LEEK_CONFIG=/path/to/other.json node test/test-routes.mjs
+ *
+ * 注意：本测试会 POST /config 覆盖配置文件。配置路径由 config-guard 强制隔离
+ * （未指定 → 系统临时目录；指向真实配置 → 直接拒绝启动）。
+ */
+import http from "node:http";
+import { useTestConfigPath } from "./config-guard.mjs";
+
+useTestConfigPath("routes");
+
+const { apply } = await import("../index.js");
+
+const routes = new Map();
+const ctx = {
+  effect: (fn) => fn(),
+  webServer: {
+    register: ({ path, handler }) => {
+      routes.set(path, handler);
+      return () => routes.delete(path);
+    },
+  },
+};
+apply(ctx);
+
+const server = http.createServer((req, res) => {
+  const path = new URL(req.url, "http://x").pathname;
+  const h = routes.get(path);
+  if (!h) {
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "no route " + path }));
+    return;
+  }
+  h(req, res);
+});
+
+await new Promise((r) => server.listen(0, "127.0.0.1", r));
+const base = "http://127.0.0.1:" + server.address().port;
+
+async function get(path) {
+  const r = await fetch(base + path, { signal: AbortSignal.timeout(20000) });
+  return { status: r.status, json: await r.json() };
+}
+async function post(path, body) {
+  const r = await fetch(base + path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20000),
+  });
+  return { status: r.status, json: await r.json() };
+}
+
+let fails = 0;
+function check(label, cond, extra) {
+  if (cond) console.log("  ok  ", label);
+  else {
+    fails++;
+    console.log("  FAIL", label, extra !== undefined ? JSON.stringify(extra).slice(0, 300) : "");
+  }
+}
+
+console.log("routes:", [...routes.keys()].join(", "));
+
+// 1. config GET
+let r = await get("/dsh-stock-leek/config");
+check("config 200", r.status === 200);
+check("config has indices", Array.isArray(r.json.config?.indices) && r.json.config.indices.length >= 8);
+check("config barIndices", Array.isArray(r.json.config?.barIndices));
+check("config quotes snapshot", Array.isArray(r.json.quotes) && r.json.quotes.length > 0, r.json.error);
+const sh = (r.json.quotes || []).find((x) => x.code === "sh000001");
+check("sh000001 quote fields", sh && sh.name && typeof sh.price === "number" && typeof sh.percent === "number", sh);
+
+// 2. quotes
+r = await get("/dsh-stock-leek/quotes?codes=sh000001,sz399001,300750,00700,AAPL,899050");
+check("quotes 200", r.status === 200);
+check("quotes rows>=5", (r.json.rows || []).length >= 5, r.json.error);
+const names = (r.json.rows || []).map((x) => x.name).join(" / ");
+console.log("       ", names);
+
+// 3. minute
+r = await get("/dsh-stock-leek/minute?code=sh000001");
+check("minute points", (r.json.points || []).length > 10, r.json.error);
+check("minute prevClose", typeof r.json.prevClose === "number");
+
+// 4. kline
+r = await get("/dsh-stock-leek/kline?code=sh600519&period=day&count=60");
+check("kline candles", (r.json.candles || []).length >= 50, r.json.error);
+const last = (r.json.candles || []).slice(-1)[0];
+check("kline ohlc sane", last && last.high >= Math.max(last.open, last.close) && last.low <= Math.min(last.open, last.close), last);
+
+// 5. search
+r = await get("/dsh-stock-leek/search?q=" + encodeURIComponent("茅台"));
+check("search 茅台", (r.json.rows || []).some((x) => x.code === "sh600519"), r.json.rows?.slice(0, 3));
+r = await get("/dsh-stock-leek/search?q=" + encodeURIComponent("恒生"));
+check("search 恒生 has index", (r.json.rows || []).some((x) => x.code === "hkHSI" || x.type === "ZS"), r.json.rows?.slice(0, 5));
+
+// 6. POST config
+r = await post("/dsh-stock-leek/config", { config: { watchlist: [{ code: "600519", name: "x" }], pollMs: 999999, barIndices: ["sh000001"], ma: [5, 20, 60] } });
+check("config POST ok", r.json.ok === true);
+check("config POST poll clamped", r.json.config.pollMs === 120000, r.json.config.pollMs);
+check("config POST 持久化 ma", JSON.stringify(r.json.config.ma) === JSON.stringify([5, 20, 60]), JSON.stringify(r.json.config.ma));
+r = await get("/dsh-stock-leek/config?quotes=0");
+check("config persisted watchlist", r.json.config.watchlist.length === 1 && r.json.config.watchlist[0].code === "sh600519");
+check("config 读取回 ma（全局通用）", JSON.stringify(r.json.config.ma) === JSON.stringify([5, 20, 60]), JSON.stringify(r.json.config.ma));
+// ma 白名单：非法周期被剔除、重复去重；允许空数组（全部关闭）
+r = await post("/dsh-stock-leek/config", { config: { ...r.json.config, ma: [20, 7, "x", 20, 999] } });
+check("config ma 白名单过滤", JSON.stringify(r.json.config.ma) === JSON.stringify([20]), JSON.stringify(r.json.config.ma));
+r = await post("/dsh-stock-leek/config", { config: { ...r.json.config, ma: [] } });
+check("config ma 允许空数组（全部关闭）", Array.isArray(r.json.config.ma) && r.json.config.ma.length === 0, JSON.stringify(r.json.config.ma));
+r = await post("/dsh-stock-leek/config", { config: { ...r.json.config, ma: "bad" } });
+check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JSON.stringify([5, 10, 20]), JSON.stringify(r.json.config.ma));
+
+// 6a2. pnlCurve：盈亏走势展开状态（用户点按后需记住）
+{
+  const baseCfg = (await get("/dsh-stock-leek/config?quotes=0")).json.config;
+  check("默认 pnlCurve 展开", baseCfg.pnlCurve === true, baseCfg.pnlCurve);
+  r = await post("/dsh-stock-leek/config", { config: { ...baseCfg, pnlCurve: false } });
+  check("pnlCurve 可收起", r.json.config.pnlCurve === false, r.json.config.pnlCurve);
+  r = await get("/dsh-stock-leek/config?quotes=0");
+  check("pnlCurve 收起状态已持久化", r.json.config.pnlCurve === false, r.json.config.pnlCurve);
+  // 非布尔值应被丢弃并回落默认（不能因为脏数据把曲线卡在错误状态）
+  r = await post("/dsh-stock-leek/config", { config: { ...baseCfg, pnlCurve: "no" } });
+  check("pnlCurve 非布尔回落默认", r.json.config.pnlCurve === true, r.json.config.pnlCurve);
+}
+
+// 6b. 备份与损坏恢复
+{
+  const { readFileSync, writeFileSync, existsSync, rmSync } = await import("node:fs");
+  const cfgPath = process.env.DSH_STOCK_LEEK_CONFIG;
+
+  // 先写入两版，产生 .bak
+  await post("/dsh-stock-leek/config", { config: { watchlist: [{ code: "600519", name: "A" }], ma: [5, 10, 20] } });
+  await post("/dsh-stock-leek/config", { config: { watchlist: [{ code: "300750", name: "B" }], ma: [5] } });
+  check("写入后生成 .bak", existsSync(cfgPath + ".bak"));
+  const bak = JSON.parse(readFileSync(cfgPath + ".bak", "utf8"));
+  check(".bak 是上一版内容", bak.watchlist[0].code === "sh600519", bak.watchlist[0].code);
+
+  // 损坏主文件 → 应回退 .bak，并给出 warning，损坏原文留存
+  writeFileSync(cfgPath, "{ this is not valid json", "utf8");
+  r = await get("/dsh-stock-leek/config?quotes=0");
+  check("损坏时回退备份", r.json.config.watchlist[0].code === "sh600519", r.json.config.watchlist[0].code);
+  check("损坏时给出 warning", typeof r.json.warning === "string" && r.json.warning.includes(".corrupt"), r.json.warning);
+  check("损坏原文已留存", existsSync(cfgPath + ".corrupt") && readFileSync(cfgPath + ".corrupt", "utf8").includes("not valid json"));
+
+  // 保存成功后告警清除
+  r = await post("/dsh-stock-leek/config", { config: { watchlist: [{ code: "sh000001", name: "C" }] } });
+  check("保存成功后标记已恢复", r.json.recoveredFromCorruption === true);
+  r = await get("/dsh-stock-leek/config?quotes=0");
+  check("恢复后 warning 消失", r.json.warning === null, r.json.warning);
+
+  // 损坏且无备份 → 用默认值，但不崩溃
+  rmSync(cfgPath + ".bak", { force: true });
+  writeFileSync(cfgPath, "]]] broken", "utf8");
+  r = await get("/dsh-stock-leek/config?quotes=0");
+  check("损坏且无备份回落默认", r.json.ok === true && Array.isArray(r.json.config.positions));
+  check("无备份仍给出 warning", typeof r.json.warning === "string", r.json.warning);
+
+  // 空文件视为首次运行，不是损坏
+  writeFileSync(cfgPath, "   ", "utf8");
+  r = await get("/dsh-stock-leek/config?quotes=0");
+  check("空文件不算损坏", r.json.warning === null, r.json.warning);
+
+  // 恢复干净状态供后续用例
+  await post("/dsh-stock-leek/config", { config: { watchlist: [{ code: "600519", name: "x" }], pollMs: 5000, barIndices: ["sh000001"], ma: [5, 10, 20] } });
+  rmSync(cfgPath + ".corrupt", { force: true });
+}
+
+// 6c. 版本号与多标签页冲突检测
+{
+  r = await get("/dsh-stock-leek/config?quotes=0");
+  const rev0 = r.json.rev;
+  check("config 透出 rev", Number.isFinite(rev0) && rev0 > 0, String(rev0));
+
+  // 正常写入：rev 递增，无冲突
+  r = await post("/dsh-stock-leek/config", { config: { ...r.json.config, barStyle: "compact" } });
+  check("写入后 rev 递增", r.json.rev === rev0 + 1, rev0 + " → " + r.json.rev);
+  check("同版本写入无冲突", r.json.conflict === false, r.json.conflict);
+
+  // 模拟另一个标签页：拿着旧 rev 写入 → 应报 conflict
+  const stale = { ...r.json.config, barStyle: "full", __rev: rev0 };
+  await post("/dsh-stock-leek/config", { config: { ...r.json.config, watchlist: [{ code: "600519", name: "other tab" }] } });
+  r = await post("/dsh-stock-leek/config", { config: stale });
+  check("过期 rev 写入报冲突", r.json.conflict === true, r.json.conflict);
+
+  r = await get("/dsh-stock-leek/config?quotes=0");
+  check("rev 随每次写入递增", r.json.rev === rev0 + 3, String(r.json.rev));
+  check("配置内容以最后写入为准", r.json.config.barStyle === "full", r.json.config.barStyle);
+
+  // 还原
+  await post("/dsh-stock-leek/config", { config: { watchlist: [{ code: "600519", name: "x" }], pollMs: 5000, barIndices: ["sh000001"], ma: [5, 10, 20] } });
+}
+
+// 6d. SSE 行情推送：握手帧 + 订阅代码后收到 data 帧
+{
+  const controller = new AbortController();
+  const res = await fetch(base + "/dsh-stock-leek/stream?codes=sh600519", {
+    headers: { accept: "text/event-stream" },
+    signal: controller.signal,
+  });
+  check("stream 返回 200", res.status === 200, res.status);
+  check("stream 是 SSE", String(res.headers.get("content-type") || "").includes("text/event-stream"), res.headers.get("content-type"));
+  check("stream 禁用缓存/缓冲", String(res.headers.get("cache-control") || "").includes("no-cache"), res.headers.get("cache-control"));
+
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let dataFrame = null;
+  const deadline = Date.now() + 12000;
+  // 期望：先 retry 帧，随后一帧 data: {rows:[...]}
+  while (Date.now() < deadline && !dataFrame) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buf += dec.decode(chunk.value, { stream: true });
+    if (buf.includes("retry:")) check("SSE 先发 retry 指令", true);
+    const m = /data: (.+)/.exec(buf);
+    if (m) {
+      try {
+        const payload = JSON.parse(m[1]);
+        if (Array.isArray(payload.rows) && payload.rows.length) dataFrame = payload;
+      } catch { /* 半帧，等下次 */ }
+    }
+  }
+  controller.abort();
+  check("SSE 首帧含 retry 指令", buf.includes("retry:"), JSON.stringify(buf.slice(0, 40)));
+  check("SSE 推送了行情行", !!dataFrame, dataFrame ? (dataFrame.rows[0].code + " " + dataFrame.rows[0].price) : "未收到");
+  check("SSE 行结构含涨跌字段", !!dataFrame && dataFrame.rows[0].percent !== undefined, dataFrame && Object.keys(dataFrame.rows[0]).join(","));
+}
+
+// 7. probe
+r = await get("/dsh-stock-leek/probe");
+console.log("  probe:", r.json.checks.map((c) => `${c.ok ? "✓" : "✗"}${c.label}(${c.ms}ms)`).join("  "));
+check("probe all ok", r.json.ok === true);
+
+server.close();
+console.log(fails === 0 ? "\nALL PASS" : `\n${fails} FAILED`);
+process.exit(fails === 0 ? 0 : 1);

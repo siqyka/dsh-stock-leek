@@ -1,0 +1,35 @@
+# ── 本地参考实现 / 第三方源码副本（体积大且非本工程代码，不入库）────
+/_ref/
+
+# ── 运行时配置与个人持仓数据（自选股 / 成本 / 交易记录，绝不入库）──
+# 正常路径在 ~/.dsh/dsh-stock-leek/（仓库外）；这里防的是有人把配置拷进仓库
+/.json
+/.json/
+config.json
+config.json.bak
+config.json.corrupt
+*.config.json
+# 打包/临时文件
+config.json.*.tmp
+
+# ── Node ───────────────────────────────────────────────────────────
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+
+# ── 测试 / 构建产物 ────────────────────────────────────────────────
+coverage/
+.nyc_output/
+dist/
+*.tgz
+*.tar.gz
+
+# ── 编辑器 / 系统 ──────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
