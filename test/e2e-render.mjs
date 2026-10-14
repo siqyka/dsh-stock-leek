@@ -241,6 +241,9 @@ function attachRefs(node) {
   if (node.props && node.props.ref) {
     const fake = mkEl();
     fake.getBoundingClientRect = () => ({ left: 0, top: 0, right: 200, bottom: 24, width: 200, height: 24 });
+    // 模拟真实尺寸：指数悬浮栏约 260×28（resize 钳制逻辑按 offsetWidth/offsetHeight 计算）
+    fake.offsetWidth = 260;
+    fake.offsetHeight = 28;
     // 可排序容器：querySelectorAll("[data-sl-idx]") 返回堆叠假行（top = idx*30, height 28）
     fake.querySelectorAll = (sel) => {
       if (sel !== "[data-sl-idx]") return [];
@@ -377,6 +380,40 @@ if (gear) {
   renderTree(back);
   const bstyle = rootStyleOf(back);
   check("双击回到自动锚定（bottom 恢复）", typeof bstyle.bottom === "number" && bstyle.top === undefined, JSON.stringify(bstyle).slice(0, 150));
+}
+
+// 回归：窗口从最大化缩小时，手动位置必须钳回视口内（否则悬浮窗留在视口外"消失"）
+{
+  // 1. 先拖一次，产生手动位置（前面的拖动测试最后被双击清掉了，这里重新造）
+  const g = findNode(barNode, (n) => n.type === "button" && String((n.props && n.props.className) || "").indexOf("sl-gear") >= 0);
+  check("找到拖动手柄 ⚙", !!g);
+  if (g) {
+    g.props.onPointerDown({ button: 0, clientX: 100, clientY: 800, preventDefault() {}, stopPropagation() {} });
+    global.__winDispatch("pointermove", { clientX: 400, clientY: 300 }); // 拖到 x≈300, y≈300
+    global.__winDispatch("pointerup", {});
+  }
+  let cur = JSON.parse(global.localStorage.getItem("sl.bar.pos.v1") || "null");
+  check("已产生手动位置", !!cur, cur);
+  const beforeX = cur ? cur.x : 0;
+  const beforeY = cur ? cur.y : 0;
+
+  // 2. 缩小窗口：1400×900 → 400×300，然后派发 resize
+  global.window.innerWidth = 400;
+  global.window.innerHeight = 300;
+  global.__winDispatch("resize", {});
+  const after = floatReg.render({});
+  renderTree(after);
+  const clampedStyle = rootStyleOf(after);
+  const clamped = JSON.parse(global.localStorage.getItem("sl.bar.pos.v1") || "null");
+  console.log("   缩小前:", beforeX, beforeY, "→ 缩小后:", JSON.stringify(clamped));
+  check("缩小窗口后 x 被钳小（left ≤ innerWidth-100）", !!clamped && clamped.x <= global.window.innerWidth - 100, { beforeX, after: clamped });
+  check("缩小窗口后 y 被钳小（top ≤ innerHeight-100）", !!clamped && clamped.y <= global.window.innerHeight - 100, { beforeY, after: clamped });
+  check("钳制结果已落盘（下次加载不再跑偏）", global.localStorage.getItem("sl.bar.pos.v1") === JSON.stringify(clamped), global.localStorage.getItem("sl.bar.pos.v1"));
+  check("渲染位置 = 钳制后位置（bar 立刻回到可见区）", clampedStyle.left === clamped.x && clampedStyle.top === clamped.y, JSON.stringify(clampedStyle).slice(0, 120));
+  // 3. 恢复视口尺寸，避免影响后续用例
+  global.window.innerWidth = 1400;
+  global.window.innerHeight = 900;
+  global.__winDispatch("resize", {});
 }
 // 锚定样式：fixed + left/bottom（穿透 ErrorBoundary 找到根 div style）
 const rootStyle = rootStyleOf(barNode);

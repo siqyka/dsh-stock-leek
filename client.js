@@ -513,6 +513,11 @@ window.__ModuleLoader__.load({
 
     /** 悬浮栏位置：{x,y}=手动；null=回到自动锚定。persist=false 仅更新内存（拖动中高频），抬起时再落盘 */
     function setBarPos(pos, persist) {
+      // 防御：坐标 NaN（如测量失败）会让 JSON 落盘成 null，位置信息无声丢失 → 拒绝写入
+      if (pos && (!Number.isFinite(pos.x) || !Number.isFinite(pos.y))) {
+        setState({ barPos: null });
+        return;
+      }
       setState({ barPos: pos });
       if (persist === false) return;
       try {
@@ -2692,6 +2697,25 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         setBarPos(null);
         toast("指数栏已回到自动锚定位置");
       };
+
+      // 视口变化（缩放窗口/旋转/开发者工具开合）时，把手动位置钳回可视范围。
+      // 否则最大化时拖到右侧（x≈1800），缩小窗口后悬浮窗会留在视口外"消失"。
+      useEffect(() => {
+        if (!s.barPos) return undefined;
+        const reanchor = () => {
+          const pos = state.barPos;
+          if (!pos) return;
+          const el = rootRef.current;
+          const w = el ? el.offsetWidth : 260;
+          const h = el ? el.offsetHeight : 28;
+          const x = clamp(pos.x, 4, Math.max(4, window.innerWidth - w - 4));
+          const y = clamp(pos.y, 4, Math.max(4, window.innerHeight - h - 4));
+          if (x !== pos.x || y !== pos.y) setBarPos({ x, y }, true); // 落盘，避免下次加载又跑偏
+        };
+        reanchor(); // 挂载时也校一次（跨会话恢复的旧坐标可能已超界）
+        window.addEventListener("resize", reanchor);
+        return () => window.removeEventListener("resize", reanchor);
+      }, [s.barPos !== null]); // 依赖"是否有手动位置"，避免拖动中每帧重挂
 
       if (!cfg || !cfg.barVisible || s.barPlacement === "dock") return null;
       if (!rect && !s.barPos) return null;
