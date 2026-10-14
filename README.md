@@ -93,6 +93,7 @@ dsh-stock-leek/
 │   ├── shared-drift.mjs    # shared.js ↔ client.js 纯函数对拍
 │   ├── config-path.mjs     # 默认配置路径 + 旧路径搬迁（子进程 + 假 HOME）
 │   ├── test-routes.mjs     # Host 路由层
+│   ├── security.mjs        # 安全回归：URL 注入 / 配置净化 / SSE 事件注入
 │   └── e2e-render.mjs      # Client 渲染层（mini-React + 真实路由）
 └── README.md
 ```
@@ -104,14 +105,28 @@ dsh-stock-leek/
 ## 测试
 
 ```bash
-npm test                      # 四个套件全跑
+npm test                      # 五个套件全跑
 node test/shared-drift.mjs    # 纯函数一致性（17 项）
 node test/config-path.mjs     # 配置路径与旧路径搬迁（11 项）
 node test/test-routes.mjs     # 路由层（50 项：备份/损坏/冲突/pnlCurve/SSE）
+node test/security.mjs        # 安全层（18 项：URL 注入 / 配置净化 / SSE 注入）
 node test/e2e-render.mjs      # 渲染层（148 项：指数栏/悬浮窗/详情/持仓/成本线/盈亏曲线/拖动排序）
 ```
 
 四个测试都用 `node` 直接跑，零 npm 依赖。配置路径由 `config-guard` 强制隔离（默认写系统临时目录并自动清理；指向真实配置会拒绝启动）。测试会请求腾讯/东财真实行情接口，需联网。详见 [docs/development.md](docs/development.md)。
+
+## 安全设计
+
+插件的全部外部输入是「股票代码」与「搜索词」，攻击面集中在四处，均已加固并有回归测试锁定：
+
+| 面 | 威胁 | 防护 |
+|---|---|---|
+| **URL 拼接** | code 拼进 `qt.gtimg.cn` / 东财接口，若含 `?#/&=空格` 可逃逸查询参数、追加参数 | `normalizeApiCode` 先剥掉所有非 `[A-Za-z0-9_.$]` 字符，输出绝不含 URL 结构字符（18 组攻击输入对拍） |
+| **配置 POST** | 原型污染、超长 code、负成本、颜色/CSS 注入、超大 body | 白名单式清洗：code≤16、cost/qty 非负钳制、颜色只收 `#hex`、列表≤300、txns≤200、body≤2MB、`__proto__`/`constructor` 无效 |
+| **XSS** | 股票名来自上游，可能含 HTML | 全部经 React 渲染（自动转义），无 `innerHTML`/`dangerouslySetInnerHTML`/动态 `href`/`style`；零硬编码外链 |
+| **SSE 注入** | 恶意股票名伪造 SSE 帧边界 | `JSON.stringify` 把 `\n` 转为字面量，帧边界只有帧尾一个真实 `\n\n`，端到端验证首推恰 1 帧 |
+
+其它：`package.json` 零依赖（无供应链面）；配置落盘 `~/.dsh/dsh-stock-leek/`，写入走「备份 + 临时文件 + 原子 rename」，解析失败另存 `.corrupt` 并尝试回退 `.bak`，绝不静默用默认值覆盖用户持仓。
 
 ## 说明
 

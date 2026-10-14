@@ -15,13 +15,15 @@
     "client.js",
     "lib/",
     "cordis.patch.yml",
+    "LICENSE",
     "README.md"
   ],
   "scripts": {
-    "test": "node test/shared-drift.mjs && node test/config-path.mjs && node test/test-routes.mjs && node test/e2e-render.mjs",
+    "test": "node test/shared-drift.mjs && node test/config-path.mjs && node test/test-routes.mjs && node test/security.mjs && node test/e2e-render.mjs",
     "test:shared": "node test/shared-drift.mjs",
     "test:path": "node test/config-path.mjs",
     "test:routes": "node test/test-routes.mjs",
+    "test:security": "node test/security.mjs",
     "test:e2e": "node test/e2e-render.mjs"
   },
   "dsh": {
@@ -46,5 +48,13 @@
     "自选股",
     "持仓"
   ],
+  "homepage": "https://github.com/siqyka/dsh-stock-leek#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/siqyka/dsh-stock-leek.git"
+  },
+  "bugs": {
+    "url": "https://github.com/siqyka/dsh-stock-leek/issues"
+  },
   "license": "MIT"
 }
