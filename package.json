@@ -19,8 +19,9 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node test/shared-drift.mjs && node test/config-path.mjs && node test/test-routes.mjs && node test/security.mjs && node test/e2e-render.mjs",
+    "test": "node test/shared-drift.mjs && node test/config-isolation.mjs && node test/config-path.mjs && node test/test-routes.mjs && node test/security.mjs && node test/e2e-render.mjs",
     "test:shared": "node test/shared-drift.mjs",
+    "test:isolation": "node test/config-isolation.mjs",
     "test:path": "node test/config-path.mjs",
     "test:routes": "node test/test-routes.mjs",
     "test:security": "node test/security.mjs",

@@ -26,7 +26,62 @@ const REAL_PATTERNS = [
  * @param {string} tag 测试标识，用于临时文件名（如 e2e / routes）
  * @returns {string} 最终生效的配置路径
  */
+/**
+ * 校验「index.js 实际生效的配置路径」就是期望的隔离路径。
+ *
+ * 背景：index.js 曾在模块顶层固化 CONFIG_PATH，而 ESM 的静态 import 会被提升
+ * ——测试文件里 `import ... from "../index.js"` 会在 useTestConfigPath() 之前
+ * 执行，守卫设的环境变量根本来不及生效，测试于是写到了用户的真实配置上。
+ * index.js 现已改为惰性解析，但**导入顺序依然是前提**，所以这里做实锤校验：
+ * 若生效路径不是隔离路径，直接抛错让测试失败，绝不静默写坏用户数据。
+ *
+ * 用法（必须在 await import("../index.js") 之后调用）：
+ *   useTestConfigPath("x");
+ *   const { apply } = await import("../index.js");
+ *   await verifyConfigPathIsolation();
+ *
+ * @param {string} [want] 期望的隔离路径，默认取当前环境变量
+ */
+export async function verifyConfigPathIsolation(want) {
+  const expect = want || process.env.DSH_STOCK_LEEK_CONFIG || "";
+  if (!expect) return; // 用户显式指定路径时由 REAL_PATTERNS 把关
+  const mod = await import("../index.js");
+  const actual = mod.getConfigPathForTest();
+  if (actual !== expect) {
+    throw new Error(
+      [
+        "",
+        "拒绝运行：index.js 生效的配置路径不是测试隔离路径。",
+        `  期望: ${expect}`,
+        `  实际: ${actual}`,
+        "",
+        "这几乎一定是导入顺序写错了：ESM 静态 import 会提升，",
+        '必须在 useTestConfigPath() 之后再用 await import("../index.js")。',
+        "",
+      ].join("\n"),
+    );
+  }
+}
+
 export function useTestConfigPath(tag) {
+  // 同步防呆：index.js 已被提前 import（说明导入顺序错了），此刻设环境变量已来不及
+  if (globalThis[Symbol.for("dsh-stock-leek.index.loaded")]) {
+    throw new Error(
+      [
+        "",
+        "拒绝运行：index.js 在 useTestConfigPath() 之前就被 import 了。",
+        "",
+        "ESM 的静态 import 会被提升到所有语句之前执行，此时守卫还没机会",
+        "设置隔离路径，测试会写到用户的真实配置（~/.dsh/dsh-stock-leek/config.json）。",
+        "",
+        "改法：把 import 改成动态导入，并放在本调用之后：",
+        '  useTestConfigPath("x");',
+        '  const { apply } = await import("../index.js");',
+        "",
+      ].join("\n"),
+    );
+  }
+
   const envPath = process.env.DSH_STOCK_LEEK_CONFIG;
 
   if (envPath) {

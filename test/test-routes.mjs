@@ -8,11 +8,13 @@
  * （未指定 → 系统临时目录；指向真实配置 → 直接拒绝启动）。
  */
 import http from "node:http";
-import { useTestConfigPath } from "./config-guard.mjs";
+import { useTestConfigPath, verifyConfigPathIsolation } from "./config-guard.mjs";
 
 useTestConfigPath("routes");
 
 const { apply } = await import("../index.js");
+// 实锤校验：确认生效路径确实是隔离路径（防将来有人改回静态 import）
+await verifyConfigPathIsolation();
 
 const routes = new Map();
 const ctx = {

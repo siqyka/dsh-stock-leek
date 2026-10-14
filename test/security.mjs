@@ -11,10 +11,16 @@
  * 任何人日后改动解析或清洗逻辑，这里会第一时间报警。
  */
 import http from "node:http";
-import { apply, normalizeApiCode } from "../index.js";
-import { useTestConfigPath } from "./config-guard.mjs";
+import { useTestConfigPath, verifyConfigPathIsolation } from "./config-guard.mjs";
 
+// 必须先设配置路径，再动态导入 index.js！
+// 静态 import 会被提升到本语句之前执行，而 index.js 在模块顶层就解析 CONFIG_PATH，
+// 那样守卫设置的环境变量来不及生效 → 测试会写到真实配置文件（覆盖用户的持仓数据）。
 useTestConfigPath("security");
+
+const { apply, normalizeApiCode } = await import("../index.js");
+// 实锤校验：确认生效路径确实是隔离路径（防将来有人改回静态 import）
+await verifyConfigPathIsolation();
 
 let fails = 0;
 function check(label, cond, extra) {

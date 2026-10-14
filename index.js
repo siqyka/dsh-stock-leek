@@ -57,13 +57,41 @@ const KLINE_TTL = 60000;
  *
  * LEGACY_CONFIG_PATHS 是历次改名前的落盘位置，**按新到旧排列**，
  * 启动时逐个尝试搬迁（见 migrateLegacyConfig），保证改名不丢用户的自选与持仓。
+ *
+ * ⚠️ 路径**惰性解析**（每次读取时才看环境变量），不能在模块顶层固化：
+ * 测试的 config-guard 需要在本模块被 import *之后*才有机会设置环境变量
+ * （ESM 的静态 import 会提升，守卫根本来不及跑），顶层固化会导致测试
+ * 直接写到用户的真实配置上，把持仓数据覆盖掉。
  */
-const ENV_CONFIG = process.env.DSH_STOCK_LEEK_CONFIG || process.env.DSH_LEEK_FUND_CONFIG || "";
-const CONFIG_PATH = ENV_CONFIG || join(homedir(), ".dsh", "dsh-stock-leek", "config.json");
-const LEGACY_CONFIG_PATHS = [
-  join(homedir(), ".dsh", "dsh-leek-fund", "config.json"),
-  join(homedir(), ".dsh-leek-fund", "config.json"),
-];
+let _configPath = null; // 已解析则缓存，保证同一进程内路径稳定
+function envConfig() {
+  return process.env.DSH_STOCK_LEEK_CONFIG || process.env.DSH_LEEK_FUND_CONFIG || "";
+}
+function configPath() {
+  if (_configPath) return _configPath;
+  _configPath = envConfig() || join(homedir(), ".dsh", "dsh-stock-leek", "config.json");
+  return _configPath;
+}
+function legacyConfigPaths() {
+  return [
+    join(homedir(), ".dsh", "dsh-leek-fund", "config.json"),
+    join(homedir(), ".dsh-leek-fund", "config.json"),
+  ];
+}
+/** 测试专用：清掉路径缓存，让下次读取重新解析（配合环境变量变更） */
+export function __resetConfigPathCache() {
+  _configPath = null;
+}
+/** 测试专用：返回当前生效的配置路径（惰性解析） */
+export function getConfigPathForTest() {
+  return configPath();
+}
+/**
+ * 模块加载标记（测试守卫用）。
+ * 若测试在 useTestConfigPath() 之前就 import 了本模块，这个标记会被守卫看到，
+ * 从而提前发现"环境变量来不及生效"的导入顺序错误，避免写到用户真实配置。
+ */
+globalThis[Symbol.for("dsh-stock-leek.index.loaded")] = true;
 
 /** 候选大盘指数（默认全部展示在「大盘」页，用户挑选若干放到对话左下角） */
 const DEFAULT_BAR = ["sh000001", "sz399001"];
@@ -235,9 +263,10 @@ let configCorrupted = false; // 是否发生过解析失败（供 /config 透出
  * 仅在用默认路径时才搬（显式设了环境变量说明是测试/自定义目录，不关我们的事）。
  */
 function migrateLegacyConfig() {
-  if (ENV_CONFIG) return; // 显式指定路径 → 不干预
-  if (existsSync(CONFIG_PATH)) return; // 新位置已有 → 不动
-  for (const legacyPath of LEGACY_CONFIG_PATHS) {
+  if (envConfig()) return; // 显式指定路径 → 不干预
+  const cfgPath = configPath();
+  if (existsSync(cfgPath)) return; // 新位置已有 → 不动
+  for (const legacyPath of legacyConfigPaths()) {
     let text = null;
     try {
       text = readFileSync(legacyPath, "utf8");
@@ -251,8 +280,8 @@ function migrateLegacyConfig() {
       continue; // 旧文件本身坏了 → 试下一个，全都不行就按首次运行处理
     }
     try {
-      mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-      writeFileSync(CONFIG_PATH, text, "utf8");
+      mkdirSync(dirname(cfgPath), { recursive: true });
+      writeFileSync(cfgPath, text, "utf8");
       // 老文件改名保留，不删：搬迁出问题可以从这里恢复
       copyFileSync(legacyPath, legacyPath + ".migrated.bak");
       return;
@@ -264,9 +293,10 @@ function migrateLegacyConfig() {
 
 function readConfig() {
   migrateLegacyConfig();
+  const cfgPath = configPath();
   let text = null;
   try {
-    text = readFileSync(CONFIG_PATH, "utf8");
+    text = readFileSync(cfgPath, "utf8");
   } catch {
     return defaultConfig(); // 不存在 = 首次运行，正常路径
   }
@@ -284,12 +314,12 @@ function readConfig() {
     // 走到这里说明文件确实坏了：保留现场 → 尝试备份 → 才用默认值
     configCorrupted = true;
     try {
-      writeFileSync(CONFIG_PATH + ".corrupt", text, "utf8");
+      writeFileSync(cfgPath + ".corrupt", text, "utf8");
     } catch {
       /* ignore */
     }
     try {
-      const bak = readFileSync(CONFIG_PATH + ".bak", "utf8");
+      const bak = readFileSync(cfgPath + ".bak", "utf8");
       if (bak.trim()) return sanitizeConfig(JSON.parse(bak));
     } catch {
       /* 没有备份或备份也坏了 */
@@ -299,17 +329,18 @@ function readConfig() {
 }
 
 function writeConfig(cfg) {
-  const dir = dirname(CONFIG_PATH);
+  const cfgPath = configPath();
+  const dir = dirname(cfgPath);
   mkdirSync(dir, { recursive: true });
   // 覆盖前先备份上一版（仅当存在）
   try {
-    if (existsSync(CONFIG_PATH)) copyFileSync(CONFIG_PATH, CONFIG_PATH + ".bak");
+    if (existsSync(cfgPath)) copyFileSync(cfgPath, cfgPath + ".bak");
   } catch {
     /* ignore */
   }
-  const tmp = CONFIG_PATH + "." + process.pid + ".tmp";
+  const tmp = cfgPath + "." + process.pid + ".tmp";
   writeFileSync(tmp, JSON.stringify(cfg, null, 2), "utf8");
-  renameSync(tmp, CONFIG_PATH);
+  renameSync(tmp, cfgPath);
 }
 
 // ---------------------------------------------------------------------------
@@ -864,7 +895,7 @@ function apply(ctx) {
         sendJson(res, 200, {
           ok: true,
           config: cfg,
-          path: CONFIG_PATH,
+          path: configPath(),
           rev: cfg[CFG_REV],
           conflict, // true = 保存期间配置已被其他标签页改动过
           recoveredFromCorruption: wasCorrupt,
@@ -888,12 +919,12 @@ function apply(ctx) {
       sendJson(res, 200, {
         ok: true,
         config: cfg,
-        path: CONFIG_PATH,
+        path: configPath(),
         quotes,
         error,
         updatedAt: Date.now(),
         // 配置损坏告警：原文已另存 config.json.corrupt 供人工找回
-        warning: configCorrupted ? "配置文件解析失败，已回退备份或默认配置；损坏原文见 " + CONFIG_PATH + ".corrupt" : null,
+        warning: configCorrupted ? "配置文件解析失败，已回退备份或默认配置；损坏原文见 " + configPath() + ".corrupt" : null,
         rev: Number(cfg[CFG_REV]) || 0,
       });
     } catch (e) {
@@ -1138,7 +1169,7 @@ function apply(ctx) {
         .map((r) => `${r.code}(${r.label})`)
         .join(", ");
     });
-    sendJson(res, 200, { ok: checks.every((c) => c.ok), checks, configPath: CONFIG_PATH, at: Date.now() });
+    sendJson(res, 200, { ok: checks.every((c) => c.ok), checks, configPath: configPath(), at: Date.now() });
   });
 }
 
