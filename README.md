@@ -1,9 +1,22 @@
-<h1 align="center">dsh-stock-leek 📈</h1>
-<p align="center">
-  <img src="https://img.shields.io/badge/DSH-plugin-4cc2ff?style=flat-square" alt="dsh plugin">
-  <img src="https://img.shields.io/badge/data-tencent-f5455c?style=flat-square" alt="tencent data">
-  <img src="https://img.shields.io/badge/license-MIT-1eb980?style=flat-square" alt="MIT">
-</p>
+<div align="center">
+<img src="./assets/h.jpg" alt="dsh-stock-leek header" width="840" />
+
+# dsh-stock-leek
+
+**把大盘指数、自选股与持仓盈亏，直接嵌进 DSH 对话界面。**
+
+对话左下角常驻指数栏 + 可拖动行情悬浮窗：实时行情 · 分时 / K 线 · 持仓盈亏，
+不用离开 DSH，也不用再开一个行情软件。
+
+[![version](https://img.shields.io/github/package-json/v/siqyka/dsh-stock-leek)](https://github.com/siqyka/dsh-stock-leek)
+[![license](https://img.shields.io/github/license/siqyka/dsh-stock-leek)](./LICENSE)
+![node](https://img.shields.io/badge/node-%3E%3D%2020-brightgreen)
+![dsh](https://img.shields.io/badge/DSH-%3E%3D%200.2.0--rc.1-blue)
+![data](https://img.shields.io/badge/%E6%95%B0%E6%8D%AE%E6%BA%90-%E8%85%BE%E8%AE%AF%E8%B4%A2%E7%BB%8F-f5455c)
+
+</div>
+
+---
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web 端的股票行情插件：
 
