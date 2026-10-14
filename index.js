@@ -1011,16 +1011,15 @@ function apply(ctx) {
   // SSE 广播循环：所有订阅者共用一次拉取
   let sseTimer = null;
   const sseTick = async () => {
-    sseTimer = null;
-    if (sseClients.size === 0) return;
-    const codes = new Set();
-    for (const c of sseClients) for (const code of c.codes) codes.add(code);
-    if (codes.size === 0) return;
     try {
+      if (sseClients.size === 0) return;
+      const codes = new Set();
+      for (const c of sseClients) for (const code of c.codes) codes.add(code);
+      if (codes.size === 0) return;
       const map = await fetchQuotes([...codes].slice(0, 200));
       const rows = [];
       for (const [code, row] of map) if (row) rows.push(row);
-      if (!rows.length) return;
+      if (rows.length === 0) return;
       await attachSpeed(rows);
       const payload = "data: " + JSON.stringify({ rows, updatedAt: Date.now() }) + "\n\n";
       for (const c of [...sseClients]) {
@@ -1032,6 +1031,9 @@ function apply(ctx) {
       }
     } catch {
       /* 单次失败不影响下一轮 */
+    } finally {
+      // 关键：所有出口（成功/失败/早退）都必须排下一轮，否则广播链断掉只推一次
+      scheduleSse();
     }
   };
   /** 按配置的轮询间隔调度下一轮 SSE 广播（无订阅者时不排程） */
