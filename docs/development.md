@@ -3,7 +3,7 @@
 ## 跑测试
 
 ```bash
-npm test                      # 六个套件全跑
+npm test                      # 七个套件全跑
 node test/shared-drift.mjs    # 纯函数一致性 + 关键函数性质对拍
 node test/config-isolation.mjs# 配置路径隔离守卫自检
 node test/config-path.mjs     # 配置路径与旧路径搬迁
@@ -22,6 +22,7 @@ node test/e2e-render.mjs      # 渲染层（指数栏/悬浮窗/详情/持仓/�
 | `config-isolation.mjs` | 守卫自身是否真的拦得住（防止守卫失效后误伤用户配置） | 故意指向真实配置路径，确认**拒绝启动**；确认临时目录被清理 |
 | `config-path.mjs` | 默认路径、迁移链、兼容环境变量 | **子进程 + 假 HOME**（`HOME`/`USERPROFILE` 都改），因为默认路径分支只有不设 `DSH_STOCK_LEEK_CONFIG` 时才走得到 |
 | `test-routes.mjs` | Host 路由响应结构 | mock 一个最小 cordis ctx，起本地 http server 逐个请求 |
+| `alert-loop-ref.mjs` | 评估循环的定时器**能否自行触发**（防 `unref` 回归） | **独立子进程**：除被测定时器外不留其它句柄，观察 `ticks` 是否推进（主测试进程跑着 http server，unref 的定时器照样触发，根本区分不出来） |
 | `security.mjs` | 四处攻击面回归：URL 拼接 / 配置 POST / XSS / SSE 注入 | 18 组恶意 code 对拍 `normalizeApiCode`；原型污染与超长 body 打 `/config`；断言无 `innerHTML` 等危险 API；端到端验证 SSE 首推恰 1 帧 |
 | `e2e-render.mjs` | Client 渲染与交互 | `test/e2e-render.mjs` 内置的 mini-React + 真实路由；预警部分用 `__alertTickForTest` 真写账本、`__docDispatch` 真派发 visibilitychange、EventSource 替身验证生命周期 |
 
@@ -56,6 +57,14 @@ node test/e2e-render.mjs      # 渲染层（指数栏/悬浮窗/详情/持仓/�
 | `午休 12:00 仍然展开` | 改成逐时段 `windows.some(...)` 匹配 → 红 |
 | `同一分钟内不重复拉分时（避免打爆上游）` | 把 `quoteTick` 改成裸 `s.updatedAt` → 1 项失败 |
 | `curveRefreshTick 与 shared.js 行为一致` | 只改 client.js 一侧的窗口（`5000`→`30000`）→ 报出 client/shared 取值不同 |
+| `当日深度回落也不重置（每日仅一次）` 等 8 项 | 把「当日不再报」改回旧滞回语义 → drift 5 条 + routes 3 条同时红 |
+| `溢出的 2 条叠加到最早那条（+N=2）` 等 4 项 | 去掉 `ALERT_POPUP_MAX` 上限 → 4 条红（卡片变 5、overflow 全 0） |
+| `【悬浮窗关闭】仍弹出预警弹窗` | 把 `AlertPopup` 挂回 `Overlay` 内部 → 恰这条红（复现用户报的 bug） |
+| `预警弹窗注册为独立 slot` | 删掉该 slot 注册 → 红（防 slot 缺失时异常被吞、失败信息误导） |
+| `窄窗口仍居中（非贴左）` / `回退路径居中` | 把回退值改回 `left: 24` → 2 条红 |
+| `当日回落到阈值下方不再报` 等 | 去掉 `if (phase === "fired") return` → 红 |
+| `评估循环的定时器自行推进 ticks（未被 unref）` | 把 `timer.unref()` 加回去 → 子进程 ticks 采样为空、2 条红 |
+| `循环跑过首拍之外的拍` | 同上（这条与上条共同守住「配了规则却永不评估」） |
 
 > **对拍只能证明"两边一样"，证明不了"两边都对"**。`curveRefreshTick` 的两端对拍在「窗口被写死 60s」时照样全绿，因为两边一起错。所以另加了一组**性质断言**（同一窗口内 tick 相同、跨窗口推进、窗口随 pollMs 变），直接钉住它应满足的语义。对拍器还必须喂足参数：只喂单参的话 `pollMs` 全是 `undefined` → 永远走兜底 5s，原始 bug 测不出来。多参函数的样本要成对给；对拍器靠 `clientFn.length` 区分（单参函数的数组入参不能误拆——`displayCode("sh600519")` 拆开就成两个字符了）。
 
@@ -162,8 +171,28 @@ node --check index.js
 npm test
 ```
 
-六个套件全绿才算完成。若改了 `client.js` 的内联纯函数，记得 `lib/shared.js` 也要同步——`shared-drift` 会拦住你。
+七个套件全绿才算完成。若改了 `client.js` 的内联纯函数，记得 `lib/shared.js` 也要同步——`shared-drift` 会拦住你。
 
 > **文档里刻意不写断言条数。** 断言数随改动频繁增减，写死必然过期（此前已连续三次对不上）。要看当前数量直接跑一遍即可。
 
 改 `index.js` 的 SSE 广播时留意：`sseTick()` 必须在 `finally` 里调 `scheduleSse()` 续排下一轮，漏掉会导致某次拉取失败后广播链静默终止、永不再推（见 [architecture.md](architecture.md) 的「行情通道」）。
+
+改 `index.js` 的预警评估循环时留意两点：
+
+1. **`schedule()` 里的定时器绝不能 `unref()`**。unref 不阻塞事件循环退出——进程里一旦没有其它活动句柄，这一拍可能**永远不触发**，表现为「配了规则却永不评估，只有改配置时才跑一次」。测试侧的退出改由 `__stopAlertLoopForTest()` 负责。回归见 `test/alert-loop-ref.mjs`（独立子进程，主进程测不出这个）。
+2. **客户端侧的弹窗必须注册为独立 slot**，不能挂在 `Overlay` 内部（它有 `if (!s.open) return null`，会把弹窗一起吞掉 → 「不打开悬浮窗就收不到预警」）。
+
+## 三条空转断言的教训（实测记录）
+
+「这条断言能区分两种实现吗？」**必须实测，不能推理**。以下四条断言都"看着很合理"却完全空转：
+
+| 写法 | 为什么空转 | 正确判据 |
+|---|---|---|
+| `process._getActiveHandles()` 查 `hasRef()` 验「定时器未被 unref」 | **unref 的定时器根本不在那个列表里**，过滤条件永远匹配不到（把 `unref` 加回去照样全绿） | 独立子进程观察 `ticks` 是否随静置推进 |
+| 「`left` < 视口中线」验贴左对齐 | 居中时 `left≈464`、贴左时 `≈40`，**两者都小于 700** | 算出**居中位置**，断言明显偏离它 |
+| 用主路径形态的 `transform` 去验回退分支 | 主路径根本不设 `transform`，测的是空气 | 分别断言两条路径各自的形态 |
+| e2e 的 composer-seat mock 缺 `parentElement` 链 | 被测代码永远走**硬编码回退分支**，钳制与否无区别 | 补上父链，让探测分支真的跑起来 |
+
+做法始终是：**改坏实现，确认目标断言变红**。若改坏了还不红，先怀疑断言。
+
+> **弹窗/浮层挪位置时，测试前提会跟着变**。弹窗移到独立 slot 后，`ov.render()` 的树里再也找不到它。除了改从 slot 渲染，还要加**前置断言**（slot 已注册）——否则 slot 缺失时渲染抛错被上层吞掉，后续"查找节点"全返回 `null`，失败信息会指向错误方向。

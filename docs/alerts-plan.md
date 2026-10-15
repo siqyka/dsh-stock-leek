@@ -1,8 +1,29 @@
 # 股票预警功能 · 实施计划
 
-> 状态：**已实施完成**（4 个提交：地基 → Host → UI → 通知；共 456 项测试全绿）。
+> 状态：**已实施完成**（4 个提交：地基 → Host → UI → 通知）。
 > 本文档同时是该功能的**设计与决策依据**，含 8 处实施前评估修正（交易日判据、日界时区、limit_near 市场限制、alerts 上限、marketNow 上提、Host 时间注入、未读语义、cost 悬空、重连补齐）。
 > 确认于 2026-10-15；范围：Phase 1 + 2 一次做完；配置落点复用 `cfg.remind` 作总开关 + 新增 `cfg.alerts`；评估范围仅「已启用规则」涉及的股票；评估节奏 `clamp(pollMs, 2s, 15s)`；`armed/fired` 状态随历史一起落盘。
+
+---
+
+## 0. ⚠️ 最终形态（实施后按用户反馈调整，与下文原始设计有出入处以本节为准）
+
+下文保留**原始设计与决策过程**（含评估修正、踩坑记录），但落地形态有四处按用户要求改过：
+
+| 项 | 原始设计（下文） | **最终形态** |
+|---|---|---|
+| 触发历史 | `config.json.alerts` 存 `{events, states}`，预警页展示历史 | **去掉历史**：只存 `states`；`/alerts` 不返回 events；预警页无历史区块 |
+| 预警入口 | 新增第 5 个 tab「预警」 | **设置页内的二级页**，不占 tab |
+| 提醒图标 | 指数栏常驻铃铛 + 未读角标 | **完全去掉**：左下角无任何提醒图标；未读概念随之取消 |
+| 触发提示 | 可见→toast / 隐藏→系统通知 的互斥降级链 | **应用内弹窗为唯一保证通道**（可见与否都弹）+ 系统通知叠加；**不弹 toast** |
+
+补充落地细节（下文未覆盖）：
+
+- 弹窗位置：**对话区顶部居中**（探测不到对话区时视口居中），坐标**钳进视口** —— 否则窗口缩小时会跑到可视区外。
+- 弹窗容量：**同时最多 3 条**，溢出的叠加到最早那条并显示 `+N`；「全部关闭（N）」的 N 含叠加数。
+- 弹窗生命周期：**10 秒自动消失**，可点 `✕`/`Escape`/「全部关闭」；倒计时**只在页面可见时走**（隐藏时冻结），否则你不在时它会悄悄过期。
+- **弹窗注册为独立 slot**，与悬浮窗开关解耦 —— 曾经挂在 `Overlay` 内部，而它有 `if (!s.open) return null`，导致「不打开悬浮窗就收不到预警」。
+- `states` **必须保留**：它是「每交易日只提示一次」的唯一依据，丢了会在 Host 重启后重复播报。
 
 ---
 
@@ -41,10 +62,10 @@ Host 独立评估循环（ctx.effect 管生命周期，与 sseClients 无关）
   ├─ 有规则 && 市场在交易时段 → 按 clamp(pollMs,2s,15s) 评估
   ├─ 有规则但全市场休市     → 退避 60s 探一次，开盘自动恢复
   ├─ fetchQuotes(规则涉及的 code) + attachSpeed
-  ├─ stepAlert() 状态机判定 → 触发则追加到 alerts 历史并落盘
-  └─ 推给 /alert-stream 的在线订阅者（没人连着也照样记录）
+  ├─ stepAlert() 状态机判定 → 触发则落盘 states（**当日不再重复**）并推送
+  └─ 推给 /alert-stream 的在线订阅者（没人连着也照常评估）
          │
-         ├─ GET  /alerts        触发历史（回来能看到「错过了哪些」）
+         ├─ GET  /alerts        规则状态（客户端重连后取回；不返回触发历史）
          └─ GET  /alert-stream  SSE 实时推送（Phase 2）
 ```
 
@@ -170,7 +191,11 @@ Host 侧评估要用时段判断，只有两条路：
 
 ---
 
-## 6. 触发历史落盘
+## 6. 状态落盘（原始设计为"触发历史落盘"，已按用户要求去掉历史）
+
+> ⚠️ **本节原始设计存 `{events, states}`**。最终只存 `states`（判断"今日是否已提示"），
+> `events` 触发历史已按要求去掉 —— 详见开头的「最终形态」。下面关于"事件流"的论证
+> 仍然适用于 `states`（它同样是评估循环高频读写的东西，不该搅动 `__rev`）。
 
 ### 6.1 为什么不塞进 config.json
 
@@ -360,17 +385,19 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 
 | # | 提交 | 内容 |
 |---|---|---|
-| 1 | `feat(alerts): 地基` | `lib/shared.js` 上提时段三函数（共享版 `now` 必填）+ `quoteDayFor` + `sanitizeAlert(s)` + `stepAlert` 状态机；client.js 内联副本；drift 对拍 17→74 项 |
-| 2 | `feat(alerts): Host` | `cfg.alerts` 接入清洗、独立评估循环（零规则休眠）、`config.json.alerts` 账本、`/alerts` + `/alert-stream`；routes 49→63→66 项 |
-| 3 | `feat(alerts): UI` | 预警二级页（设置内入口，**不占 tab**）、右键「设为预警」、吃字段回填保护；e2e 230→261 项 |
-| 4 | `feat(alerts): 通知层` | 隐藏不断流的破例、三级降级、权限手势申请、`navigator.locks` 去重；e2e 261→276 项 |
+| 1 | `feat(alerts): 地基` | `lib/shared.js` 上提时段三函数（共享版 `now` 必填）+ `quoteDayFor` + `sanitizeAlert(s)` + `stepAlert` 状态机；client.js 内联副本；drift 对拍大幅扩充 |
+| 2 | `feat(alerts): Host` | `cfg.alerts` 接入清洗、独立评估循环（零规则休眠）、`config.json.alerts`、`/alerts` + `/alert-stream` |
+| 3 | `feat(alerts): UI` | 预警二级页（设置内入口，**不占 tab**）、右键「设为预警」、吃字段回填保护 |
+| 4 | `feat(alerts): 通知层` | 隐藏不断流的破例、三级降级、权限手势申请、`navigator.locks` 去重 |
+| 5+ | 上线联调修复 | §13.2 三个真 bug（美股永不触发 / 休市误报 / 缺交易日判据）、§13.3 两个真 bug（unref 不评估 / 悬浮窗关着不弹）+ UI 打磨（居中定位、视口钳制、最多 3 条叠加、去掉 toast 与触发历史） |
+| — | 测试基建 | 新增 `test/alert-loop-ref.mjs`（独立子进程验证定时器自触发）；`package.json` 的 `test` 链纳入 |
 
 验收对照（每条都有承重断言，且做过非空洞验证）：
 
 | # | 验收 | 实现位置 | 承重断言 |
 |---|---|---|---|
-| 1 | 隐藏触发→回来可见 | `notifyAlert` + `refreshAlerts` | e2e：可见走 toast / 隐藏+已授权弹系统通知 |
-| 2 | 停阈值上方只报 1 次 | `stepAlert` 滞回带 | routes：9.96 带内保持 fired；drift：滞回双向 |
+| 1 | 隐藏触发→回来可见 | `notifyAlert` + `pushAlertPopup` | e2e：可见/隐藏都弹（弹出句柄为独立 slot）；隐藏+已授权弹系统通知 |
+| 2 | 同一交易日只提示一次 | `stepAlert`（fired 当日不可逆） | routes：当日深度回落/重新上穿均不报；跨日才再报 |
 | 3 | 次日重新生效 | `quoteDayFor` + `state.day` | routes：D15 fired → D16 仍上穿→再触发（两步非空洞） |
 | 4 | 休市零请求/零误报 | `isMarketOpen` 门控 + 交易日判据 | routes：`alertStats` 断言 sleeps 增而 fetches 不动 |
 | 5 | 无规则完全休眠 | `activeAlertCodes` 空 → 退避 | routes：ticks 增 + fetches 不动；**对照**：钉 `isMarketOpen=true` 后 fetches 立刻 0→1 |
@@ -378,7 +405,7 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 | 7 | `limit_near` 市场限制 | `sanitizeAlert` + UI option disabled | drift：港美股拒收；routes：POST 清洗后仅留合法条 |
 | 8 | 清仓后 cost 规则跳过 | `costBy` 查不到则 `skipped` | routes：无成本价 → `skipped` 含该 id 且 fired 为空 |
 | 9 | 重连先对账 | `alertEs.onopen → refreshAlerts()` | e2e：隐藏时预警流保持、行情流断开（含对照断言） |
-| 10 | 测试全绿 | — | 468 项（drift 74 / isolation 7 / config-path 14 / routes 66 / security 19 / e2e 288） |
+| 10 | 测试全绿 | — | 七个套件（drift / isolation / config-path / routes / security / alert-loop-ref / e2e）全绿；跑 `npm test` 看当前数量（文档刻意不写死条数） |
 
 实施中修正的两处**测试方法错误**（都会让断言空转，记录备查）：
 
@@ -420,3 +447,28 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 另有一处**认知修正**：港美股的 `limitUp`/`limitDown` **不是 -1 哨兵**，实测 `usAAPL.limitUp=8.72`、`hk00700.limitUp=1.27`（无意义值）。原先"按哨兵值设防"的思路不成立；好在实现是按**市场前缀**拒收 `limit_near`，无意中挡住了这个坑。
 
 > **教训：自造数据的单元测试证明不了真实适配。** 预警这类依赖外部数据格式的功能，必须有一轮「拿真实行情跑一遍」的验证 —— 本次三个 bug 全部由实机模拟暴露，其中一个（美股永不触发）会让功能对港美股用户完全不可用。
+
+### 13.3 上线联调又挖出两个 bug（都是"测试覆盖不到"的类型）
+
+**④ 配了规则却永远不评估**
+`sseTick` 的教训换了个位置重现：`startAlertLoop` 的 `schedule()` 里调了 `timer.unref()`。unref 的定时器**不阻塞事件循环退出** —— 进程里一旦没有其它活动句柄，这一拍**可能永远不触发**。表现：清空规则使循环进入 60s 退避后，再加规则等了 25 秒毫无动静，只有 `POST /config`（`alertKick`）才踢出第一拍。
+（当初加 unref 是为了让测试进程能退出，代价却是生产功能失效。）
+
+修法：去掉 unref；测试侧改用显式清理 `__stopAlertLoopForTest()`（`ctx.effect` 的清理函数也走同一条路）。
+回归测试必须用**独立子进程**：主测试进程跑着 http server（活动句柄），unref 的定时器照样触发，**完全区分不出来**。子进程里除被测定时器外不留其它句柄，观察 `ticks` 是否推进。
+
+**⑤ 悬浮窗关着就收不到预警**
+`AlertPopup` 挂在 `Overlay` 内部，而 `Overlay` 开头是 `if (!s.open) return null` —— 悬浮窗没打开时整棵子树不渲染，弹窗一起被吞掉。
+讽刺的是我在那行加的注释写着「与悬浮窗开关无关」，**注释与事实相反**，这就是踩坑的根源。
+修法：注册为**独立 slot**（`dsh-stock-leek.alert-popup`，`order: 1000`），与悬浮窗开关彻底解耦。
+
+**附带修掉的 UI 问题**（均有断言锁定 + 非空洞验证）：
+
+- 坐标未钳制 → 窗口缩小时弹窗跑到可视区外（「全屏可见、缩小就消失」）
+- 改回居中时**漏改回退分支**（残留贴左值 `left: 24`）→ 宿主探测不到对话区时弹窗偏到屏幕左边
+- 爬父容器 3 层过深 → 可能越过对话面板拿到侧边栏几何，居中基准就偏了（改为 2 层 + 合理性检查）
+- 成本类规则文案重复：「突破成本 **成本价**」（类型标签已含"成本"）
+
+> **两条测试经验（都已写进 development.md 的陷阱清单）**：
+> 1. **"断言能区分两种实现"必须实测**。这轮有 4 条断言是空转的：查 `hasRef()` 时 unref 的定时器**不在** `_getActiveHandles()` 列表里；「`left` < 视口中线」在居中和贴左下**都成立**；e2e 的 composer-seat mock 缺 `parentElement` 链导致永远走回退分支、钳制与否无区别；直接改 store 快照不触发重渲染。
+> 2. **弹窗挪了位置，测试的前提就变了**。弹窗从 `Overlay` 移到独立 slot 后，`ov.render()` 的树里再也找不到它 —— 必须改成从 slot 渲染，并加一条**前置断言**（slot 已注册），否则 slot 缺失时内部抛错被吞、后续断言全返回 null，失败信息误导且掩盖真正原因。

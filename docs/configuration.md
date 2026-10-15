@@ -40,11 +40,21 @@
 { id, code, name?, type, value, enabled, createdAt? }
 ```
 
-- `id`：`[A-Za-z0-9_-]{1,32}`（**触发账本 `config.json.alerts` 以它为键**，字符集守卫防原型污染键）
+- `id`：`[A-Za-z0-9_-]{1,32}`（**`config.json.alerts` 的 `states` 以它为键**，字符集守卫防原型污染键）
 - `type`：8 种——`price_above` / `price_below` / `cost_above` / `cost_below` / `pct_up` / `pct_down` / `limit_near` / `speed_up`
 - `value`：阈值（非负）。比率类（`pct_*` / `limit_near` / `speed_up`）单位是 %；`cost_*` 忽略该字段（阈值=持仓成本价）
-- `limit_near` **仅 A 股/北交所**：港/美/指数无涨跌停概念（`limitUp` 返回 `-1` 哨兵），sanitize 直接拒收
-- 触发判定是「穿越 + 0.5% 滞回」状态机，停在阈值上方只报一次；跨日按**行情时间戳的市场本地日**重新生效；评估在 Host 独立循环，见 [docs/alerts-plan.md](alerts-plan.md)
+- `limit_near` **仅 A 股/北交所**：港/美/指数没有涨跌停概念。⚠️ 实测其 `limitUp` **不是 `-1` 哨兵**而是无意义值（`usAAPL.limitUp=8.72`、`hk00700.limitUp=1.27`），所以防护按**市场前缀拒收**而不是判哨兵值 —— 若放行会算出荒谬阈值、`armed` 立即穿越、必然误触发
+- 触发判定：**每个交易日每条规则只提示一次**（不是"穿越+滞回重复报"）。判据是行情时间戳的**市场本地日**，次日重新生效；评估在 Host 独立循环，见 [docs/alerts-plan.md](alerts-plan.md)
+
+### 预警状态文件 `config.json.alerts`
+
+```json
+{ "version": 1, "states": { "<ruleId>": { "phase": "armed|fired", "day": "YYYYMMDD" } } }
+```
+
+- **只存状态、不存触发历史**：`states` 是「今日是否已提示过」的唯一依据，丢了会在 Host 重启后重复播报
+- 路径**派生自配置路径**（`configPath() + ".alerts"`）而非 `dirname()` 拼接 —— 后者会丢掉测试的 pid 隔离
+- 客户端只读（`GET /alerts` 仅返回 `states`），只有 Host 写
 
 ### 环境变量
 
