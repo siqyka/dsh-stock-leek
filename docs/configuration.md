@@ -17,7 +17,8 @@
 | `barAlign` | `"left"` \| `"center"` \| `"right"` | `"left"` | 指数栏水平对齐 |
 | `barPlacement` | `"floating"` \| `"dock"` | `"floating"` | 悬浮锚定 / 嵌入输入框 |
 | `barVisible` | boolean | `true` | 是否显示指数栏 |
-| `remind` | boolean | `true` | 预留：突破成本价/盈亏阈值时高亮（**尚未接线**） |
+| `remind` | boolean | `true` | **预警总开关**：关闭后规则保留但不评估（`cfg.alerts` 的开关，见下） |
+| `alerts` | `[预警规则]` | `[]` | 预警规则，上限 50 条，见下 |
 | `pnlCurve` | boolean | `true` | 持仓页「今日盈亏走势」曲线是否展开 |
 | `ma` | `number[]` | `[5,10,20]` | K 线均线周期，白名单 `[5,10,20,60]`，去重保序，允许空数组 |
 | `__rev` | number | — | **内部字段**：每次成功写入 +1，供多标签页冲突检测，见下 |
@@ -32,6 +33,18 @@
 - `txns` 买卖变动流水：**买入 `qty>0`、卖出 `qty<0`**，可多条
 - 买入按加权平均摊薄 `cost`，卖出减持仓；`qty` 始终是当前持仓
 - 今日收益按当日 `txns` 现金流计算，**跨日自动失效**（次日无当日变动即回到 `(现价−昨收)×qty`）
+
+### 预警规则
+
+```
+{ id, code, name?, type, value, enabled, createdAt? }
+```
+
+- `id`：`[A-Za-z0-9_-]{1,32}`（**触发账本 `config.json.alerts` 以它为键**，字符集守卫防原型污染键）
+- `type`：8 种——`price_above` / `price_below` / `cost_above` / `cost_below` / `pct_up` / `pct_down` / `limit_near` / `speed_up`
+- `value`：阈值（非负）。比率类（`pct_*` / `limit_near` / `speed_up`）单位是 %；`cost_*` 忽略该字段（阈值=持仓成本价）
+- `limit_near` **仅 A 股/北交所**：港/美/指数无涨跌停概念（`limitUp` 返回 `-1` 哨兵），sanitize 直接拒收
+- 触发判定是「穿越 + 0.5% 滞回」状态机，停在阈值上方只报一次；跨日按**行情时间戳的市场本地日**重新生效；评估在 Host 独立循环，见 [docs/alerts-plan.md](alerts-plan.md)
 
 ### 环境变量
 

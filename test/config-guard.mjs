@@ -105,9 +105,10 @@ export function useTestConfigPath(tag) {
   const p = join(tmpdir(), `dsh-stock-leek-${tag}-${process.pid}.json`);
   process.env.DSH_STOCK_LEEK_CONFIG = p;
 
-  // 清理：临时文件与可能产生的 .bak 一起删
+  // 清理：临时文件与可能产生的 .bak / .corrupt / .alerts 一起删
+  // （.alerts 是预警事件账本，派生自 configPath()+".alerts"，隔离随主文件继承）
   const cleanup = () => {
-    for (const f of [p, p + ".bak", p + ".corrupt"]) {
+    for (const f of [p, p + ".bak", p + ".corrupt", p + ".alerts"]) {
       try {
         if (existsSync(f)) unlinkSync(f);
       } catch {

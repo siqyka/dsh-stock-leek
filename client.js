@@ -2482,7 +2482,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           }, probing ? "测试中…" : "🔌 测试数据源"),
           h("button", {
             className: "sl-btn sl-btn-ghost",
-            onClick: () => { if (confirm("恢复默认配置？自选/持仓将被清空。")) { localStorage.removeItem(LS_CONFIG); updateConfig(() => ({ version: 1, indices: [], barIndices: [], watchlist: [], positions: [], pollMs: 5000, riseColor: "#f5455c", fallColor: "#1eb980", barStyle: "full", barAlign: "left", barPlacement: "floating", barVisible: true, remind: true, pnlCurve: true })); } },
+            onClick: () => { if (confirm("恢复默认配置？自选/持仓/预警将被清空。")) { localStorage.removeItem(LS_CONFIG); updateConfig(() => ({ version: 1, indices: [], barIndices: [], watchlist: [], positions: [], pollMs: 5000, riseColor: "#f5455c", fallColor: "#1eb980", barStyle: "full", barAlign: "left", barPlacement: "floating", barVisible: true, remind: true, alerts: [], pnlCurve: true })); } },
           }, "恢复默认")),
         probe
           ? h("div", { className: "sl-note" },

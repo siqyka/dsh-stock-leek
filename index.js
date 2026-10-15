@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 // 共享纯逻辑（格式化 / 盈亏口径 / 常量）：client.js 因平台不支持相对 require 只能内联一份，
 // test/shared-drift.mjs 会校验两边行为一致，防止改动漂移。
-import { MA_ALL } from "./lib/shared.js";
+import { MA_ALL, isMarketOpen, quoteDayFor, stepAlert, sanitizeAlerts } from "./lib/shared.js";
 
 const name = "dsh-stock-leek";
 /** Required services: webServer（HTTP 路由）。 */
@@ -137,8 +137,10 @@ function defaultConfig() {
     barPlacement: "floating",
     /** 是否显示指数栏 */
     barVisible: true,
-    /** 提醒：突破成本价/盈亏阈值时高亮（预留） */
+    /** 提醒：预警总开关（关闭后规则保留但不评估；预警功能见 docs/alerts-plan.md） */
     remind: true,
+    /** 预警规则（enabled 各自独立；实际评估还受 cfg.remind 总开关控制） */
+    alerts: [],
     /** 持仓页「今日盈亏走势」曲线是否展开（false=收起；用户点按后记住） */
     pnlCurve: true,
     /** K 线图默认显示的均线周期 */
@@ -233,6 +235,8 @@ function sanitizeConfig(raw) {
   if (raw.barPlacement === "dock" || raw.barPlacement === "floating") cfg.barPlacement = raw.barPlacement;
   if (typeof raw.barVisible === "boolean") cfg.barVisible = raw.barVisible;
   if (typeof raw.remind === "boolean") cfg.remind = raw.remind;
+  // 预警规则：白名单清洗（sanitizeAlerts 自带 id 字符集/类型/上限 50/去重）
+  cfg.alerts = sanitizeAlerts(raw.alerts);
   if (typeof raw.pnlCurve === "boolean") cfg.pnlCurve = raw.pnlCurve;
   // 均线周期：只接受 MA_ALL 中出现的值，去重保序，最多 4 条
   if (Array.isArray(raw.ma)) {
@@ -341,6 +345,196 @@ function writeConfig(cfg) {
   const tmp = cfgPath + "." + process.pid + ".tmp";
   writeFileSync(tmp, JSON.stringify(cfg, null, 2), "utf8");
   renameSync(tmp, cfgPath);
+}
+
+// ---------------------------------------------------------------------------
+// 预警：事件账本（config.json.alerts）+ 编排 + 独立评估循环
+//
+// 设计依据见 docs/alerts-plan.md：
+// - 评估必须在 Host——客户端隐藏即断流（client.js visibilitychange），
+//   挂客户端的预警会退化成「盯着看才响」。
+// - 事件与配置分文件：config.json 背后是 .bak/`.rev`/`.corrupt` 一整套
+//   乐观锁与找回机制，高频追加的流水不该每次重写配置、搅动 `__rev`。
+// - 落点派生 configPath()+".alerts"——dirname() 会丢掉 config-guard 的
+//   pid 隔离（tmp 根下跨套件共享同一文件），派生让隔离自动继承。
+// - 账本坏了不值得抢救（是事件流不是持仓）：静默重建空账本，不阻塞评估。
+// ---------------------------------------------------------------------------
+
+const ALERT_EVENTS_MAX = 200; // 环形缓冲上限（与 §6.3 一致）
+const ALERT_BACKOFF_MS = 60000; // 休市/异常/无规则时的低频退避
+/** 预警 SSE 订阅者（模块级：/alert-stream 注册与评估广播共用；与行情 sseClients 互不干涉） */
+const alertClients = new Set();
+
+function alertsPath() {
+  return configPath() + ".alerts";
+}
+
+function broadcastAlert(ev) {
+  const payload = "data: " + JSON.stringify({ type: "alert", event: ev }) + "\n\n";
+  for (const c of [...alertClients]) {
+    try {
+      c.write(payload);
+    } catch {
+      /* 交给 close/error 回调清理 */
+    }
+  }
+}
+
+function readAlerts() {
+  const fresh = { version: 1, events: [], states: {} };
+  let text = null;
+  try {
+    text = readFileSync(alertsPath(), "utf8");
+  } catch {
+    return fresh; // 不存在 = 从未触发过，正常路径
+  }
+  if (!text || !text.trim()) return fresh;
+  try {
+    const j = JSON.parse(text);
+    if (!j || typeof j !== "object") return fresh;
+    return {
+      version: 1,
+      events: Array.isArray(j.events) ? j.events.slice(-ALERT_EVENTS_MAX) : [],
+      states: j.states && typeof j.states === "object" ? j.states : {},
+    };
+  } catch {
+    return fresh; // 账本损坏：重建空账本继续工作，绝不让评估循环因此死亡
+  }
+}
+
+function writeAlerts(data) {
+  const p = alertsPath();
+  try {
+    mkdirSync(dirname(p), { recursive: true });
+    const tmp = p + "." + process.pid + ".tmp";
+    writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
+    renameSync(tmp, p);
+  } catch {
+    /* 写失败只丢事件，不影响下一拍 */
+  }
+}
+
+/** 启用中规则的 code 集合（评估范围；全部停用或总开关关闭时为空 → 循环休眠） */
+function activeAlertCodes(cfg) {
+  if (!cfg || cfg.remind === false) return []; // 总开关：关了就一条都不评估
+  const set = new Set();
+  for (const r of (cfg && cfg.alerts) || []) if (r && r.enabled !== false) set.add(r.code);
+  return [...set];
+}
+
+/**
+ * 单拍评估（纯编排，Host 循环与 __alertTickWith 测试通道共用同一条路径）。
+ * @param {object} cfg 已 sanitize 的配置
+ * @param {Map} quotes code → 行情行
+ * @param {object} data 账本 { events, states }（原地更新）
+ * @param {Date} now 评估时刻——测试注入固定值；绝不读任何全局时钟钩子
+ *   （__sl_now__ 是浏览器全局，Node 里不存在，两条注入路径不混用）
+ * @returns {{ fired: object[], skipped: string[] }}
+ */
+function applyAlertTick(cfg, quotes, data, now) {
+  if (!cfg || cfg.remind === false) return { fired: [], skipped: [] }; // 总开关
+  const rules = ((cfg && cfg.alerts) || []).filter((r) => r && r.enabled !== false);
+  const costBy = new Map();
+  for (const p of (cfg && cfg.positions) || []) {
+    if (Number.isFinite(p.cost) && p.cost > 0) costBy.set(p.code, p.cost);
+  }
+  const fired = [];
+  const skipped = [];
+  for (const rule of rules) {
+    const q = quotes.get(rule.code);
+    if (!q) { skipped.push(rule.id); continue; } // 停牌/未订阅：状态不动
+    const day = quoteDayFor(q);
+    if (!day) { skipped.push(rule.id); continue; } // 无日界：宁可不报，不可乱报（§10.7）
+    const r = stepAlert(rule, q, data.states[rule.id], { day, cost: costBy.get(rule.code) });
+    data.states[rule.id] = r.state; // 滞回状态跨拍保持；跨日重置同样落账
+    if (r.skipped) skipped.push(rule.id); // no-day / no-data（悬空成本、全 -1 哨兵等）
+    if (r.fired) {
+      fired.push({
+        at: now.getTime(),
+        ruleId: rule.id,
+        code: rule.code,
+        name: q.name || rule.name || rule.code,
+        type: rule.type,
+        value: rule.value,
+        price: Number.isFinite(Number(q.price)) ? Number(q.price) : null,
+        percent: Number.isFinite(Number(q.percent)) ? Number(q.percent) : null,
+      });
+    }
+  }
+  if (fired.length) data.events = (data.events || []).concat(fired).slice(-ALERT_EVENTS_MAX);
+  return { fired, skipped };
+}
+
+/** POST /config 后唤醒评估（新规则尽快生效）；循环未启动时为空操作 */
+let alertKick = () => {};
+
+function startAlertLoop(ctx) {
+  let stopped = false;
+  let timer = null;
+  let running = false;
+  const schedule = (ms) => {
+    if (stopped) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => void tick(), ms);
+    timer.unref?.(); // 不阻止进程退出（测试里 apply 之后不能永远挂着）
+  };
+  const tick = async () => {
+    if (stopped || running) return;
+    running = true;
+    try {
+      const cfg = readConfig();
+      const codes = activeAlertCodes(cfg);
+      if (codes.length === 0) {
+        schedule(ALERT_BACKOFF_MS); // 无规则：完全休眠，一次上游都不打
+        return;
+      }
+      const now = new Date();
+      if (!codes.some((c) => isMarketOpen(c, now))) {
+        schedule(ALERT_BACKOFF_MS); // 全市场休市：不打上游，低频看配置变化
+        return;
+      }
+      // 与行情广播同款护栏：对齐上游批量上限，规则膨胀不放大 URL
+      const map = await fetchQuotes(codes.slice(0, 200));
+      const data = readAlerts();
+      const before = JSON.stringify(data.states);
+      const { fired } = applyAlertTick(cfg, map, data, now);
+      const live = new Set(((cfg.alerts) || []).map((r) => r.id));
+      for (const id of Object.keys(data.states)) if (!live.has(id)) delete data.states[id];
+      // 事件与状态变化都要落盘：fired→armed 的滞回重置没有事件，但绝不能丢
+      if (fired.length || before !== JSON.stringify(data.states)) writeAlerts(data);
+      for (const ev of fired) broadcastAlert(ev);
+      const p = Number(cfg.pollMs);
+      schedule(Math.min(15000, Math.max(2000, Number.isFinite(p) ? p : 5000)));
+    } catch {
+      schedule(ALERT_BACKOFF_MS); // 任何异常退避重试；循环绝不静默死亡（SSE finally 的教训）
+    } finally {
+      running = false;
+    }
+  };
+  alertKick = () => {
+    if (!stopped) schedule(200);
+  };
+  void tick();
+  ctx.effect(() => () => {
+    stopped = true;
+    clearTimeout(timer);
+    alertKick = () => {};
+  });
+}
+
+/** 测试通道：注入行情直接跑一拍评估（与生产循环共用 applyAlertTick，可落盘可读文件） */
+export function __alertTickForTest(cfg, quoteRows, opts = {}) {
+  const data = readAlerts();
+  const map = new Map((quoteRows || []).map((r) => [r.code, r]));
+  const now = opts.now instanceof Date ? opts.now : new Date();
+  const out = applyAlertTick(sanitizeConfig(cfg), map, data, now);
+  if (opts.write !== false) writeAlerts(data);
+  return { ...out, data };
+}
+
+/** 测试断言 alerts 落点走隔离路径（派生自 configPath，自动继承守卫的 pid 隔离） */
+export function getAlertsPathForTest() {
+  return alertsPath();
 }
 
 // ---------------------------------------------------------------------------
@@ -889,6 +1083,7 @@ function apply(ctx) {
         const cfg = sanitizeConfig(incoming);
         cfg[CFG_REV] = curRev + 1; // 乐观递增（不做 CAS：单机单人场景下足够）
         writeConfig(cfg);
+        alertKick(); // 新规则/改规则尽快生效（循环在休眠时低频，这里踢它一拍）
         // 配置成功落盘 → 清除此前的损坏告警
         const wasCorrupt = configCorrupted;
         configCorrupted = false;
@@ -1074,6 +1269,61 @@ function apply(ctx) {
     const ms = readConfig().pollMs || 5000;
     sseTimer = setTimeout(sseTick, Math.min(120000, Math.max(2000, ms)));
   };
+
+  // 预警触发历史（只读账本；客户端每次连 /alert-stream 后先 GET 这里补齐，
+  // 标签页被冻结杀掉 EventSource 时靠它对账，不假设流不断）
+  register(PREFIX + "/alerts", async (_req, res) => {
+    try {
+      const data = readAlerts();
+      sendJson(res, 200, { ok: true, events: data.events, states: data.states, at: Date.now() });
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: String((e && e.message) || e), events: [] });
+    }
+  });
+
+  /**
+   * 预警 SSE 推送：/alert-stream
+   *
+   * 这是对「隐藏即断流」策略的有意破例（docs/alerts-plan.md §7.1）：这条流
+   * 只在触发时才有数据（一天几条），不产生任何上游请求，与断流策略原本要对齐的
+   * 「连接数」目标不冲突；行情流照旧隐藏即断。订阅集合独立于 sseClients，
+   * 不参与 sseTick 的 size===0 开关——预警评估循环在 Host，与谁在看无关。
+   */
+  register(PREFIX + "/alert-stream", (req, res) => {
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    res.write("retry: 3000\n\n");
+    alertClients.add(res);
+
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(": ping\n\n");
+      } catch {
+        cleanup();
+      }
+    }, 25000);
+
+    function cleanup() {
+      clearInterval(heartbeat);
+      alertClients.delete(res);
+      try {
+        res.end();
+      } catch {
+        /* ignore */
+      }
+    }
+    req.on("close", cleanup);
+    req.on("error", cleanup);
+    const guard = setTimeout(cleanup, 6 * 60 * 60 * 1000);
+    guard.unref?.();
+  });
+
+  // 预警独立评估循环：无启用规则 / 休市 → 休眠；与 sseClients 订阅无关。
+  startAlertLoop(ctx);
 
   register(PREFIX + "/minute", async (req, res) => {
     const q = queryOf(req);

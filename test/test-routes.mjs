@@ -12,7 +12,7 @@ import { useTestConfigPath, verifyConfigPathIsolation } from "./config-guard.mjs
 
 useTestConfigPath("routes");
 
-const { apply } = await import("../index.js");
+const { apply, __alertTickForTest, getAlertsPathForTest, getConfigPathForTest } = await import("../index.js");
 // 实锤校验：确认生效路径确实是隔离路径（防将来有人改回静态 import）
 await verifyConfigPathIsolation();
 
@@ -230,6 +230,84 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
   check("SSE 首帧含 retry 指令", buf.includes("retry:"), JSON.stringify(buf.slice(0, 40)));
   check("SSE 推送了行情行", !!dataFrame, dataFrame ? (dataFrame.rows[0].code + " " + dataFrame.rows[0].price) : "未收到");
   check("SSE 行结构含涨跌字段", !!dataFrame && dataFrame.rows[0].percent !== undefined, dataFrame && Object.keys(dataFrame.rows[0]).join(","));
+}
+
+// 6.5 预警：清洗 + 状态机 + 落盘隔离 + 总开关（docs/alerts-plan.md §3/§4/§6）
+{
+  const DAY = "20261015";
+  const q = (price, extra) => Object.assign({ code: "sh600519", name: "贵州茅台", price, percent: 1, time: DAY + "100000" }, extra || {});
+  const cfgFor = (alerts, remind) => ({ watchlist: [], positions: [], alerts, remind: remind === undefined ? true : remind });
+  let seq = 0; // 每段独立 ruleId：.alerts 跨用例持久，避免滞回状态互相污染
+
+  // POST 含合法+脏规则：合法保留、脏拒绝（id 字符集 / 类型 / 港美股 limit_near）
+  const badPost = await post("/dsh-stock-leek/config", {
+    config: {
+      watchlist: [{ code: "sh600519", name: "茅台" }],
+      alerts: [
+        { id: "good1", code: "sh600519", type: "price_above", value: 1500, enabled: true },
+        { id: "bad id", code: "sh600519", type: "price_above", value: 1 }, // id 非法字符
+        { id: "good2", code: "hk00700", type: "limit_near", value: 2 }, // 港股无涨跌停
+        { id: "good3", code: "sh600519", type: "no_such_type", value: 1 }, // 未知类型
+        { id: "good4", code: "sh600519", type: "pct_up", value: -5 }, // 负值
+      ],
+    },
+  });
+  const kept = badPost.json.config?.alerts || [];
+  check("alerts 清洗只留合法规则", kept.length === 1 && kept[0].id === "good1", kept);
+
+  // 状态机：上穿触发一次，停阈值上方不重复，回落过滞回带重置（写进隔离 .alerts）
+  const mId = "m" + seq;
+  const base = cfgFor([{ id: mId, code: "sh600519", type: "price_above", value: 10, enabled: true }]);
+  let t = __alertTickForTest(base, [q(11)], {});
+  check("上穿触发 fired", t.fired.length === 1 && t.fired[0].ruleId === mId && t.fired[0].price === 11, t.fired);
+
+  t = __alertTickForTest(base, [q(12)], {});
+  check("停阈值上方不重复报（滞回）", t.fired.length === 0, t.fired);
+
+  // 滞回带=10×(1−0.5%)=9.95：9.96 落在带内**不**重置（先钉住这个语义），
+  // 9.94 越带才回 armed——若实现把带宽写错（如 1%），第一条会先变红
+  t = __alertTickForTest(base, [q(9.96)], {});
+  check("回落未越滞回带：保持 fired", t.fired.length === 0 && t.data.states[mId].phase === "fired", t.data.states[mId]);
+
+  t = __alertTickForTest(base, [q(9.94)], {}); // 9.94 ≤ 9.95 → 回 armed
+  check("回落越滞回带宽重新 armed", t.fired.length === 0 && t.data.states[mId].phase === "armed", t.data.states[mId]);
+
+  t = __alertTickForTest(base, [q(11)], {}); // 重新触发
+  check("重置后可再次触发", t.fired.length === 1, t.fired);
+
+  // 跨日重置：先在 D15 建立 fired 态，再到 D16 用同一规则——
+  // 只有「昨日 fired + 今日仍在上穿」同时成立才说明跨日真的重置了（非空洞）
+  const dId = "d" + seq;
+  const dayCfg = cfgFor([{ id: dId, code: "sh600519", type: "price_above", value: 10, enabled: true }]);
+  __alertTickForTest(dayCfg, [{ code: "sh600519", price: 11, percent: 1, time: "20261015100000" }], {});
+  const dd = __alertTickForTest(dayCfg, [{ code: "sh600519", price: 11, percent: 1, time: "20261016100000" }], {});
+  check("跨日强制重置并重新触发", dd.fired.some((e) => e.ruleId === dId), dd.fired);
+
+  // 总开关：remind=false → 一律不评估（即使上穿）
+  const off = __alertTickForTest(cfgFor([{ id: "o" + seq, code: "sh600519", type: "price_above", value: 10, enabled: true }], false), [q(11)], {});
+  check("总开关 remind=false 不触发", off.fired.length === 0, off.fired);
+
+  // 悬空成本：cost_above 找不到持仓成本 → 跳过不误触
+  const orphan = __alertTickForTest(cfgFor([{ id: "c1", code: "sh600519", type: "cost_above", value: 0, enabled: true }]), [q(50)], {});
+  check("cost_above 无成本价跳过", orphan.fired.length === 0 && orphan.skipped.includes("c1"), { fired: orphan.fired, skipped: orphan.skipped });
+  const withCost = __alertTickForTest(
+    { watchlist: [], positions: [{ code: "sh600519", cost: 9, qty: 100 }], alerts: [{ id: "c2", code: "sh600519", type: "cost_above", value: 0, enabled: true }], remind: true },
+    [q(11)], {});
+  check("cost_above 成本有效时触发", withCost.fired.some((e) => e.ruleId === "c2"), withCost.fired);
+
+  // 无行情日界（time 脏）：跳过触发，宁可不报不乱报
+  const noDay = __alertTickForTest(cfgFor([{ id: "n1", code: "sh600519", type: "price_above", value: 10, enabled: true }]), [{ code: "sh600519", price: 11, percent: 1, time: "" }], {});
+  check("无行情日界跳过触发", noDay.fired.length === 0 && noDay.skipped.includes("n1"), noDay);
+
+  // 落盘隔离：账本落在隔离临时路径派生的 .alerts，且 events 已持久化
+  const alertsPath = getAlertsPathForTest();
+  const cfgPath = getConfigPathForTest();
+  check("alerts 路径派生自 configPath（继承 pid 隔离）", alertsPath === cfgPath + ".alerts" && !alertsPath.endsWith("alerts.json"), { alertsPath, cfgPath });
+
+  // /alerts GET 回读：结构与已写入事件一致
+  const hist = await get("/dsh-stock-leek/alerts");
+  check("/alerts 返回 events 数组", hist.status === 200 && Array.isArray(hist.json.events), hist.json && hist.json.events);
+  check("/alerts 记录了已触发事件", hist.json.events.some((e) => e.type === "price_above"), hist.json.events && hist.json.events.slice(-1));
 }
 
 // 7. probe
