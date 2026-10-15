@@ -116,6 +116,17 @@ window.__ModuleLoader__.load({
 .sl-alert-ev:hover{background:var(--sl-hover)}
 .sl-alert-ev-t{color:var(--sl-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .sl-alert-ev-p{color:var(--sl-text);font-variant-numeric:tabular-nums;white-space:nowrap}
+/* 预警弹窗：触发时无条件弹出，需手动确认（区别于 2.6s 自散的 toast） */
+.sl-alert-pop{background:var(--sl-bg);border:1px solid var(--sl-warn);border-left:3px solid var(--sl-warn);border-radius:10px;padding:10px 12px;box-shadow:var(--sl-shadow);cursor:pointer;display:flex;flex-direction:column;gap:4px}
+.sl-alert-pop:hover{background:var(--sl-bg2)}
+.sl-alert-pop-head{display:flex;align-items:center;gap:8px}
+.sl-alert-pop-title{flex:1;min-width:0;font-weight:700;color:var(--sl-warn);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sl-alert-pop-cond{color:var(--sl-dim);font-size:11px}
+.sl-alert-pop-row{display:flex;align-items:center;gap:8px;font-variant-numeric:tabular-nums}
+.sl-alert-pop-time{margin-left:auto;color:var(--sl-muted);font-size:10px}
+/* 倒计时进度条：10s 内从满到空（时长由内联 animationDuration 给出） */
+.sl-alert-pop-bar{height:2px;border-radius:2px;background:var(--sl-warn);transform-origin:left center;animation:slAlertBar linear forwards;margin-top:2px}
+@keyframes slAlertBar{from{transform:scaleX(1)}to{transform:scaleX(0)}}
 /* ---------------- 悬浮窗 ---------------- */
 .sl-panel{position:fixed;z-index:9990;width:430px;max-height:76vh;display:flex;flex-direction:column;border-radius:12px;overflow:visible;background:var(--sl-bg);border:1px solid var(--sl-border);box-shadow:var(--sl-shadow);backdrop-filter:blur(10px)}
 .sl-head{display:flex;align-items:center;gap:6px;padding:7px 10px;border-bottom:1px solid var(--sl-border-soft);cursor:grab;user-select:none;-webkit-user-select:none;flex:none}
@@ -616,6 +627,8 @@ window.__ModuleLoader__.load({
       alertSeenAt: 0, // 角标已读时间戳（localStorage 恢复；unread = events 中 at > 它的条数）
       alertPanel: false, // 设置页里的预警二级页是否打开（预警不占 tab，从设置进入）
       alertLive: false, // 预警推送通道是否已连上（隐藏时也保持连接）
+      alertPopups: [], // 待确认的预警弹窗队列 [{id, name, code, type, value, price, percent, at, shownAt}]
+      visibleTick: 0, // 可见性变化计数：让预警弹窗的 10s 计时在恢复可见后重跑
       notifyPerm: "default", // 桌面通知权限：granted | denied | default | unsupported
       addAlert: null, // 右键「设为预警」弹出的规则对话框 {code, name, preset}
     };
@@ -995,29 +1008,69 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         }
       });
     }
-    /** 收到一条预警事件：按可见性走降级链 */
+    /**
+     * 收到一条预警事件。
+     *
+     * 关键行为：**无论页面可见与否，都在应用内弹一个必须手动确认的预警弹窗**
+     * （用户明确要求）。原因：DSH 是 Electron webview，隐藏/最小化时
+     * document.title 根本看不见，系统通知又未必可用——只靠那两条等于收不到。
+     * 应用内弹窗挂在 shell.overlay 上，窗口恢复时一定在，且不会被忽略。
+     *
+     * 系统通知作为**叠加增强**（可见时也发）：能弹就多一条通道，不互斥。
+     */
     async function notifyAlert(ev) {
       const name = (ev && ev.name) || displayCode(ev && ev.code);
       const cond = alertRuleText(ev); // 成本类不带「成本价」后缀（类型标签已含），与列表口径一致
       const body = name + " " + cond + "，现价 " + fmtPrice(ev.price);
       const hidden = typeof document !== "undefined" && document.hidden;
-      const granted = notifyPermission() === "granted";
-      if (hidden && granted) {
-        const mine = await claimEvent(String(ev.ruleId || "") + ":" + String(ev.at || ""));
-        if (!mine) return; // 另一个标签页已弹过
+
+      // ① 应用内弹窗：唯一的**保证通道**，可见与否都弹
+      pushAlertPopup(ev);
+
+      // ② toast 轻提示：仅可见时补一条（隐藏时没必要，弹窗已更醒目）
+      if (!hidden) toast("🔔 " + body, "#e6a23c");
+
+      // ③ 系统通知：能力具备就发（用户点过「开启桌面通知」）；隐藏时去重防三连弹
+      if (notifyPermission() === "granted") {
+        if (hidden) {
+          const mine = await claimEvent(String(ev.ruleId || "") + ":" + String(ev.at || ""));
+          if (!mine) return; // 另一个标签页已弹过
+        }
         try {
           const n = new Notification("🔔 预警 · " + name, { body, tag: "sl-" + (ev.ruleId || "") + "-" + (ev.at || "") });
           n.onclick = () => { try { window.focus(); } catch { /* ignore */ } markAlertsSeen(); openAlertPanel(); };
         } catch {
-          flashTitle(body); // 构造失败（权限被收回等）→ 继续降级
+          flashTitle(body); // 构造失败（权限被收回等）→ 退回标题提示，弹窗仍在
         }
-        return;
+      } else if (hidden) {
+        flashTitle(body); // 无通知能力时的额外兜底（弹窗已在，这条只是锦上添花）
       }
-      if (hidden) {
-        flashTitle(body); // 隐藏且无通知权限：标题闪烁兜底
-        return;
-      }
-      toast("🔔 " + body, "#e6a23c"); // 可见：toast + 角标（角标由 store 驱动）
+    }
+    /** 预警弹窗入队（最多保留 5 条，避免长时间离开后回来被刷屏） */
+    function pushAlertPopup(ev) {
+      const hidden = typeof document !== "undefined" && document.hidden;
+      const item = {
+        id: String(ev.ruleId || "") + ":" + String(ev.at || Date.now()),
+        name: (ev && ev.name) || displayCode(ev && ev.code),
+        code: ev && ev.code,
+        type: ev && ev.type,
+        value: ev && ev.value,
+        price: ev && ev.price,
+        percent: ev && ev.percent,
+        at: (ev && ev.at) || Date.now(),
+        // 可见计时的起点；0 = 尚未开始（页面当时不可见，等恢复可见再起算）。
+        // 隐藏期间不推进，否则弹窗会在用户看不见时过期——那等于没弹。
+        shownAt: hidden ? 0 : Date.now(),
+      };
+      const list = (state.alertPopups || []).filter((x) => x.id !== item.id);
+      list.push(item);
+      setState({ alertPopups: list.slice(-5) });
+    }
+    function dismissAlertPopup(id) {
+      setState({ alertPopups: (state.alertPopups || []).filter((x) => x.id !== id) });
+    }
+    function dismissAllAlertPopups() {
+      if ((state.alertPopups || []).length) setState({ alertPopups: [] });
     }
     // 测试钩子：暴露真实内部路径供 e2e 驱动通知降级/通道语义。
     // 用 globalThis 而非 export（浏览器工厂没有模块出口），与 __sl_test_state__ 同惯例。
@@ -1092,6 +1145,15 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         if (sseTried && sseSupported()) openStream(); // 可见时恢复行情通道
         refreshAlerts(); // 回到页面先对账（冻结期间可能漏了事件）
         if (!alertEs && sseSupported()) openAlertStream();
+        // 恢复可见：给隐藏期间弹出的预警补上计时起点（它们此前 shownAt=0，未开始倒计时），
+        // 并 bump visibleTick 让 AlertPopup 的计时 effect 重跑
+        const pops = state.alertPopups || [];
+        if (pops.some((p) => !p.shownAt)) {
+          const now = Date.now();
+          setState({ alertPopups: pops.map((p) => (p.shownAt ? p : Object.assign({}, p, { shownAt: now }))) });
+        } else {
+          setState({ visibleTick: (state.visibleTick || 0) + 1 });
+        }
       }
     });
 
@@ -3006,6 +3068,79 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       );
     }
 
+    /**
+     * 预警弹窗：触发时**无条件弹出**（页面可见或隐藏都弹），必须手动确认。
+     *
+     * 为什么不复用 toast：toast 是 pointer-events:none 的单行提示、2.6 秒自散，
+     * 极易被忽略；而预警是"错过了就失去意义"的事件。这里的弹窗：
+     *   - 挂在 shell.overlay 顶层（fixed + 高 z-index），窗口恢复时一定可见
+     *   - **10 秒后自动消失**，也可点击 ✕ / Escape / 点主体立即关掉
+     *   - 多条触发时堆叠展示（队列上限 5，避免离开一天回来被刷屏）
+     *   - 点击弹窗主体 → 进预警二级页看历史并标记已读
+     *
+     * ⚠️ 倒计时**只在页面可见时走**：隐藏时暂停。否则弹窗会在你看不见的时候
+     * 悄悄过期——那正好违背「隐藏也要能收到预警」这条要求。重新可见后给满 10 秒。
+     */
+    const ALERT_POPUP_MS = 10000;
+    function AlertPopup() {
+      const s = useStore();
+      const list = s.alertPopups || [];
+      // 已到期的自动关闭：只在可见时推进（隐藏时把剩余时间冻结）
+      useEffect(() => {
+        if (!list.length) return undefined;
+        if (typeof document !== "undefined" && document.hidden) return undefined;
+        const started = Date.now();
+        // 每条各自计自己的剩余时间：新弹的不会因为旧的在倒计时而被提前清掉
+        const timers = list.map((ev) => {
+          const age = Date.now() - (Number(ev.shownAt) || started);
+          const left = Math.max(0, ALERT_POPUP_MS - age);
+          return setTimeout(() => dismissAlertPopup(ev.id), left);
+        });
+        return () => { for (const t of timers) clearTimeout(t); };
+      }, [list.map((x) => x.id).join(","), s.visibleTick]);
+      useEffect(() => {
+        if (!list.length) return undefined;
+        // Escape 关闭最上面一条（与其它弹层习惯一致）
+        const onKey = (e) => { if (e.key === "Escape") dismissAlertPopup(list[list.length - 1].id); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }, [list.length]);
+      if (!list.length) return null;
+      return h("div", {
+        className: "sl-root sl-theme-" + s.theme + (s.theme === "light" ? " sl-light" : ""),
+        style: { position: "fixed", right: 16, top: 16, zIndex: 10005, display: "flex", flexDirection: "column", gap: 8, pointerEvents: "auto", maxWidth: 340 },
+      },
+        list.map((ev) => h("div", {
+          key: ev.id,
+          className: "sl-alert-pop",
+          role: "alert",
+          "data-sltip": "点击查看预警历史（会标记为已读）；10 秒后自动消失，也可点 ✕ 立即关闭",
+          onClick: () => { markAlertsSeen(); openAlertPanel(); },
+        },
+          h("div", { className: "sl-alert-pop-head" },
+            h("span", { className: "sl-alert-pop-title" }, "🔔 预警 · " + ev.name),
+            h("button", {
+              className: "sl-x",
+              "data-sltip": "立即关闭（不必等 10 秒）",
+              onClick: (e) => { e.stopPropagation(); dismissAlertPopup(ev.id); },
+            }, "✕")),
+          h("div", { className: "sl-alert-pop-cond" }, alertRuleText(ev)),
+          h("div", { className: "sl-alert-pop-row" },
+            h("span", null, fmtPrice(ev.price)),
+            Number.isFinite(Number(ev.percent))
+              ? h("span", { className: Number(ev.percent) > 0 ? "sl-up" : Number(ev.percent) < 0 ? "sl-down" : "sl-flat" }, fmtPct(ev.percent))
+              : null,
+            h("span", { className: "sl-alert-pop-time" },
+              new Date(Number(ev.at) || Date.now()).toLocaleTimeString("zh-CN", { hour12: false }))),
+          // 倒计时进度条：让"还剩多久"可见，避免用户以为它会一直留着
+          h("div", { className: "sl-alert-pop-bar", style: { animationDuration: ALERT_POPUP_MS + "ms" } }),
+        )),
+        list.length > 1
+          ? h("button", { className: "sl-btn sl-btn-ghost", onClick: () => dismissAllAlertPopups() }, "全部关闭（" + list.length + "）")
+          : null,
+      );
+    }
+
     // ================================================================ 视图：个股详情
     function DetailView(props) {
       const s = useStore();
@@ -3242,6 +3377,8 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         h(ContextMenu, { menu: s.menu }),
         h(EditPosDialog),
         h(AddAlertDialog),
+        // 预警弹窗挂在 overlay 顶层：与悬浮窗开关无关，窗口恢复时一定可见
+        h(AlertPopup),
       );
     }
 

@@ -1935,18 +1935,98 @@ if (txnMi) {
     check("点击后确实申请了权限", calls.some((c) => c.asked), calls);
   }
 
-  // 3) 三级降级之一：**可见**时触发 → toast（不弹系统通知）
+  // 3) 应用内弹窗：**可见与隐藏都必须弹**（用户明确要求；webview 里
+  //    隐藏时标题看不见、系统通知未必可用，只靠那两条等于收不到）
   {
+    const popupOf = (node) => findNode(node, (n) => String((n.props && n.props.className) || "").indexOf("sl-alert-pop") >= 0);
     const c2 = stubNotification("granted");
     setHidden(false);
-    __alertTickForTest(
-      { remind: true, positions: [], alerts: [{ id: "n1", code: "sh600519", type: "price_above", value: 1, enabled: true }] },
-      [{ code: "sh600519", name: "贵州茅台", price: 1700, percent: 2, time: "20261015100000" }], {});
-    // 直接把事件喂给通道回调（等价于 SSE 收到一帧）
-    const before = c2.length;
-    await globalThis.__sl_notify_test__({ ruleId: "n1", at: Date.now(), code: "sh600519", name: "贵州茅台", type: "price_above", value: 1, price: 1700 });
-    check("可见时走 toast 而非系统通知", c2.length === before, { notif: c2.length, before });
-    check("可见时 toast 已显示预警文案", /🔔/.test(String((globalThis.__sl_test_state__.toast || {}).text || "")), globalThis.__sl_test_state__.toast);
+
+    // 3a) 可见时触发
+    await globalThis.__sl_notify_test__({ ruleId: "p1", at: Date.now(), code: "sh600519", name: "贵州茅台", type: "price_above", value: 1, price: 1700, percent: 2 });
+    ovNode = ov.render({}); renderTree(ovNode);
+    const popVisible = popupOf(ovNode);
+    check("【可见】触发时弹出应用内预警弹窗", !!popVisible, textOf(ovNode).join(" ").slice(-160));
+    check("弹窗含股票名与条件", !!popVisible && /贵州茅台/.test(textOf(popVisible).join(" ")) && /现价上穿/.test(textOf(popVisible).join(" ")), textOf(popVisible || {}).join(" ").slice(0, 120));
+    check("可见时也补一条 toast", /🔔/.test(String((globalThis.__sl_test_state__.toast || {}).text || "")), globalThis.__sl_test_state__.toast);
+    check("可见时同样发系统通知（不互斥）", c2.length >= 1, c2.length);
+
+    // 3b) 隐藏时触发（同一条弹窗通道，不能被降级链吞掉）
+    setHidden(true);
+    await globalThis.__sl_notify_test__({ ruleId: "p2", at: Date.now() + 5, code: "sz300750", name: "宁德时代", type: "price_below", value: 300, price: 278.5, percent: -0.58 });
+    setHidden(false);
+    ovNode = ov.render({}); renderTree(ovNode);
+    const popHidden = popupOf(ovNode);
+    check("【隐藏】触发时同样弹出应用内弹窗", !!popHidden, textOf(ovNode).join(" ").slice(-200));
+    const popText = textOf(ovNode).join(" ");
+    check("隐藏时的事件也在弹窗里（宁德时代）", /宁德时代/.test(popText), popText.slice(-200));
+
+    // 3c) 弹窗必须手动关闭，不会自己消失
+    const popNow = popupOf(ovNode);
+    check("弹窗有关闭按钮", !!findNode(popNow, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "✕"));
+    const beforeState = (globalThis.__sl_test_state__.alertPopups || []).length;
+    check("弹窗进入 state 队列（待确认）", beforeState >= 2, beforeState);
+
+    // 3d) 多条时出现「全部关闭」
+    const closeAll = findNode(ovNode, (n) => n.type === "button" && /全部关闭/.test(String((n.children && n.children[0]) || "")));
+    check("多条弹窗时有「全部关闭」", !!closeAll, popText.slice(-160));
+    if (closeAll) {
+      click(closeAll);
+      ovNode = ov.render({}); renderTree(ovNode);
+      check("全部关闭后弹窗清空", (globalThis.__sl_test_state__.alertPopups || []).length === 0, globalThis.__sl_test_state__.alertPopups);
+      check("关闭后界面无弹窗节点", !popupOf(ovNode));
+    }
+  }
+
+  // 3x) 10 秒自动消失 + 隐藏时暂停计时
+  {
+    const st = () => globalThis.__sl_test_state__;
+    const popIds = () => (st().alertPopups || []).map((p) => p.id);
+
+    // 清场
+    st().alertPopups = [];
+
+    // 3x-1) 可见时弹出：立即有 shownAt（计时已开始）
+    setHidden(false);
+    await globalThis.__sl_notify_test__({ ruleId: "d1", at: Date.now(), code: "sh600519", name: "贵州茅台", type: "price_above", value: 1, price: 1700 });
+    const p1 = (st().alertPopups || [])[0];
+    check("可见弹出时计时起点已就绪（shownAt>0）", !!p1 && Number(p1.shownAt) > 0, p1);
+
+    // 3x-2) 隐藏时弹出：shownAt=0（不计时），恢复可见后补上起点。
+    // 这是「隐藏也要能收到」的关键——否则弹窗会在看不见的时候过期。
+    st().alertPopups = [];
+    setHidden(true);
+    await globalThis.__sl_notify_test__({ ruleId: "d2", at: Date.now() + 9, code: "sz300750", name: "宁德时代", type: "price_below", value: 300, price: 278.5 });
+    const p2 = (st().alertPopups || [])[0];
+    check("隐藏弹出时不计时（shownAt=0，冻结）", !!p2 && Number(p2.shownAt) === 0, p2);
+    await wait(1200);
+    check("隐藏期间弹窗不会自动消失（等到用户回来）", popIds().length === 1, popIds());
+    // 恢复可见 → 起点补上
+    setHidden(false);
+    global.__docDispatch("visibilitychange");
+    await wait(30);
+    const p2b = (st().alertPopups || [])[0];
+    check("恢复可见后补上计时起点（开始 10s 倒计时）", !!p2b && Number(p2b.shownAt) > 0, p2b);
+
+    // 3x-3) 自动消失：把 shownAt 回拨到 10s 前，触发计时 effect 后应被清掉
+    st().alertPopups = (st().alertPopups || []).map((p) => Object.assign({}, p, { shownAt: Date.now() - 11000 }));
+    st().visibleTick = (st().visibleTick || 0) + 1;
+    ovNode = ov.render({}); renderTree(ovNode);
+    await wait(60);
+    check("超过 10 秒的弹窗被自动清掉", (st().alertPopups || []).length === 0, st().alertPopups);
+
+    // 3x-4) 未超时的不会被误清（对照，防"倒计时一跑就全清"）
+    st().alertPopups = [];
+    setHidden(false);
+    await globalThis.__sl_notify_test__({ ruleId: "d3", at: Date.now() + 20, code: "sh600519", name: "贵州茅台", type: "price_above", value: 1, price: 1700 });
+    st().visibleTick = (st().visibleTick || 0) + 1;
+    ovNode = ov.render({}); renderTree(ovNode);
+    await wait(80);
+    check("刚弹出的 10 秒内保留（对照）", (st().alertPopups || []).length === 1, st().alertPopups);
+    // 进度条：可见的倒计时视觉
+    const bar = findNode(ovNode, (n) => String((n.props && n.props.className) || "").indexOf("sl-alert-pop-bar") >= 0);
+    check("弹窗带倒计时进度条", !!bar, textOf(ovNode).join(" ").slice(-120));
+    st().alertPopups = [];
   }
 
   // 4) 三级降级之二：**隐藏 + 已授权** → 系统通知
