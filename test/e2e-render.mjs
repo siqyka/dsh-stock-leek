@@ -14,7 +14,7 @@ import { useTestConfigPath } from "./config-guard.mjs";
 
 useTestConfigPath("e2e");
 
-const { apply: hostApply } = await import("../index.js");
+const { apply: hostApply, __alertTickForTest } = await import("../index.js");
 
 // ---------- 起 host 路由 ----------
 const routes = new Map();
@@ -1591,6 +1591,214 @@ if (txnMi) {
   global.__winDispatch("mouseover", ev(tipEl("提示内容F")));
   global.__winDispatch("mouseout", ev(tipEl("提示内容F")));
   check("移出元素收起提示", tipText() === "", tipText());
+}
+
+// ---------- 预警 UI：tab / 铃铛角标 / 右键设为预警 / 规则 CRUD / 老 Host 吃字段 ----------
+{
+  // 本段直连 Host 的辅助（用 REAL_FETCH 绕开 mock，读写真实路由）
+  const hostJson = async (path) => {
+    const r = await REAL_FETCH(ORIGIN + path, { cache: "no-store" });
+    return r.json();
+  };
+  const hostPost = async (path, body) => {
+    const r = await REAL_FETCH(ORIGIN + path, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    return r.json();
+  };
+  // 复位到已知状态：清掉可能残留的规则与已读时间
+  const cfgNow = () => globalThis.__sl_test_state__.config;
+  await hostPost("/dsh-stock-leek/config", { config: Object.assign({}, cfgNow(), { alerts: [], remind: true }) });
+  globalThis.__sl_test_state__ = null;
+  try { globalThis.localStorage.removeItem("sl.alert.seen.v1"); } catch { /* ignore */ }
+  ovNode = ov.render({});
+  renderTree(ovNode);
+
+  // 1) 预警 tab 存在且可进入（第五个 tab）
+  const alertTab = findNode(ovNode, (n) => n.type === "button" && /^预警/.test(String((n.children && n.children[0]) || "")));
+  check("标题栏有「预警」tab", !!alertTab);
+  ovText = clickTab("预警");
+  check("预警页可渲染", /预警总开关/.test(ovText), ovText.slice(0, 120));
+  check("空规则时有引导文案", /还没有预警规则/.test(ovText), ovText.slice(0, 160));
+
+  // 2) 表单新增规则：走真实输入 onchange（harness 模式）
+  const codeInput = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "代码/选择");
+  const valInput = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "阈值");
+  check("预警页有代码/阈值输入框", !!codeInput && !!valInput);
+  codeInput.props.onChange({ target: { value: "sh600519" } });
+  ovNode = ov.render({}); renderTree(ovNode);
+  const valInput2 = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "阈值");
+  valInput2.props.onChange({ target: { value: "1500" } });
+  ovNode = ov.render({}); renderTree(ovNode);
+  const addBtn = findNode(ovNode, (n) => n.type === "button" && /添加/.test(String((n.children && n.children[0]) || "")));
+  check("预警页有添加按钮", !!addBtn);
+  click(addBtn);
+  ovNode = ov.render({}); renderTree(ovNode);
+  ovText = textOf(ovNode).join(" ");
+  check("新增规则后出现在列表", /现价上穿/.test(ovText) && /1500/.test(ovText), ovText.slice(0, 200));
+  const ruleCount = () => (cfgNow().alerts || []).length;
+  check("规则已写入配置（Host 可见）", ruleCount() === 1, ruleCount());
+
+  // 3) 非法阈值被挡在 UI（不写配置）
+  const valInput3 = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "阈值");
+  valInput3.props.onChange({ target: { value: "0" } });
+  ovNode = ov.render({}); renderTree(ovNode);
+  const codeInput3 = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "代码/选择");
+  codeInput3.props.onChange({ target: { value: "sh600519" } });
+  ovNode = ov.render({}); renderTree(ovNode);
+  click(findNode(ovNode, (n) => n.type === "button" && /添加/.test(String((n.children && n.children[0]) || ""))));
+  ovNode = ov.render({}); renderTree(ovNode);
+  check("阈值 0 被拒（规则数不变）", ruleCount() === 1, ruleCount());
+
+  // 4) 启停：点击 ● 后 enabled=false（Host 评估范围随之缩小）
+  const toggleBtn = findNode(ovNode, (n) => n.type === "button" && /●|○/.test(String((n.children && n.children[0]) || "")));
+  check("规则行有启停按钮", !!toggleBtn);
+  click(toggleBtn);
+  ovNode = ov.render({}); renderTree(ovNode);
+  check("停用后 enabled=false", cfgNow().alerts[0].enabled === false, cfgNow().alerts[0]);
+  click(findNode(ovNode, (n) => n.type === "button" && /●|○/.test(String((n.children && n.children[0]) || ""))));
+  ovNode = ov.render({}); renderTree(ovNode);
+  check("再次点击恢复启用", cfgNow().alerts[0].enabled !== false, cfgNow().alerts[0]);
+
+  // 5) 铃铛常驻：**收起态下也必须在**（回来时栏通常是收着的，那正是最想知道错过什么的时刻）
+  {
+    const floatReg2 = findReg("shell.overlay", "dsh-stock-leek.floating-bar");
+    const prevNow = globalThis.__sl_now__;
+    // 钉一个「收盘后」时刻：此时按 §8a 的规则，指数胶囊与收益胶囊都应消失
+    globalThis.__sl_now__ = Date.parse("2026-10-15T00:00:00Z") + (20 * 60 - 480) * 60000; // 北京 20:00
+    const bn = floatReg2.render({});
+    renderTree(bn);
+    const barTxt = textOf(bn).join(" ");
+    const bell = findNode(bn, (n) => String((n.props && n.props.className) || "").indexOf("sl-bell") >= 0);
+    check("收起态仍渲染铃铛", !!bell, barTxt.slice(0, 120));
+    check("收起态确实没有指数胶囊（前提成立）", barTxt.indexOf("上证") < 0, barTxt.slice(0, 120));
+    check("收起态仍留设置按钮", barTxt.indexOf("⚙") >= 0, barTxt.slice(0, 120));
+    globalThis.__sl_now__ = prevNow;
+
+    // 未读角标：**真写一条账本事件**（Host 测试通道），再走客户端真实路径刷新。
+    // 不直接改 store 快照——那不是生产路径，断言会空转。
+    const c1 = cfgNow();
+    await hostPost("/dsh-stock-leek/config", {
+      config: Object.assign({}, c1, { remind: true, alerts: [{ id: "bell1", code: "sh600519", type: "price_above", value: 1, enabled: true }] }),
+    });
+    // 阈值 1 远低于现价 → 上穿成立，写一条 triggered 事件进账本
+    __alertTickForTest({ remind: true, positions: [], alerts: [{ id: "bell1", code: "sh600519", type: "price_above", value: 1, enabled: true }] },
+      [{ code: "sh600519", name: "贵州茅台", price: 1700, percent: 2, time: "20261015100000" }], {});
+    try { global.localStorage.removeItem("sl.alert.seen.v1"); } catch { /* ignore */ }
+    // 走真实交互：点铃铛 → 触发 markAlertsSeen + refreshAlerts（真实 HTTP 拉账本）
+    const bnA = floatReg2.render({});
+    renderTree(bnA);
+    const bellBtn = findNode(bnA, (n) => String((n.props && n.props.className) || "").indexOf("sl-bell") >= 0);
+    check("铃铛可点击", !!(bellBtn && typeof bellBtn.props.onClick === "function"));
+    // 先只做「拉取账本」这一半：refreshAlerts 由 initStore/点击触发，这里直接 HTTP 验证账本已有事件
+    const ledger = await hostJson("/dsh-stock-leek/alerts");
+    check("Host 账本已写入触发事件（角标的数据源）", Array.isArray(ledger.events) && ledger.events.length > 0, ledger.events && ledger.events.length);
+    void bellBtn;
+  }
+
+  // 6) 右键「设为预警」→ 弹层预填现价
+  ovNode = ov.render({});
+  renderTree(ovNode);
+  ovText = clickTab("自选");
+  const watchRow = findNode(ovNode, (n) => typeof n.props.onCtx === "function");
+  check("自选行有右键菜单钩子", !!watchRow);
+  if (watchRow) {
+    watchRow.props.onCtx({ clientX: 120, clientY: 140, preventDefault() {}, stopPropagation() {} });
+    ovNode = ov.render({}); renderTree(ovNode);
+    const item = findNode(ovNode, (n) => n.type === "button" && /设为预警/.test(textOf(n).join("")));
+    check("右键菜单含「设为预警」", !!item, textOf(ovNode).join(" ").slice(0, 200));
+    if (item) {
+      click(item);
+      ovNode = ov.render({}); renderTree(ovNode);
+      const dlgText = textOf(ovNode).join(" ");
+      check("弹出预警对话框（含股票名）", /设为预警/.test(dlgText), dlgText.slice(0, 160));
+      const dlgVal = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "阈值" && Number(n.props.value) > 0);
+      check("对话框预填现价（>0）", !!dlgVal, dlgVal && dlgVal.props.value);
+      const okBtn = findNode(ovNode, (n) => n.type === "button" && /添加规则/.test(String((n.children && n.children[0]) || "")));
+      check("对话框有添加按钮", !!okBtn);
+      click(okBtn);
+      ovNode = ov.render({}); renderTree(ovNode);
+      check("对话框添加后规则 +1", ruleCount() === 2, ruleCount());
+    }
+  }
+
+  // 7) 触发历史渲染（直接读 Host 账本 → 有事件就应出现时间行）
+  ovNode = ov.render({}); renderTree(ovNode);
+  ovText = clickTab("预警");
+  const hist = await hostJson("/dsh-stock-leek/alerts");
+  if (Array.isArray(hist.events) && hist.events.length > 0) {
+    ovNode = ov.render({}); renderTree(ovNode);
+    check("账本有事件时历史区渲染时间戳", /\d{2}:\d{2}:\d{2}/.test(textOf(ovNode).join(" ")), textOf(ovNode).join(" ").slice(0, 200));
+  } else {
+    check("账本为空时显示空态文案", /暂无触发记录/.test(ovText), ovText.slice(0, 200));
+  }
+
+  // 8) 删除规则
+  ovNode = ov.render({}); renderTree(ovNode);
+  const delBtn = findNode(ovNode, (n) => n.type === "button" && String((n.props && n.props.className) || "") === "sl-x");
+  check("规则行有删除按钮", !!delBtn);
+  if (delBtn) {
+    click(delBtn);
+    ovNode = ov.render({}); renderTree(ovNode);
+    check("删除后规则数 -1", ruleCount() === 1, ruleCount());
+  }
+
+  // 9) 老 Host 吃掉 alerts 字段 → 本地回填保护（与 ma 同一个坑）
+  //
+  // 注意：initStore 有 `inited` 守卫（一页只跑一次），所以**不能**靠反复 render 来重放
+  // 初始加载的合并分支——那样断言是空转的。这里走 persistConfig 的回包合并：
+  // 每次 POST /config 成功都会执行同一套「老 Host 吃字段 → 保留本地值」逻辑。
+  {
+    const localCfg = Object.assign({}, cfgNow(), { alerts: [{ id: "keep1", code: "sh600519", type: "pct_up", value: 3, enabled: true }] });
+    const prevFetch = global.fetch;
+    // 让 POST /config 的回包**丢掉 alerts**（模拟不认识该字段的老 Host）
+    const stubPost = (dropAlerts) => async (url, opts) => {
+      if (String(url).indexOf("/dsh-stock-leek/config") >= 0 && opts && opts.method === "POST") {
+        const sent = JSON.parse(opts.body || "{}").config || {};
+        const back = Object.assign({}, sent);
+        if (dropAlerts) delete back.alerts;
+        return { ok: true, json: async () => ({ ok: true, config: back, rev: 1, path: "(test)" }) };
+      }
+      return prevFetch(url, opts);
+    };
+    // 触发一次保存：改 pollMs（无害字段）以走 persistConfig 的合并分支
+    global.fetch = stubPost(true);
+    global.window.fetch = global.fetch;
+    const ov2 = findReg("shell.overlay", "dsh-stock-leek");
+    const n2 = ov2.render({});
+    renderTree(n2);
+    // 直接调 store 的 updateConfig 路径：渲染设置页并点一个 seg 按钮代价高，
+    // 这里用已暴露的真实入口——改配置后 persistConfig 会在防抖后 POST。
+    await hostPost("/dsh-stock-leek/config", { config: localCfg }); // 先把规则落到 Host
+    // 用 UI 真实交互触发保存（设置页刷新间隔按钮）
+    ovNode = ov.render({}); renderTree(ovNode);
+    ovText = clickTab("设置");
+    const segBtn = findNode(ovNode, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "10s");
+    check("设置页有刷新间隔按钮（用于触发一次保存）", !!segBtn);
+    if (segBtn) {
+      click(segBtn);
+      ovNode = ov.render({}); renderTree(ovNode);
+      await wait(600); // 等过保存防抖
+      check("老 Host 吃字段时本地规则仍在（回填保护）", (cfgNow().alerts || []).length >= 1, cfgNow().alerts);
+    }
+    // 反向对照：回包**带**空 alerts → 以回包为准（不误保留），证明上面测的是回填而非"本地一直都在"
+    global.fetch = stubPost(false);
+    global.window.fetch = global.fetch;
+    if (segBtn) {
+      const segBtn2 = findNode(ov.render({}), (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "30s");
+      if (segBtn2) {
+        click(segBtn2);
+        await wait(600);
+        check("新 Host 回空数组时以回包为准（不误保留）", (cfgNow().alerts || []).length === 0, cfgNow().alerts);
+      }
+    }
+    global.fetch = prevFetch;
+    global.window.fetch = prevFetch;
+  }
+
+  // 复位，避免污染后续用例
+  await hostPost("/dsh-stock-leek/config", { config: Object.assign({}, cfgNow(), { alerts: [] }) });
+  ovNode = ov.render({}); renderTree(ovNode);
 }
 
 server.close();

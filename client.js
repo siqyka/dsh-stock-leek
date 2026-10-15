@@ -94,6 +94,33 @@ window.__ModuleLoader__.load({
 .sl-bar-btn:hover{color:var(--sl-text);border-color:var(--sl-border-soft);background:var(--sl-hover)}
 .sl-bar-dot{width:6px;height:6px;border-radius:50%;display:inline-block;background:var(--sl-muted)}
 .sl-bar-dot.sl-open{background:var(--sl-up);box-shadow:0 0 6px var(--sl-up)}
+/* 预警铃铛：常驻（含收起态），未读时高亮 + 角标 */
+.sl-bell{position:relative;flex:none;cursor:pointer;font-size:12px;line-height:1.5;padding:0 2px;color:var(--sl-muted);user-select:none;-webkit-user-select:none}
+.sl-bell:hover{color:var(--sl-text)}
+.sl-bell-on{color:var(--sl-warn)}
+.sl-bell-badge{position:absolute;top:-3px;left:9px;min-width:13px;height:13px;padding:0 3px;border-radius:999px;background:var(--sl-up);color:#fff;font-size:9px;line-height:13px;text-align:center;font-variant-numeric:tabular-nums}
+/* ---------------- 预警页 ---------------- */
+.sl-alert{display:flex;flex-direction:column;gap:6px}
+.sl-alert-add{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.sl-alert-add .sl-input{padding:3px 6px;font-size:11px}
+.sl-alert-type{max-width:96px}
+.sl-alert-val{max-width:74px}
+.sl-alert-unit{color:var(--sl-muted);font-size:10px}
+.sl-alert-list{display:flex;flex-direction:column;gap:2px;margin-top:2px}
+.sl-alert-row{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:8px;font-size:11px}
+.sl-alert-row:hover{background:var(--sl-hover)}
+.sl-alert-off{opacity:.5}
+.sl-alert-toggle{background:transparent;border:none;color:var(--sl-muted);cursor:pointer;font-size:11px;padding:0 2px;font-family:inherit}
+.sl-alert-toggle.on{color:var(--sl-accent)}
+.sl-alert-nm{color:var(--sl-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:96px}
+.sl-alert-cond{color:var(--sl-dim);white-space:nowrap;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.sl-alert-fired{color:var(--sl-warn);font-size:10px;white-space:nowrap}
+.sl-alert-histhead{margin-top:6px;display:block}
+.sl-alert-hist{display:flex;flex-direction:column;gap:1px;max-height:180px;overflow-y:auto}
+.sl-alert-ev{display:flex;align-items:center;gap:6px;padding:2px 6px;border-radius:6px;font-size:11px}
+.sl-alert-ev:hover{background:var(--sl-hover)}
+.sl-alert-ev-t{color:var(--sl-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sl-alert-ev-p{color:var(--sl-text);font-variant-numeric:tabular-nums;white-space:nowrap}
 /* ---------------- 悬浮窗 ---------------- */
 .sl-panel{position:fixed;z-index:9990;width:430px;max-height:76vh;display:flex;flex-direction:column;border-radius:12px;overflow:visible;background:var(--sl-bg);border:1px solid var(--sl-border);box-shadow:var(--sl-shadow);backdrop-filter:blur(10px)}
 .sl-head{display:flex;align-items:center;gap:6px;padding:7px 10px;border-bottom:1px solid var(--sl-border-soft);cursor:grab;user-select:none;-webkit-user-select:none;flex:none}
@@ -283,6 +310,7 @@ window.__ModuleLoader__.load({
     const LS_SIZE = "sl.overlay.size.v1";
     const LS_PLACEMENT = "sl.bar.placement.v1"; // dock | floating（纯 UI 偏好，存本地，不依赖 host）
     const LS_BAR_POS = "sl.bar.pos.v1"; // 悬浮指数栏手动位置 {x,y}（视口左上角坐标）；空=自动锚定
+    const LS_ALERT_SEEN = "sl.alert.seen.v1"; // 预警角标「已读」时间戳（设备级，不进 config——否则看一眼就要写配置搅 __rev）
 
     /**
      * 旧版本用 `lf.` 前缀存这些本地偏好（lf = 早期插件名首字母）。
@@ -581,6 +609,10 @@ window.__ModuleLoader__.load({
       barPos: null, // 悬浮栏手动位置 {x,y}；null=自动锚定（初始化时从 localStorage 读）
       barForce: null, // 指数栏展开的手动覆盖：null=按时段自动，true=强制展开，false=强制收起
       barForceDay: "", // 手动覆盖所属的行情日期；跨交易日自动失效（别让昨天的选择粘住今天）
+      alertEvents: [], // GET /alerts 的触发历史（Host 账本快照；重连/重开页面靠它补齐）
+      alertStates: {}, // ruleId → {phase, day}，展示每条规则的滞回/待命状态
+      alertSeenAt: 0, // 角标已读时间戳（localStorage 恢复；unread = events 中 at > 它的条数）
+      addAlert: null, // 右键「设为预警」弹出的规则对话框 {code, name, preset}
     };
     function setState(patch) {
       state = Object.assign({}, state, patch);
@@ -732,6 +764,8 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             // 兼容旧版 host：不认识的可选字段（如 ma）会被丢弃，回填时保留本地值，避免 UI 弹回默认
             const merged = Object.assign({}, r.config);
             if (!Array.isArray(merged.ma) && Array.isArray(cfg.ma)) merged.ma = cfg.ma;
+            // 同上：老 Host 吃掉 alerts 时保留本地规则，别让用户刚建的规则在回包后消失
+            if (!Array.isArray(merged.alerts) && Array.isArray(cfg.alerts)) merged.alerts = cfg.alerts;
             state = Object.assign({}, state, { config: merged });
             // 保存成功即视为配置已恢复，撤下损坏告警
             if (state.configWarning) state.configWarning = null;
@@ -944,13 +978,21 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         const raw = localStorage.getItem(LS_CONFIG);
         if (raw) cfg = JSON.parse(raw);
       } catch { /* ignore */ }
+      // 预警角标「已读时间」：设备级偏好，跨会话恢复（不进 config，避免搅 __rev）
+      try {
+        const seen = Number(localStorage.getItem(LS_ALERT_SEEN));
+        if (Number.isFinite(seen) && seen > 0) setState({ alertSeenAt: seen });
+      } catch { /* ignore */ }
       if (cfg && Array.isArray(cfg.indices)) setState({ config: cfg });
       try {
         const r = await api("/config");
         if (r && r.config) {
-          // 兼容旧版 host：其不认识的可选字段（如 ma）会被丢弃，优先保留本地已有值
+          // 兼容旧版 host：其不认识的可选字段（如 ma/alerts）会被丢弃，优先保留本地已有值
           const merged = Object.assign({}, r.config);
           if (!Array.isArray(merged.ma) && cfg && Array.isArray(cfg.ma)) merged.ma = cfg.ma;
+          // 老 Host 的白名单重建会吃掉 alerts（与当年 ma 被吃同一个坑）：
+          // 本地有规则而回包没有 → 保留本地，避免 UI 上规则凭空消失
+          if (!Array.isArray(merged.alerts) && cfg && Array.isArray(cfg.alerts)) merged.alerts = cfg.alerts;
           setState({ config: merged });
           try { localStorage.setItem(LS_CONFIG, JSON.stringify(merged)); } catch { /* ignore */ }
         }
@@ -965,6 +1007,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         }
       } catch { /* host 不可达：用本地缓存 */ }
       startPolling();
+      refreshAlerts(); // 首屏补一次触发历史/角标（不等 alert-stream 连上）
     }
 
     // 配置操作 helpers
@@ -1177,6 +1220,105 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         cfg.positions = cfg.positions.filter((x) => x.code !== code);
         return cfg;
       });
+    }
+
+    // ================================================================ 预警（规则 CRUD + 触发历史）
+    /**
+     * 规则 id：字符集必须满足 shared 的 sanitizeAlert（[A-Za-z0-9_-]{1,32}）——
+     * 它是 .alerts 账本 states 的键，也是「多标签页认领」的标识。
+     */
+    function newAlertId() {
+      return "a" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    }
+    /** 规则类型的展示文案（与 Host 的 8 种一一对应） */
+    const ALERT_TYPE_LABEL = {
+      price_above: "现价上穿", price_below: "现价下穿",
+      cost_above: "突破成本", cost_below: "跌破成本",
+      pct_up: "涨幅达到", pct_down: "跌幅达到",
+      limit_near: "接近涨跌停", speed_up: "涨速达到",
+    };
+    /** 比率类（单位 %）与价格类的区分：决定输入框单位与提示文案 */
+    const ALERT_PCT_TYPES = ["pct_up", "pct_down", "limit_near", "speed_up"];
+    function alertUnit(type) {
+      return ALERT_PCT_TYPES.includes(type) ? "%" : "元";
+    }
+    function alertValueText(rule) {
+      if (!rule) return "";
+      if (rule.type === "cost_above" || rule.type === "cost_below") return "成本价";
+      const n = Number(rule.value);
+      return (Number.isFinite(n) ? (Math.round(n * 10000) / 10000) : "--") + alertUnit(rule.type);
+    }
+    function alertRuleText(rule) {
+      if (!rule) return "";
+      return (ALERT_TYPE_LABEL[rule.type] || rule.type) + " " + alertValueText(rule);
+    }
+    /**
+     * 拉取 Host 账本（触发历史 + 各规则状态）。
+     * 页面重开、标签页解冻、alert-stream 重连后都要调它补齐——不假设流不断（§7.1 修订）。
+     * 同时把 localStorage 里的「已读时间」恢复进 state（跨会话保持角标语义）。
+     */
+    async function refreshAlerts() {
+      try {
+        const r = await api("/alerts");
+        if (r && r.ok) {
+          setState({ alertEvents: Array.isArray(r.events) ? r.events : [], alertStates: r.states || {} });
+        }
+      } catch { /* Host 不可达：保留既有角标数据，不清零 */ }
+    }
+    /** 未读数：账本里比「已读时间」新的事件条数 */
+    function alertUnread(s) {
+      const seen = Number(s && s.alertSeenAt) || 0;
+      return (s && s.alertEvents ? s.alertEvents : []).filter((e) => Number(e && e.at) > seen).length;
+    }
+    /** 标记已读（打开预警 tab / 点铃铛时调用）；只写 localStorage，不碰 config */
+    function markAlertsSeen() {
+      const now = Date.now();
+      try { localStorage.setItem(LS_ALERT_SEEN, String(now)); } catch { /* ignore */ }
+      setState({ alertSeenAt: now });
+    }
+    /** 新增规则：本地先按 shared 同款清洗过一遍，非法直接挡在 UI（Host 侧还有一道） */
+    function addAlert(item) {
+      const rule = sanitizeAlert(Object.assign({ id: newAlertId(), enabled: true, createdAt: Date.now() }, item));
+      if (!rule) {
+        toast("预警规则不合法：检查类型 / 阈值 / 代码（limit_near 仅 A 股）", "#ff5555");
+        return null;
+      }
+      let added = null;
+      updateConfig((cfg) => {
+        const list = Array.isArray(cfg.alerts) ? cfg.alerts.slice() : [];
+        if (list.length >= 50) {
+          toast("预警规则已达上限（50 条）", "#ff5555");
+          return null;
+        }
+        list.push(rule);
+        cfg.alerts = list;
+        added = rule;
+        return cfg;
+      });
+      if (added) toast("已添加预警：" + alertRuleText(added));
+      return added;
+    }
+    function removeAlert(id) {
+      updateConfig((cfg) => {
+        cfg.alerts = (cfg.alerts || []).filter((r) => r.id !== id);
+        return cfg;
+      });
+      toast("已删除该预警规则");
+    }
+    /** 启用/停用单条：Host 的评估范围只看 enabled !== false 的规则 */
+    function toggleAlert(id) {
+      updateConfig((cfg) => {
+        const r = (cfg.alerts || []).find((x) => x.id === id);
+        if (r) r.enabled = r.enabled === false;
+        return cfg;
+      });
+    }
+    /** 右键「设为预警」→ 预填该股的对话框（现价/成本价作初值，用户可改） */
+    function openAddAlert(code, name, preset) {
+      setState({ addAlert: { code, name: name || displayCode(code), preset: preset || null } });
+    }
+    function closeAddAlert() {
+      setState({ addAlert: null });
     }
     /** 行情交易日 YYYY-MM-DD（A股 time=20261013161452 / 港美=2026-10-13 16:08:32）；浏览器今日兜底 */
     function quoteDate(q) {
@@ -2127,6 +2269,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                   onDelete: () => { removeWatch(w.code); toast("已删除自选 " + (w.name || w.code)); },
                   onCtx: (e) => openMenu(e, [
                     { label: "📌 置顶", onClick: () => pinTop("watchlist", w.code) },
+                    { label: "🔔 设为预警", onClick: () => openAddAlert(w.code, (q && q.name) || w.name, { type: "price_above", value: q && q.price }) },
                     { sep: true },
                     { label: "🗑 删除自选", danger: true, onClick: () => { removeWatch(w.code); toast("已删除自选 " + (w.name || w.code)); } },
                   ], ((q && q.name) || w.name || displayCode(w.code)) + "（" + displayCode(w.code) + "）"),
@@ -2340,6 +2483,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                     { label: "📌 置顶", onClick: () => pinTop("positions", p.code) },
                     { label: "✎ 编辑成本 / 股数", onClick: () => openEditPos(p) },
                     { label: txnCount ? "⇅ 变动记录（" + txnCount + " 笔）" : "⇅ 添加买卖变动", onClick: () => { setOpenCode(expanded ? null : p.code); resetForm(); } },
+                    { label: "🔔 设为预警", onClick: () => openAddAlert(p.code, (q && q.name) || p.name, p.cost > 0 ? { type: "cost_below", value: p.cost } : { type: "price_above", value: q && q.price }) },
                     { sep: true },
                     { label: "🗑 删除持仓", danger: true, onClick: () => { removePosition(p.code); toast("已删除持仓 " + (p.name || p.code)); } },
                   ], ((q && q.name) || p.name || displayCode(p.code)) + "（" + displayCode(p.code) + "）"),
@@ -2489,6 +2633,189 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               probe.checks.map((c, i) => h("div", { key: i }, (c.ok ? "✓ " : "✗ ") + c.label + "（" + c.ms + "ms）： " + c.detail)),
               probe.configPath ? "配置文件：" + probe.configPath : "")
           : null,
+      );
+    }
+
+    // ================================================================ 视图：预警
+    function AlertView() {
+      const s = useStore();
+      const cfg = s.config;
+      const [form, setForm] = useState({ code: "", type: "price_above", value: "" });
+      if (!cfg) return h("div", { className: "sl-empty" }, "加载中…");
+      const rules = Array.isArray(cfg.alerts) ? cfg.alerts : [];
+      const events = (s.alertEvents || []).slice().sort((a, b) => Number(b.at) - Number(a.at));
+      const on = cfg.remind !== false; // 总开关
+      // 可选代码：自选 + 持仓 + 指数候选（去重，保持用户熟悉的名字）
+      const pool = [];
+      const seen = new Set();
+      for (const list of [cfg.positions, cfg.watchlist, cfg.indices]) {
+        for (const x of list || []) {
+          if (!x || seen.has(x.code)) continue;
+          seen.add(x.code);
+          pool.push({ code: x.code, name: x.name || displayCode(x.code) });
+        }
+      }
+      const submit = () => {
+        const code = String(form.code || "").trim();
+        if (!code) { toast("请先选择或填写股票代码", "#ff5555"); return; }
+        const isCost = form.type === "cost_above" || form.type === "cost_below";
+        const raw = isCost ? 0 : Number(form.value);
+        if (!isCost && (!Number.isFinite(raw) || raw <= 0)) { toast("阈值需为正数", "#ff5555"); return; }
+        const hit = pool.find((p) => p.code === code);
+        const ok = addAlert({ code, name: hit ? hit.name : displayCode(code), type: form.type, value: raw });
+        if (ok) setForm({ code: "", type: form.type, value: "" });
+      };
+      return h(
+        "div",
+        { className: "sl-alert" },
+        // 总开关：关掉后规则保留但不评估（Host 侧同样以它为门）
+        h("div", { className: "sl-setrow" },
+          h("span", { className: "sl-setlabel" }, "预警总开关"),
+          h("span", { className: "sl-seg" },
+            h("button", {
+              className: on ? "on" : "",
+              "data-sltip": on ? "评估中：Host 独立循环按刷新间隔检查全部启用规则" : "已关闭：规则保留但不评估，零上游请求",
+              onClick: () => updateConfig((c) => { c.remind = !on; return c; }),
+            }, on ? "已开启" : "已关闭"))),
+        // 新增规则：代码 + 类型 + 阈值
+        h("div", { className: "sl-alert-add" },
+          h("input", {
+            className: "sl-input", placeholder: "代码/选择", value: form.code, list: "sl-alert-codes",
+            onChange: (e) => setForm(Object.assign({}, form, { code: e.target.value })),
+          }),
+          h("datalist", { id: "sl-alert-codes" }, pool.slice(0, 60).map((p) => h("option", { key: p.code, value: p.code }, p.name))),
+          h("select", {
+            className: "sl-input sl-alert-type", value: form.type,
+            onChange: (e) => setForm(Object.assign({}, form, { type: e.target.value })),
+          }, Object.keys(ALERT_TYPE_LABEL).map((t) =>
+            h("option", { key: t, value: t, disabled: t === "limit_near" && !/^(sh|sz|bj)/i.test(form.code) }, ALERT_TYPE_LABEL[t]))),
+          form.type === "cost_above" || form.type === "cost_below"
+            ? h("span", { className: "sl-alert-unit", "data-sltip": "成本类规则不需要阈值：以该股持仓成本价为判据" }, "成本价")
+            : h("input", {
+                className: "sl-input sl-alert-val", placeholder: "阈值", value: form.value,
+                onChange: (e) => setForm(Object.assign({}, form, { value: e.target.value })),
+              }),
+          form.type === "cost_above" || form.type === "cost_below" ? null
+            : h("span", { className: "sl-alert-unit" }, alertUnit(form.type)),
+          h("button", { className: "sl-btn", onClick: submit }, "＋ 添加")),
+        pool.length === 0
+          ? h("div", { className: "sl-note" }, "提示：先在自选/持仓里添加股票，或在上面直接填写代码。")
+          : null,
+        // 规则列表
+        rules.length === 0
+          ? h("div", { className: "sl-empty" }, "还没有预警规则。可在自选/持仓行右键「设为预警」，或在上方添加。")
+          : h("div", { className: "sl-alert-list" },
+              rules.map((r) => {
+                const st = (s.alertStates || {})[r.id];
+                const off = r.enabled === false;
+                return h("div", { key: r.id, className: "sl-alert-row" + (off ? " sl-alert-off" : "") },
+                  h("button", {
+                    className: "sl-alert-toggle" + (off ? "" : " on"),
+                    "data-sltip": off ? "已停用：不参与评估。点击启用" : "已启用：点击停用",
+                    onClick: () => toggleAlert(r.id),
+                  }, off ? "○" : "●"),
+                  h("span", { className: "sl-alert-nm", "data-sltip": (r.name || displayCode(r.code)) + "（" + displayCode(r.code) + "）" }, r.name || displayCode(r.code)),
+                  h("span", { className: "sl-alert-cond" }, alertRuleText(r)),
+                  st && st.phase === "fired"
+                    ? h("span", { className: "sl-alert-fired", "data-sltip": "今日已触发过；回落到滞回带外才会重新待命" }, "已触发")
+                    : null,
+                  h("button", { className: "sl-x", "data-sltip": "删除该规则", onClick: () => removeAlert(r.id) }, "✕"));
+              })),
+        // 触发历史（Host 账本；页面重开/流重连后仍能看到错过的事件）
+        h("div", { className: "sl-setlabel sl-alert-histhead" }, "触发历史"),
+        events.length === 0
+          ? h("div", { className: "sl-empty" }, "暂无触发记录。预警由 Host 独立评估，关掉页面也会照常记录。")
+          : h("div", { className: "sl-alert-hist" },
+              events.slice(0, 50).map((e, i) => {
+                const t = Number(e.at) || 0;
+                const hhmm = t ? new Date(t).toLocaleTimeString("zh-CN", { hour12: false }) : "—";
+                return h("div", { key: (e.ruleId || "") + t + i, className: "sl-alert-ev" },
+                  h("span", { className: "sl-alert-ev-t" }, hhmm),
+                  h("span", { className: "sl-alert-nm" }, e.name || displayCode(e.code)),
+                  h("span", { className: "sl-alert-cond" },
+                    (ALERT_TYPE_LABEL[e.type] || e.type) + " " + (e.type === "cost_above" || e.type === "cost_below" ? "成本价" : alertValueText(e))),
+                  h("span", { className: "sl-alert-ev-p" }, fmtPrice(e.price)));
+              })),
+      );
+    }
+
+    /**
+     * 右键「设为预警」的规则对话框：预填该股现价/成本价，选类型 + 阈值即可。
+     * 结构与定位对齐 EditPosDialog（同样用内联样式 + usePanelRect 贴合悬浮窗），
+     * 不引入新的弹层类名——项目里弹层本来就没走 CSS 类。
+     */
+    function AddAlertDialog() {
+      const s = useStore();
+      const d = s.addAlert;
+      const [type, setType] = useState("price_above");
+      const [value, setValue] = useState("");
+      const panelRect = usePanelRect(!!d);
+      const boxRef = useRef(null);
+      // 每次换股票/重新打开时按预填值初始化（成本类不需要阈值）
+      useEffect(() => {
+        if (!d) return;
+        const pre = d.preset || {};
+        setType(pre.type || "price_above");
+        setValue(Number.isFinite(pre.value) && pre.value > 0 ? String(Math.round(pre.value * 10000) / 10000) : "");
+      }, [d && d.code, d && d.preset && d.preset.type]);
+      useEffect(() => {
+        if (!d) return undefined;
+        const onKey = (e) => { if (e.key === "Escape") setState({ addAlert: null }); };
+        const onDown = (e) => {
+          if (boxRef.current && !boxRef.current.contains(e.target)) setState({ addAlert: null });
+        };
+        window.addEventListener("keydown", onKey);
+        document.addEventListener("mousedown", onDown);
+        return () => {
+          window.removeEventListener("keydown", onKey);
+          document.removeEventListener("mousedown", onDown);
+        };
+      }, [d]);
+      if (!d) return null;
+      const isCost = type === "cost_above" || type === "cost_below";
+      const isLimit = type === "limit_near";
+      const limitOk = /^(sh|sz|bj)/i.test(d.code);
+      const submit = () => {
+        const raw = isCost ? 0 : Number(value);
+        if (!isCost && (!Number.isFinite(raw) || raw <= 0)) { toast("阈值需为正数", "#ff5555"); return; }
+        const ok = addAlert({ code: d.code, name: d.name, type, value: raw });
+        if (ok) setState({ addAlert: null });
+      };
+      const boxW = 300;
+      const cx = panelRect ? panelRect.left + panelRect.width / 2 : window.innerWidth / 2;
+      const cy = panelRect ? panelRect.top + panelRect.height / 2 : window.innerHeight / 2;
+      const style = { position: "fixed", left: cx, top: cy, transform: "translate(-50%,-50%)", zIndex: 10002, pointerEvents: "auto" };
+      const row = (label, node) => h("label", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } },
+        h("span", { className: "sl-setlabel" }, label), node);
+      return h(
+        "div",
+        { className: "sl-root sl-theme-" + s.theme + (s.theme === "light" ? " sl-light" : ""), style },
+        h(
+          "div",
+          { ref: boxRef, style: { width: boxW, background: "var(--sl-bg)", border: "1px solid var(--sl-accent-border)", borderRadius: 10, padding: 12, boxShadow: "var(--sl-shadow)", display: "flex", flexDirection: "column", gap: 8 } },
+          h("div", { style: { fontWeight: 700, color: "var(--sl-accent)" } }, "🔔 设为预警：" + (d.name || displayCode(d.code)) + "（" + displayCode(d.code) + "）"),
+          row("条件", h("select", {
+            className: "sl-input", style: { width: 170 }, value: type,
+            onChange: (e) => setType(e.target.value),
+          }, Object.keys(ALERT_TYPE_LABEL).map((t) =>
+            h("option", { key: t, value: t, disabled: t === "limit_near" && !limitOk }, ALERT_TYPE_LABEL[t])))),
+          isLimit && !limitOk
+            ? h("div", { className: "sl-note" }, "港/美股没有涨跌停，该类型仅对 A 股可用。")
+            : null,
+          isCost
+            ? h("div", { className: "sl-note" }, "以该股持仓成本价为判据（成本缺失时自动跳过，不会误报）。")
+            : row("阈值", h("span", { style: { display: "flex", alignItems: "center", gap: 6 } },
+                h("input", {
+                  className: "sl-input", style: { width: 110 }, type: "number", step: "0.01", min: "0",
+                  value, autoFocus: true, placeholder: "阈值",
+                  onChange: (e) => setValue(e.target.value),
+                  onKeyDown: (e) => { if (e.key === "Enter") submit(); },
+                }),
+                h("span", { style: { color: "var(--sl-muted)" } }, alertUnit(type)))),
+          h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 2 } },
+            h("button", { className: "sl-btn sl-btn-ghost", onClick: () => setState({ addAlert: null }) }, "取消"),
+            h("button", { className: "sl-btn", onClick: submit }, "添加规则")),
+        ),
       );
     }
 
@@ -2675,6 +3002,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       // 标题随今日盈亏变脸（彩蛋）；无持仓/休市无变动时保持默认名
       const earn = s.config ? computeEarnings(s.config, s.quotes) : null;
       const mood = moodTitle(earn);
+      const unread = alertUnread(s); // 预警未读数（tab 与指数栏铃铛共用同一口径）
       const moodTip = earn && earn.has
         ? "今日盈亏 " + fmtMoneyExact(earn.today) + " 元\n标题会随今日战况变脸：赚钱加鸡腿 · 亏钱关灯吃面"
         : "添加持仓并填写成本/股数后，标题会随今日战况变脸 🍗🍜";
@@ -2699,8 +3027,12 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             },
             h("span", { className: "sl-title", "data-sltip": moodTip }, mood),
             h("span", { className: "sl-tabs" },
-              [["market", "大盘"], ["watch", "自选"], ["position", "持仓"], ["settings", "设置"]].map(([t, label]) =>
-                h("button", { key: t, className: "sl-tab" + (s.tab === t && !s.detail ? " sl-tab-on" : ""), onClick: () => setState({ tab: t, detail: null }) }, label))),
+              [["market", "大盘"], ["watch", "自选"], ["position", "持仓"], ["alert", "预警"], ["settings", "设置"]].map(([t, label]) =>
+                h("button", {
+                  key: t,
+                  className: "sl-tab" + (s.tab === t && !s.detail ? " sl-tab-on" : ""),
+                  onClick: () => { setState({ tab: t, detail: null }); if (t === "alert") markAlertsSeen(); },
+                }, label + (t === "alert" && unread > 0 ? " " + unread : "")))),
             h(FreshBadge, { updatedAt: s.updatedAt, pollMs: s.config && s.config.pollMs }),
             h("button", { className: "sl-icon", "data-sltip": "立即刷新", onClick: () => refreshQuotes() }, "⟳"),
             themeBtn,
@@ -2709,7 +3041,11 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           h("div", { className: "sl-body" },
             s.detail
               ? h(DetailView, { detail: s.detail })
-              : s.tab === "market" ? h(MarketView) : s.tab === "watch" ? h(WatchView) : s.tab === "position" ? h(PositionView) : h(SettingsView)),
+              : s.tab === "market" ? h(MarketView)
+                : s.tab === "watch" ? h(WatchView)
+                  : s.tab === "position" ? h(PositionView)
+                    : s.tab === "alert" ? h(AlertView)
+                      : h(SettingsView)),
           h("div", { className: "sl-foot" },
             h("span", null, s.error ? "⚠ " + s.error : "腾讯行情"),
             h("span", null, s.updatedAt ? "更新 " + new Date(s.updatedAt).toLocaleTimeString("zh-CN", { hour12: false }) : "—")),
@@ -2718,6 +3054,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         s.sug ? h(SearchSuggest, { sug: s.sug, theme: s.theme }) : null,
         h(ContextMenu, { menu: s.menu }),
         h(EditPosDialog),
+        h(AddAlertDialog),
       );
     }
 
@@ -2752,8 +3089,25 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         expanded && earn.has
           ? h(EarnChip, { cfg, quotes: s.quotes, theme: s.theme })
           : null,
+        // 预警铃铛：**收起状态下也常驻**——你回来时栏通常是收着的，
+        // 而那恰恰是最想知道「错过了什么」的时刻（docs/alerts-plan.md §8）。
+        h(AlertBell, { unread: alertUnread(s), theme: s.theme }),
         h("button", Object.assign({ className: "sl-bar-btn", "data-sltip": "设置", onClick: () => openOverlay("settings") }, gearProps || {}), "⚙"),
       );
+    }
+    /** 指数栏预警铃铛 + 未读角标（点击进预警页并标记已读） */
+    function AlertBell(props) {
+      const n = Number(props.unread) || 0;
+      const rules = (state.config && state.config.alerts) || [];
+      return h("span", {
+        className: "sl-bell" + (n > 0 ? " sl-bell-on" : ""),
+        "data-sltip": n > 0
+          ? "预警：" + n + " 条未读\n点击查看（Host 独立评估，关掉页面也会记录）"
+          : rules.length ? "预警：暂无未读（" + rules.length + " 条规则在评估）" : "预警：还没有规则，右键自选/持仓行可快速添加",
+        onClick: () => { markAlertsSeen(); openOverlay("alert"); refreshAlerts(); },
+      },
+        "🔔",
+        n > 0 ? h("span", { className: "sl-bell-badge" }, n > 99 ? "99+" : n) : null);
     }
     /**
      * 收益胶囊：hover 弹出浮层展示 市值 / 累计收益(+%) / 今日，以及每只持仓的收益与盈亏%。
