@@ -468,6 +468,9 @@ function applyAlertTick(cfg, quotes, data, now) {
 /** POST /config 后唤醒评估（新规则尽快生效）；循环未启动时为空操作 */
 let alertKick = () => {};
 
+/** 评估循环的观测计数：供验收「无规则 → 零上游请求」断言（真实计数，非测试替身） */
+const alertStats = { ticks: 0, fetches: 0, sleeps: 0 };
+
 function startAlertLoop(ctx) {
   let stopped = false;
   let timer = null;
@@ -481,19 +484,23 @@ function startAlertLoop(ctx) {
   const tick = async () => {
     if (stopped || running) return;
     running = true;
+    alertStats.ticks++;
     try {
       const cfg = readConfig();
       const codes = activeAlertCodes(cfg);
       if (codes.length === 0) {
+        alertStats.sleeps++;
         schedule(ALERT_BACKOFF_MS); // 无规则：完全休眠，一次上游都不打
         return;
       }
       const now = new Date();
       if (!codes.some((c) => isMarketOpen(c, now))) {
+        alertStats.sleeps++;
         schedule(ALERT_BACKOFF_MS); // 全市场休市：不打上游，低频看配置变化
         return;
       }
       // 与行情广播同款护栏：对齐上游批量上限，规则膨胀不放大 URL
+      alertStats.fetches++;
       const map = await fetchQuotes(codes.slice(0, 200));
       const data = readAlerts();
       const before = JSON.stringify(data.states);
@@ -535,6 +542,15 @@ export function __alertTickForTest(cfg, quoteRows, opts = {}) {
 /** 测试断言 alerts 落点走隔离路径（派生自 configPath，自动继承守卫的 pid 隔离） */
 export function getAlertsPathForTest() {
   return alertsPath();
+}
+
+/**
+ * 测试观测：评估循环的真实计数。
+ * 验收 #5「未启用任何规则 → 评估循环完全休眠、不打接口」需要一个能看见
+ * 「循环跑了但没打上游」的窗口——只有 sleeps 增长、fetches 不动才算数。
+ */
+export function getAlertStatsForTest() {
+  return { ...alertStats };
 }
 
 // ---------------------------------------------------------------------------

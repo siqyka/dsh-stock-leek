@@ -12,7 +12,7 @@ import { useTestConfigPath, verifyConfigPathIsolation } from "./config-guard.mjs
 
 useTestConfigPath("routes");
 
-const { apply, __alertTickForTest, getAlertsPathForTest, getConfigPathForTest } = await import("../index.js");
+const { apply, __alertTickForTest, getAlertsPathForTest, getConfigPathForTest, getAlertStatsForTest } = await import("../index.js");
 // 实锤校验：确认生效路径确实是隔离路径（防将来有人改回静态 import）
 await verifyConfigPathIsolation();
 
@@ -46,6 +46,7 @@ async function get(path) {
   const r = await fetch(base + path, { signal: AbortSignal.timeout(20000) });
   return { status: r.status, json: await r.json() };
 }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 async function post(path, body) {
   const r = await fetch(base + path, {
     method: "POST",
@@ -308,6 +309,40 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
   const hist = await get("/dsh-stock-leek/alerts");
   check("/alerts 返回 events 数组", hist.status === 200 && Array.isArray(hist.json.events), hist.json && hist.json.events);
   check("/alerts 记录了已触发事件", hist.json.events.some((e) => e.type === "price_above"), hist.json.events && hist.json.events.slice(-1));
+
+  // 验收 #5：未启用规则 → 评估循环完全休眠，**零上游请求**。
+  // 观测点：循环确实在跑（ticks 增长），但 fetches 一步不动。
+  {
+    await post("/dsh-stock-leek/config", { config: { watchlist: [], positions: [], alerts: [], remind: true } });
+    const s0 = getAlertStatsForTest();
+    await wait(300); // 给循环至少一次 tick 的机会（无规则时退避 60s，首拍立即执行）
+    const s1 = getAlertStatsForTest();
+    check("无规则时循环仍在跑（ticks 增长）", s1.ticks > s0.ticks, { before: s0.ticks, after: s1.ticks });
+    check("无规则时零上游请求（fetches 不动）", s1.fetches === s0.fetches, { before: s0.fetches, after: s1.fetches });
+  }
+
+  // 验收 #5 反向对照：**有**启用规则且盘中 → fetches 必须增长
+  // （否则上一条可能只是"循环根本没工作"而假绿）
+  {
+    await post("/dsh-stock-leek/config", {
+      config: { watchlist: [], positions: [], remind: true, alerts: [{ id: "live1", code: "sh600519", type: "price_above", value: 1, enabled: true }] },
+    });
+    const s2 = getAlertStatsForTest();
+    // 只在 A 股交易时段验证（非交易时段循环按设计退避，不能据此判失败）
+    const nowBJ = new Date(Date.now() + (new Date().getTimezoneOffset() + 480) * 60000);
+    const mins = nowBJ.getUTCHours() * 60 + nowBJ.getUTCMinutes();
+    const wd = nowBJ.getUTCDay();
+    const openNow = wd >= 1 && wd <= 5 && ((mins >= 570 && mins <= 690) || (mins >= 780 && mins <= 900));
+    await wait(400);
+    const s3 = getAlertStatsForTest();
+    if (openNow) {
+      check("盘中 + 有规则 → 确实打了上游（对照，防假绿）", s3.fetches > s2.fetches, { before: s2.fetches, after: s3.fetches });
+    } else {
+      console.log("  skip  盘中对照（当前非 A 股交易时段，循环按设计退避）");
+      check("非交易时段有规则也不打上游（休市门控）", s3.fetches === s2.fetches, { before: s2.fetches, after: s3.fetches });
+    }
+    await post("/dsh-stock-leek/config", { config: { watchlist: [], positions: [], alerts: [], remind: true } });
+  }
 }
 
 // 7. probe

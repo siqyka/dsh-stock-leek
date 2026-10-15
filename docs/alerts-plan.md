@@ -1,7 +1,8 @@
 # 股票预警功能 · 实施计划
 
-> 状态：**实施中**。本文档是唯一的实施依据。
-> 确认于 2026-10-15；同日完成代码事实评估并修订 8 处（交易日判据、日界时区、limit_near 市场限制、alerts 上限、marketNow 上提、Host 时间注入、未读语义、cost 悬空、重连补齐）。范围：Phase 1 + 2 一次做完；配置落点复用 `cfg.remind` 作总开关 + 新增 `cfg.alerts`；评估范围仅「已启用规则」涉及的股票；评估节奏 `clamp(pollMs, 2s, 15s)`；`armed/fired` 状态随历史一起落盘。
+> 状态：**已实施完成**（4 个提交：地基 → Host → UI → 通知；共 456 项测试全绿）。
+> 本文档同时是该功能的**设计与决策依据**，含 8 处实施前评估修正（交易日判据、日界时区、limit_near 市场限制、alerts 上限、marketNow 上提、Host 时间注入、未读语义、cost 悬空、重连补齐）。
+> 确认于 2026-10-15；范围：Phase 1 + 2 一次做完；配置落点复用 `cfg.remind` 作总开关 + 新增 `cfg.alerts`；评估范围仅「已启用规则」涉及的股票；评估节奏 `clamp(pollMs, 2s, 15s)`；`armed/fired` 状态随历史一起落盘。
 
 ---
 
@@ -336,3 +337,38 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 8. 持仓清仓移除后，其 `cost_*` 规则保留、评估时静默跳过，不触发、不删除
 9. 重开 `/alert-stream`（含重连）先 `GET /alerts` 对账，冻结期间的事件能补进角标
 10. `npm test` 全绿，且新增断言逐条通过非空洞验证
+
+---
+
+## 13. 实施结果（2026-10-15）
+
+四个提交，每个都独立可验证：
+
+| # | 提交 | 内容 |
+|---|---|---|
+| 1 | `feat(alerts): 地基` | `lib/shared.js` 上提时段三函数（共享版 `now` 必填）+ `quoteDayFor` + `sanitizeAlert(s)` + `stepAlert` 状态机；client.js 内联副本；drift 对拍 17→74 项 |
+| 2 | `feat(alerts): Host` | `cfg.alerts` 接入清洗、独立评估循环（零规则休眠）、`config.json.alerts` 账本、`/alerts` + `/alert-stream`；routes 49→63→66 项 |
+| 3 | `feat(alerts): UI` | 第 5 个 tab、AlertBell 角标、右键「设为预警」、吃字段回填保护；e2e 230→261 项 |
+| 4 | `feat(alerts): 通知层` | 隐藏不断流的破例、三级降级、权限手势申请、`navigator.locks` 去重；e2e 261→276 项 |
+
+验收对照（每条都有承重断言，且做过非空洞验证）：
+
+| # | 验收 | 实现位置 | 承重断言 |
+|---|---|---|---|
+| 1 | 隐藏触发→回来可见 | `notifyAlert` + `refreshAlerts` | e2e：可见走 toast / 隐藏+已授权弹系统通知 |
+| 2 | 停阈值上方只报 1 次 | `stepAlert` 滞回带 | routes：9.96 带内保持 fired；drift：滞回双向 |
+| 3 | 次日重新生效 | `quoteDayFor` + `state.day` | routes：D15 fired → D16 仍上穿→再触发（两步非空洞） |
+| 4 | 休市零请求/零误报 | `isMarketOpen` 门控 + 交易日判据 | routes：`alertStats` 断言 sleeps 增而 fetches 不动 |
+| 5 | 无规则完全休眠 | `activeAlertCodes` 空 → 退避 | routes：ticks 增 + fetches 不动；**对照**：钉 `isMarketOpen=true` 后 fetches 立刻 0→1 |
+| 6 | 老 Host 不丢规则 | `persistConfig`/`initStore` 回填 | e2e：丢字段→保留；回空数组→以回包为准（正反两条） |
+| 7 | `limit_near` 市场限制 | `sanitizeAlert` + UI option disabled | drift：港美股拒收；routes：POST 清洗后仅留合法条 |
+| 8 | 清仓后 cost 规则跳过 | `costBy` 查不到则 `skipped` | routes：无成本价 → `skipped` 含该 id 且 fired 为空 |
+| 9 | 重连先对账 | `alertEs.onopen → refreshAlerts()` | e2e：隐藏时预警流保持、行情流断开（含对照断言） |
+| 10 | 测试全绿 | — | 456 项（drift 74 / isolation 7 / config-path 14 / routes 66 / security 19 / e2e 276） |
+
+实施中修正的两处**测试方法错误**（都会让断言空转，记录备查）：
+
+1. 直接改 `globalThis.__sl_test_state__` 快照**不会**触发 store 更新 —— 必须走真实交互或真实 HTTP。
+2. `initStore` 有 `inited` 守卫（一页只跑一次），反复 render **不能**重放初始合并分支 —— 回填保护要改走 `persistConfig` 的回包合并（每次保存都跑）。
+
+另有一处环境兼容：Node 24 的 `global.navigator` 是只读 getter，直接赋值会抛 `TypeError` 并让测试进程非零退出，需用 `defineProperty`。

@@ -23,7 +23,7 @@ node test/e2e-render.mjs      # 渲染层（指数栏/悬浮窗/详情/持仓/�
 | `config-path.mjs` | 默认路径、迁移链、兼容环境变量 | **子进程 + 假 HOME**（`HOME`/`USERPROFILE` 都改），因为默认路径分支只有不设 `DSH_STOCK_LEEK_CONFIG` 时才走得到 |
 | `test-routes.mjs` | Host 路由响应结构 | mock 一个最小 cordis ctx，起本地 http server 逐个请求 |
 | `security.mjs` | 四处攻击面回归：URL 拼接 / 配置 POST / XSS / SSE 注入 | 18 组恶意 code 对拍 `normalizeApiCode`；原型污染与超长 body 打 `/config`；断言无 `innerHTML` 等危险 API；端到端验证 SSE 首推恰 1 帧 |
-| `e2e-render.mjs` | Client 渲染与交互 | `test/e2e-render.mjs` 内置的 mini-React + 真实路由 |
+| `e2e-render.mjs` | Client 渲染与交互 | `test/e2e-render.mjs` 内置的 mini-React + 真实路由；预警部分用 `__alertTickForTest` 真写账本、`__docDispatch` 真派发 visibilitychange、EventSource 替身验证生命周期 |
 
 ## 写测试的几条硬规矩
 
@@ -76,6 +76,14 @@ node test/e2e-render.mjs      # 渲染层（指数栏/悬浮窗/详情/持仓/�
 > **"过期/恢复自动"这类断言，必须让两种状态结论相反**。测"手动选择跨交易日失效"时，我先设成「手动展开 + 次日盘中（自动=展开）」——两边都是展开，过期与否观测不到，断言永远绿。改成「**手动收起 + 次日盘中（自动=展开）**」才真正区分得开。**设计断言前先问：如果这行代码写错了，这条断言会红吗？**不会就是废的。
 
 > **测试里伪造的数据要记得拨回来**。为测"跨交易日"把行情日期改成次日之后，后面的清仓用例全炸——`purgeStaleClosedPositions` 判的正是「行情日期 > 最后一笔成交日」，留着次日的假行情，持仓会在卖完的同一刻就被清掉。伪造全局状态的东西，用完必须还原，否则后面每一段都可能是下一个受害者。
+
+> **改 store 快照 ≠ 驱动 UI**。预警角标的第一版断言直接写 `globalThis.__sl_test_state__ = {...alertEvents}`，看着数据进去了，角标却始终不出现——那只是 `setState` 留下的**快照副本**，不是组件读取的模块级 `state`，改了不会触发重渲染。要么走真实交互（点击/输入），要么让客户端自己通过**真实 HTTP** 重新拉一次。判断标准很简单：**断言的驱动路径，和线上那条路径是同一个吗？**
+
+> **有"只跑一次"守卫的初始化，不能靠反复 render 重放**。`initStore` 里有 `inited` 守卫（一页只跑一次），所以"老 Host 吃掉 `alerts` → 本地回填"的断言，无论 render 多少次都不会再走一遍初始合并分支——第一版断言因此完全空转。发现后改走 `persistConfig` 的回包合并：那条分支**每次保存都会跑**，把 `POST /config` 的 mock 回包去掉 `alerts` 字段即可命中。找承重分支时先问：**这段逻辑在生命周期里跑几次？**
+
+> **配对断言才好用**。只断言"无规则时不打上游"是危险的——如果循环压根没工作，它也绿。所以同时断言 `ticks` 在涨（循环确实在跑）；再补一条反向对照：把 `isMarketOpen` 临时钉成 `true`，`fetches` 必须立刻从 0 变 1（实测通过，且此时"休市不打上游"那条如期变红）。**一条断言防不住"功能整体没运行"这种失败模式。**
+
+> **Node 24 的 `global.navigator` 是只读 getter**。为测多标签去重写 `global.navigator.locks = ...`，会抛 `TypeError: Cannot set property navigator`，而且它发生在断言之后——**打印全是 ok、退出码却是 1**。用 `Object.getOwnPropertyDescriptor` 存原描述符、`defineProperty` 覆盖、用完还原。
 
 > **不要给 toggle 加"再点一下退回自动"**。第一版写成三态（自动 → 反向 → 自动），结果从自动出发只能观测到两种状态，"自动"这个静止态永远摸不着，测试直接绕晕。纯 toggle 更好预期：**当前什么就切成什么**，手动选择持续到下一个交易日自动失效。
 
