@@ -390,34 +390,104 @@ window.__ModuleLoader__.load({
       if (n.length > 3 && /指数$/.test(n)) return n.replace(/指数$/, "");
       return n || displayCode(code);
     }
+    /**
+     * 指数栏的展开缓冲（分钟）：
+     *   - 开盘**前** BAR_LEAD_MIN 分钟就位（A股 → 9:00，覆盖集合竞价）
+     *   - 收盘**后** BAR_LAG_MIN 分钟才收回（A股 → 15:06，别在 15:00 准点消失）
+     * 三个市场共用同一组缓冲，于是展开区间等宽：A股 9:00–15:06、港股 9:00–16:06、美股 9:00–16:06（各自本地时间）。
+     */
+    const BAR_LEAD_MIN = 30;
+    const BAR_LAG_MIN = 6;
+
+    /** 各市场的日内交易时段（自 00:00 起的分钟数）：[[start, end], ...] */
+    function marketWindows(code) {
+      const c = String(code || "").toLowerCase();
+      if (/^(sh|sz|bj)/.test(c)) return [[570, 690], [780, 900]]; // A股 9:30–11:30 / 13:00–15:00
+      if (/^hk/.test(c)) return [[570, 720], [780, 960]]; // 港股 9:30–12:00 / 13:00–16:00
+      if (/^(us|gb_)/.test(c)) return [[570, 960]]; // 美股 9:30–16:00
+      return [];
+    }
+    /** 某时刻在目标市场时区的「当日分钟数」 */
+    function marketMinutes(code, now) {
+      const c = String(code || "").toLowerCase();
+      const tz = /^(sh|sz|bj)/.test(c) ? "Asia/Shanghai"
+        : /^hk/.test(c) ? "Asia/Hong_Kong"
+          : /^(us|gb_)/.test(c) ? "America/New_York" : null;
+      try {
+        if (!tz) return now.getHours() * 60 + now.getMinutes();
+        const s = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(now);
+        const [hh, mm] = s.split(":").map(Number);
+        return hh * 60 + mm;
+      } catch {
+        return now.getHours() * 60 + now.getMinutes();
+      }
+    }
+    /**
+     * 当前时刻（测试可用 globalThis.__sl_now__ 覆盖）。
+     * 时段相关的判断全走这里，才能在 e2e 里把"非交易时段"稳定复现出来——
+     * 否则断言只在真收盘时才成立，白天跑必然挂。
+     */
+    function marketNow() {
+      const v = Number(globalThis.__sl_now__);
+      if (Number.isFinite(v) && v > 0) return new Date(v);
+      return new Date();
+    }
     /** 该市场当前是否交易时段（本地近似判断，用于状态点） */
     function isMarketOpen(code, now) {
-      now = now || new Date();
+      now = now || marketNow();
       const c = String(code || "").toLowerCase();
       const wd = now.getDay();
       if (wd === 0 || wd === 6) return false;
-      const mins = (tz) => {
-        try {
-          const s = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(now);
-          const [hh, mm] = s.split(":").map(Number);
-          return hh * 60 + mm;
-        } catch {
-          return now.getHours() * 60 + now.getMinutes();
-        }
-      };
-      if (/^(sh|sz|bj)/.test(c)) {
-        const t = mins("Asia/Shanghai");
-        return (t >= 570 && t <= 690) || (t >= 780 && t <= 900); // 9:30-11:30 13:00-15:00
-      }
-      if (/^hk/.test(c)) {
-        const t = mins("Asia/Hong_Kong");
-        return (t >= 570 && t <= 720) || (t >= 780 && t <= 960);
-      }
-      if (/^us|^gb_/.test(c)) {
-        const t = mins("America/New_York");
-        return t >= 570 && t <= 960;
-      }
-      return false;
+      const t = marketMinutes(c, now);
+      return marketWindows(c).some(([a, b]) => t >= a && t <= b);
+    }
+    /**
+     * 指数栏此刻该不该展开（**不含手动覆盖**，只回答"按时段该不该"）。
+     *
+     * 非交易时段只留「状态点 + 设置」，把桌面让出来。
+     *
+     * **午休不收起**：判据取整个交易日的跨度（首个开盘 − 缓冲 ~ 最后收盘 + 缓冲），
+     * 而不是逐时段匹配。否则 A 股每天 11:30–13:00 栏会消失两个半小时。
+     */
+    function shouldExpandBar(code, now) {
+      now = now || marketNow();
+      const c = String(code || "").toLowerCase();
+      const wd = now.getDay();
+      if (wd === 0 || wd === 6) return false; // 周末一律收起
+      const ws = marketWindows(c);
+      if (!ws.length) return false; // 未知市场：保守收起
+      const t = marketMinutes(c, now);
+      const openAt = ws[0][0];
+      const closeAt = ws[ws.length - 1][1];
+      return t >= openAt - BAR_LEAD_MIN && t <= closeAt + BAR_LAG_MIN;
+    }
+    /**
+     * 指数栏当前实际是否展开：手动覆盖优先于时段判断。
+     * `barForce` 跨交易日自动失效——否则昨天临收盘手动收起，今天开盘也不展。
+     */
+    function barExpandedNow(s, cfg) {
+      const items = barItems(s, cfg);
+      const auto = items.length === 0 ? true : items.some((x) => shouldExpandBar(x.idx.code));
+      const day = items.length && items[0].q ? quoteDate(items[0].q) : "";
+      const force = state.barForceDay === day ? state.barForce : null;
+      return { expanded: force === null ? auto : force, auto: auto, force: force };
+    }
+    /** 指数栏上排的指数（含没行情的） */
+    function barItems(s, cfg) {
+      return cfg.barIndices.map((code) => ({ idx: cfgFind(cfg.indices, code) || { code, name: displayCode(code) }, q: s.quotes[code] })).filter((x) => x.idx);
+    }
+    /**
+     * 点状态点切换展开/收起：当前展开 → 收起，当前收起 → 展开。
+     *
+     * 手动选择会一直生效到**下一个交易日**（barForceDay 过期即失效），
+     * 所以"临收盘手动收起"不会粘住明天开盘。不做"再点一下退回自动"——
+     * 那样点出来的状态和自动状态永远观测不到同一种情形，反而更难预期。
+     */
+    function toggleBarExpand(s, cfg) {
+      const now = barExpandedNow(s, cfg);
+      const items = barItems(s, cfg);
+      const day = items.length && items[0].q ? quoteDate(items[0].q) : "";
+      setState({ barForce: !now.expanded, barForceDay: day });
     }
 
     async function api(path, params) {
@@ -464,6 +534,8 @@ window.__ModuleLoader__.load({
       theme: "dark",
       barPlacement: "floating", // dock | floating（本地偏好，默认悬浮：新会话页也能显示）
       barPos: null, // 悬浮栏手动位置 {x,y}；null=自动锚定（初始化时从 localStorage 读）
+      barForce: null, // 指数栏展开的手动覆盖：null=按时段自动，true=强制展开，false=强制收起
+      barForceDay: "", // 手动覆盖所属的行情日期；跨交易日自动失效（别让昨天的选择粘住今天）
     };
     function setState(patch) {
       state = Object.assign({}, state, patch);
@@ -2607,18 +2679,32 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     // ================================================================ 指数栏（左下角）
     /** 共享的指数栏内容（大盘圆点 + 指数胶囊 + 📈/⚙ 按钮）。dock 与 floating 两种放置复用。 */
     function renderBarContent(s, cfg, gearProps) {
-      const items = cfg.barIndices.map((code) => ({ idx: cfgFind(cfg.indices, code) || { code, name: displayCode(code) }, q: s.quotes[code] })).filter((x) => x.idx);
+      const items = barItems(s, cfg);
       const anyOpen = items.some((x) => isMarketOpen(x.idx.code));
+      // 收盘后指数和收益都是昨天的数字，摆在桌面上只是噪音 → 只留状态点 + 设置。
+      // 一个指数都没配时保留「＋ 选择指数」的引导（没有可收起的东西）。
+      const bar = barExpandedNow(s, cfg);
+      const expanded = bar.expanded;
       const earn = computeEarnings(cfg, s.quotes);
       return h(
         "div",
         { className: "sl-bar sl-align-" + (cfg.barAlign || "left") },
-        h("span", { className: "sl-bar-dot" + (anyOpen ? " sl-open" : ""), "data-sltip": anyOpen ? "盘中" : "已收盘/休市", style: { flex: "none" } }),
-        items.length === 0
-          ? h("span", { className: "sl-chip", onClick: () => openOverlay("market"), "data-sltip": "点击选择要常驻显示的大盘指数" }, "＋ 选择指数显示在这里")
-          : items.map(({ idx, q }) =>
-              h(IndexChip, { key: idx.code, idx, q, theme: s.theme, onOpen: () => openOverlay("market") })),
-        earn.has
+        h("span", {
+          className: "sl-bar-dot" + (anyOpen ? " sl-open" : ""),
+          // 点一下收起/展开：收起后索引胶囊没了，这条同时是切换开关和进大盘页的入口
+          onClick: () => toggleBarExpand(s, cfg),
+          "data-sltip": bar.force === null
+            ? (expanded ? "盘中，点击收起" : anyOpen ? "盘中，点击展开" : "非交易时段，点击展开")
+            : (expanded ? "手动展开中" : "手动收起中"),
+          style: { flex: "none", cursor: "pointer" },
+        }),
+        expanded
+          ? items.length === 0
+            ? h("span", { className: "sl-chip", onClick: () => openOverlay("market"), "data-sltip": "点击选择要常驻显示的大盘指数" }, "＋ 选择指数显示在这里")
+            : items.map(({ idx, q }) =>
+                h(IndexChip, { key: idx.code, idx, q, theme: s.theme, onOpen: () => openOverlay("market") }))
+          : null,
+        expanded && earn.has
           ? h(EarnChip, { cfg, quotes: s.quotes, theme: s.theme })
           : null,
         h("button", Object.assign({ className: "sl-bar-btn", "data-sltip": "设置", onClick: () => openOverlay("settings") }, gearProps || {}), "⚙"),
@@ -2816,10 +2902,26 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       return sign + a.toFixed(0);
     }
 
+    /**
+     * 定时强制重渲染，让指数栏的「按时段展开/收起」不依赖行情推送。
+     *
+     * 没有它就只能靠每次 /quotes 顺带重渲染来跨过 9:25 / 15:05 这两个边界；
+     * 一旦断网或 SSE 停了，收盘后栏就会一直挂着昨天的数字不收。
+     * 30s 一跳足够——展开/收起的精度需求本来就是分钟级。
+     */
+    function useClockTick(ms) {
+      const [, force] = useState(0);
+      useEffect(() => {
+        const t = setInterval(() => force((n) => n + 1), ms || 30000);
+        return () => clearInterval(t);
+      }, [ms]);
+    }
+
     /** 放置模式 dock：嵌入 conversation.composer.dock（仅已有对话生效，平台限制）。 */
     function IndexBar() {
       const s = useStore();
       useEffect(() => { initStore(); }, []);
+      useClockTick(30000);
       const cfg = s.config;
       if (!cfg || !cfg.barVisible || s.barPlacement !== "dock") return null;
       return h("div", rootProps(s, cfg), renderBarContent(s, cfg));
@@ -2932,6 +3034,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       // （用户报告："放大缩小放大，悬浮又不在原来的位置了"）。
       const [vp, setVp] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }));
       const [barSize, setBarSize] = useState({ w: 260, h: 28 });
+      useClockTick(30000); // 保证按时段展开/收起不依赖行情推送
       useEffect(() => {
         const sync = () => {
           setVp((p) => (p.w === window.innerWidth && p.h === window.innerHeight ? p : { w: window.innerWidth, h: window.innerHeight }));

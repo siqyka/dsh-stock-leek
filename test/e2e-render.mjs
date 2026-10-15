@@ -350,6 +350,41 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 globalThis.__SL_SAVE_DEBOUNCE__ = 0;
 
 /**
+ * 把「当前时间」钉死在一个确定的**盘中**时刻（2026-10-15 周四 14:45 北京时间）。
+ *
+ * 指数栏现在按时段自动展开/收起，于是「跑测试时恰好是几点」直接决定断言成不成立：
+ * 收盘后跑，"指数栏出现收益胶囊"必挂。钉死时间后，用例与真实钟点无关。
+ */
+const TS_IN_SESSION = Date.parse("2026-10-15T06:45:00Z"); // 14:45 北京
+globalThis.__sl_now__ = TS_IN_SESSION;
+
+/** 设定指数栏判定用的当前时间（毫秒时间戳）；传 null 恢复真实时间 */
+const setNow = (ts) => { globalThis.__sl_now__ = ts; };
+
+/** 读出当前指数栏的可见文本 */
+const barTexts = () => {
+  let bn = floatReg.render({});
+  renderTree(bn);
+  return textOf(bn).join(" ");
+};
+
+/** 指数栏里有没有指数胶囊 / 收益胶囊 */
+const barHas = (cls) => {
+  let bn = floatReg.render({});
+  renderTree(bn);
+  return !!findNode(bn, (n) => n.type === "span" && String((n.props && n.props.className) || "").indexOf(cls) >= 0);
+};
+/**
+ * 指数胶囊的 className 就是裸的 "sl-chip"（收益胶囊是 "sl-chip sl-chip-earn"）。
+ * 用「className 恰好等于 sl-chip」来认它——别指望 sl-chip-idx，那个不存在（踩过）。
+ */
+const barHasIndex = () => {
+  let bn = floatReg.render({});
+  renderTree(bn);
+  return !!findNode(bn, (n) => n.type === "span" && String((n.props && n.props.className) || "") === "sl-chip");
+};
+
+/**
  * 轮询等待某个条件成立。
  *
  * 固定 sleep 是测试变慢的主因：绝大多数「等 X 准备好」其实几十毫秒就绪，
@@ -997,6 +1032,124 @@ if (txnMi) {
     renderTree(bNode);
     check("移开后浮层收起", textOf(bNode).join(" ").indexOf("累计收益") < 0, textOf(bNode).join(" ").slice(0, 120));
   }
+
+  // ---------- 8a. 按时段展开/收起（9:00–15:06 展开）+ 点●手动切换 ----------
+  // 时间由 __sl_now__ 钉死，逐个边界点验证。北京时间 = UTC+8。
+  {
+    const at = (hhmm) => {
+      const [hh, mm] = hhmm.split(":").map(Number);
+      return Date.parse(`2026-10-15T00:00:00Z`) + (hh * 60 + mm - 480) * 60000; // 北京 hh:mm → UTC
+    };
+    /** 点一下状态点，返回点击后是否展开 */
+    const clickDot = () => {
+      let bn = floatReg.render({});
+      renderTree(bn);
+      const dot = findNode(bn, (n) => n.type === "span" && String((n.props && n.props.className) || "").indexOf("sl-bar-dot") >= 0);
+      if (!dot || typeof dot.props.onClick !== "function") return null;
+      dot.props.onClick({});
+      renderTree(bn);
+      return barHasIndex();
+    };
+
+    // 展开区间：9:00–15:06（含两端）
+    for (const t of ["09:00", "09:30", "11:30", "12:00", "13:00", "15:00", "15:06"]) {
+      setNow(at(t));
+      check(`${t} 展开`, barHasIndex(), barTexts().slice(0, 120));
+      check(`${t} 收益胶囊在`, barHas("sl-chip-earn"), barTexts().slice(0, 120));
+    }
+    // 午休不收起（否则 A 股每天消失两个半小时）
+    setNow(at("12:00"));
+    check("午休 12:00 仍然展开（按整日跨度而非逐时段）", barHasIndex(), barTexts().slice(0, 120));
+
+    // 收起区间：只留 状态点 + 设置
+    for (const t of ["08:59", "15:07", "20:00"]) {
+      setNow(at(t));
+      check(`非交易时段 ${t} 收起指数`, !barHasIndex(), barTexts().slice(0, 120));
+      check(`非交易时段 ${t} 收起收益`, !barHas("sl-chip-earn"), barTexts().slice(0, 120));
+      check(`非交易时段 ${t} 仍留状态点`, barHas("sl-bar-dot"), barTexts().slice(0, 120));
+      check(`非交易时段 ${t} 仍留设置按钮`, barTexts().indexOf("⚙") >= 0, barTexts().slice(0, 120));
+    }
+
+    // 边界：早一分钟 / 晚一分钟就变样
+    setNow(at("08:59"));
+    const beforeOpen = barHasIndex();
+    setNow(at("09:00"));
+    const atOpen = barHasIndex();
+    check("9:00 起展开（8:59 收起 / 9:00 展开）", beforeOpen === false && atOpen === true, { beforeOpen, atOpen });
+
+    setNow(at("15:06"));
+    const atClose = barHasIndex();
+    setNow(at("15:07"));
+    const afterClose = barHasIndex();
+    check("15:06 仍展开（15:07 收起）", atClose === true && afterClose === false, { atClose, afterClose });
+
+    // 点●手动切换：展开→收起，收起→展开，纯来回
+    // 注意：点了之后 barForce 就非 null，后面所有断言都处于"手动态"，
+    // 所以**自动**行为必须在第一次点击**之前**全部验完。
+    setNow(at("10:00"));
+    check("起点是展开的", barHasIndex(), barTexts().slice(0, 120));
+    check("点●后收起", clickDot() === false, barTexts().slice(0, 120));
+    check("收起时收益胶囊一起消失", !barHas("sl-chip-earn"), barTexts().slice(0, 120));
+    check("再点●展开", clickDot() === true, barTexts().slice(0, 120));
+    check("第三次点●再收起", clickDot() === false, barTexts().slice(0, 120));
+    check("第四次点●再展开", clickDot() === true, barTexts().slice(0, 120));
+
+    // 手动覆盖跨交易日失效：昨天的选择不该粘住今天。
+    // 关键是让"手动"和"自动"在跨日后**结论相反**——手动收起、次日盘中自动本该展开。
+    // 否则手动展开 + 次日盘中自动展开，两边都是展开，过期与否观测不到（第一版就栽在这）。
+    check("手动展开生效（非交易时段）", (setNow(at("20:00")), barHasIndex() === true), barTexts().slice(0, 120));
+    setNow(at("10:00")); // 同一天，手动态仍在
+    check("同一天内手动态保持（无视时段）", barHasIndex() === true, barTexts().slice(0, 120));
+    clickDot(); // 手动收起
+    check("手动收起生效（此时明明是盘中）", barHasIndex() === false, barTexts().slice(0, 120));
+    const nextDayQuotes = async (url, opts) => {
+      const u = String(url);
+      const r = await REAL_FETCH(u.startsWith("http") ? u : ORIGIN + u, opts);
+      if (/\/quotes/.test(u)) {
+        const j = await r.clone().json();
+        for (const row of (j.rows || [])) row.time = "20261016090000";
+        return jsonResponse(j, r.status);
+      }
+      return r;
+    };
+    global.window.fetch = nextDayQuotes;
+    global.fetch = nextDayQuotes;
+    setNow(Date.parse("2026-10-16T02:00:00Z")); // 次日 10:00 北京，盘中
+    let rf0 = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "⟳");
+    if (!rf0) { ovNode = ov.render({}); renderTree(ovNode); rf0 = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "⟳"); }
+    if (rf0) rf0.props.onClick({});
+    await until(() => {
+      const q = ((global.__sl_test_state__ || {}).quotes || {});
+      const k = Object.keys(q)[0];
+      return !!k && String(q[k].time || "").startsWith("20261016");
+    }, 6000);
+    check("跨交易日后手动态失效，恢复按时段自动（次日盘中=展开）", barHasIndex() === true, barTexts().slice(0, 120));
+    setNow(at("20:00")); // 次日非交易时段，手动态已清 → 应回到自动收起
+    check("跨交易日后非交易时段自动收起（手动态确实清干净了）", barHasIndex() === false, barTexts().slice(0, 120));
+
+    // **必须把行情日期拨回真实日期**再往下走。
+    // 下一段 8b 要清仓，而 purgeStaleClosedPositions 判的是「行情日期 > 最后一笔成交日」。
+    // 留着 2026-10-16 的假行情，持仓会在卖完的同一刻就被当成过期清理掉，
+    // 于是"清仓后收益还在不在"根本无从验证（第一版就这么把 8b 全弄红了）。
+    global.window.fetch = patchedFetch;
+    global.fetch = patchedFetch;
+    setNow(TS_IN_SESSION);
+    let rf1 = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "⟳");
+    if (!rf1) { ovNode = ov.render({}); renderTree(ovNode); rf1 = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "⟳"); }
+    if (rf1) rf1.props.onClick({});
+    // 注意：别用 String(new Date()).slice(0,10) —— 那是 "Thu Oct 15"，不是日期。
+    const p2 = (n) => String(n).padStart(2, "0");
+    const d2 = new Date();
+    const realDay = d2.getFullYear() + p2(d2.getMonth() + 1) + p2(d2.getDate());
+    const quoteDay = () => {
+      const q = ((global.__sl_test_state__ || {}).quotes) || {};
+      const k = Object.keys(q)[0];
+      return k ? String(q[k].time || "") : "";
+    };
+    await until(() => quoteDay().startsWith(realDay), 8000);
+    check("行情日期已拨回真实交易日（后续清仓用例的前置条件）", quoteDay().startsWith(realDay), quoteDay());
+    setNow(TS_IN_SESSION); // 还原，后续用例仍按盘中渲染
+  }
   // 持仓后标题应变脸（不再是默认观望态）
   const ovAfter = ovReg.render({});
   renderTree(ovAfter);
@@ -1274,6 +1427,16 @@ if (txnMi) {
     return !!findNode(ovNode, (n) => n.type === "div" && String((n.props && n.props.className) || "") === "sl-pnlcurve");
   }, 6000);
   ovNode = ov.render({}); renderTree(ovNode);
+
+  // 8a 结尾的行情日期回拨会让手动覆盖"复活"（它按日 key 存的）。
+  // 本段要读收益胶囊，先确保指数栏是展开的——8b 考的是收益口径，不是展开时机。
+  if (!barHasIndex()) {
+    let bn0 = floatReg.render({}); renderTree(bn0);
+    const d0 = findNode(bn0, (n) => n.type === "span" && String((n.props && n.props.className) || "").indexOf("sl-bar-dot") >= 0);
+    if (d0) d0.props.onClick({});
+    renderTree(bn0);
+    check("已手动展开指数栏（便于读取收益胶囊）", barHasIndex(), barTexts().slice(0, 120));
+  }
 
   // 悬浮明细走 earningsDetail —— 正是被修的那条路径，前后各读一次做对比
   const openChip = () => {
