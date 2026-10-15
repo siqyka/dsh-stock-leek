@@ -14,7 +14,7 @@ import { useTestConfigPath } from "./config-guard.mjs";
 
 useTestConfigPath("e2e");
 
-const { apply: hostApply, __alertTickForTest } = await import("../index.js");
+const { apply: hostApply, __alertTickForTest, __stopAlertLoopForTest } = await import("../index.js");
 
 // ---------- 起 host 路由 ----------
 const routes = new Map();
@@ -2127,5 +2127,7 @@ if (txnMi) {
 }
 
 server.close();
+// 评估循环定时器不 unref（见 index.js）→ 显式停掉，避免测试后继续打上游
+__stopAlertLoopForTest();
 console.log(fails === 0 ? "\nALL PASS" : `\n${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);

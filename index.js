@@ -493,6 +493,8 @@ function applyAlertTick(cfg, quotes, data, now) {
 
 /** POST /config 后唤醒评估（新规则尽快生效）；循环未启动时为空操作 */
 let alertKick = () => {};
+/** 测试专用：停止循环（定时器不 unref，需显式清理，否则挂住进程退出） */
+let alertKickReset = null;
 
 /** 评估循环的观测计数：供验收「无规则 → 零上游请求」断言（真实计数，非测试替身） */
 const alertStats = { ticks: 0, fetches: 0, sleeps: 0 };
@@ -505,7 +507,11 @@ function startAlertLoop(ctx) {
     if (stopped) return;
     clearTimeout(timer);
     timer = setTimeout(() => void tick(), ms);
-    timer.unref?.(); // 不阻止进程退出（测试里 apply 之后不能永远挂着）
+    // ⚠️ 绝不能 unref()：unref 的定时器不阻塞事件循环退出，一旦进程里没有
+    // 其它活动句柄，这一拍**可能永远不触发**——表现为「配了规则却永远不评估，
+    // 只有改配置（alertKick）时才跑一次」。实测踩过：清空规则让循环进入 60s
+    // 退避后，再添加规则等了 25s 毫无动静，POST /config 才踢出第一拍。
+    // 测试侧的退出由下面的 dispose 负责（ctx.effect 的清理函数），不靠 unref。
   };
   const tick = async () => {
     if (stopped || running) return;
@@ -551,11 +557,16 @@ function startAlertLoop(ctx) {
   alertKick = () => {
     if (!stopped) schedule(200);
   };
-  void tick();
-  ctx.effect(() => () => {
+  // 供测试显式停止（定时器不 unref 会挂住进程退出）
+  alertKickReset = () => {
     stopped = true;
     clearTimeout(timer);
     alertKick = () => {};
+    alertKickReset = null;
+  };
+  void tick();
+  ctx.effect(() => () => {
+    if (alertKickReset) alertKickReset();
   });
 }
 
@@ -581,6 +592,17 @@ export function getAlertsPathForTest() {
  */
 export function getAlertStatsForTest() {
   return { ...alertStats };
+}
+
+/**
+ * 测试专用：停止评估循环。
+ *
+ * 循环的定时器**故意不 unref**（unref 会让它可能永远不触发，见 schedule 注释），
+ * 因此测试跑完必须显式停掉，否则进程被定时器挂住不退出。生产由 ctx.effect
+ * 的清理函数负责，不走这里。
+ */
+export function __stopAlertLoopForTest() {
+  if (typeof alertKickReset === "function") alertKickReset();
 }
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ import { useTestConfigPath, verifyConfigPathIsolation } from "./config-guard.mjs
 
 useTestConfigPath("routes");
 
-const { apply, __alertTickForTest, getAlertsPathForTest, getConfigPathForTest, getAlertStatsForTest } = await import("../index.js");
+const { apply, __alertTickForTest, getAlertsPathForTest, getConfigPathForTest, getAlertStatsForTest, __stopAlertLoopForTest } = await import("../index.js");
 // 实锤校验：确认生效路径确实是隔离路径（防将来有人改回静态 import）
 await verifyConfigPathIsolation();
 
@@ -347,6 +347,12 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
     check("无规则时零上游请求（fetches 不动）", s1.fetches === s0.fetches, { before: s0.fetches, after: s1.fetches });
   }
 
+  // 注：评估循环「定时器未被 unref」这条不能用本进程断言——
+  // 本进程跑着 http server（活动句柄），unref 的定时器照样会触发，
+  // 区分不出来（实测：把 unref 加回去，本文件里的行为断言仍然全绿）。
+  // 该回归由独立子进程的 test/alert-loop-ref.mjs 负责：只有子进程在
+  // 「除该定时器外无其它句柄」时才暴露差别。
+
   // 验收 #5 反向对照：**有**启用规则且盘中 → fetches 必须增长
   // （否则上一条可能只是"循环根本没工作"而假绿）
   {
@@ -377,5 +383,8 @@ console.log("  probe:", r.json.checks.map((c) => `${c.ok ? "✓" : "✗"}${c.lab
 check("probe all ok", r.json.ok === true);
 
 server.close();
+// 评估循环的定时器不 unref（见 index.js schedule 注释）→ 必须显式停掉，
+// 否则测试跑完后它还会继续打上游，也可能挂住进程退出
+__stopAlertLoopForTest();
 console.log(fails === 0 ? "\nALL PASS" : `\n${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);
