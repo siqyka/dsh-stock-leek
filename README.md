@@ -122,12 +122,12 @@ dsh-stock-leek/
 
 ```bash
 npm test                      # 六个套件全跑
-node test/shared-drift.mjs    # 纯函数一致性 + 关键函数性质（23 项）
-node test/config-isolation.mjs# 配置路径隔离守卫自检（7 项）
-node test/config-path.mjs     # 配置路径与旧路径搬迁（14 项）
-node test/test-routes.mjs     # 路由层（50 项：备份/损坏/冲突/pnlCurve/SSE）
-node test/security.mjs        # 安全层（19 项：URL 注入 / 配置净化 / SSE 注入）
-node test/e2e-render.mjs      # 渲染层（175 项：指数栏/悬浮窗/详情/持仓/成本线/盈亏曲线/拖动排序）
+node test/shared-drift.mjs    # 纯函数一致性 + 关键函数性质对拍
+node test/config-isolation.mjs# 配置路径隔离守卫自检
+node test/config-path.mjs     # 配置路径与旧路径搬迁
+node test/test-routes.mjs     # 路由层（备份/损坏/冲突/pnlCurve/SSE）
+node test/security.mjs        # 安全层（URL 注入 / 配置净化 / SSE 注入）
+node test/e2e-render.mjs      # 渲染层（指数栏/悬浮窗/详情/持仓/成本线/盈亏曲线/时段收展/拖动排序）
 ```
 
 六个测试都用 `node` 直接跑，零 npm 依赖。配置路径由 `config-guard` 强制隔离（默认写系统临时目录并自动清理；指向真实配置会拒绝启动）。测试会请求腾讯/东财真实行情接口，需联网。详见 [docs/development.md](docs/development.md)。
