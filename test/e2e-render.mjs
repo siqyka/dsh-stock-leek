@@ -93,10 +93,15 @@ function mkEl() {
     contains: () => false, offsetWidth: 0, querySelectorAll: () => [],
   };
 }
+// document 事件：照 window 同款收集 + 派发。
+// 必须真的能派发——client 用 visibilitychange 决定「隐藏时断开行情流、
+// 但保持预警流」，这条破例只能靠派发该事件来验证。
+const DOC_L = {};
 global.document = {
   createElement: mkEl,
   head: { appendChild() {} },
-  addEventListener() {}, removeEventListener() {},
+  addEventListener: (t, f) => { (DOC_L[t] = DOC_L[t] || []).push(f); },
+  removeEventListener: (t, f) => { if (DOC_L[t]) DOC_L[t] = DOC_L[t].filter((x) => x !== f); },
   hidden: false,
   querySelector: (sel) => {
     if (process.env.LF_TEST_SEAT === "1") {
@@ -105,6 +110,29 @@ global.document = {
     return null; // 默认：找不到 composer seat → 回退视口左下角
   },
 };
+global.__docDispatch = (t, ev) => { for (const f of (DOC_L[t] || []).slice()) f(ev || {}); };
+global.window.document = global.document;
+
+// EventSource 替身：记录实例与开关状态，供「预警流隐藏不断」这类断言使用。
+// 不做真实网络——真实路由已由 http server 覆盖，这里只验证生命周期语义。
+const ES_INSTANCES = [];
+class FakeEventSource {
+  constructor(url) {
+    this.url = String(url);
+    this.closed = false;
+    this.onopen = null;
+    this.onmessage = null;
+    this.onerror = null;
+    ES_INSTANCES.push(this);
+  }
+  close() { this.closed = true; }
+  /** 测试驱动：投递一帧 */
+  emit(obj) { if (!this.closed && typeof this.onmessage === "function") this.onmessage({ data: JSON.stringify(obj) }); }
+}
+global.EventSource = FakeEventSource;
+global.window.EventSource = FakeEventSource;
+global.__esOpen = (kind) => ES_INSTANCES.some((e) => !e.closed && e.url.indexOf(kind) >= 0);
+global.__esLast = (kind) => ES_INSTANCES.filter((e) => e.url.indexOf(kind) >= 0).slice(-1)[0];
 global.localStorage = {
   getItem: (k) => (store.has(k) ? store.get(k) : null),
   setItem: (k, v) => store.set(k, String(v)),
@@ -1798,6 +1826,128 @@ if (txnMi) {
 
   // 复位，避免污染后续用例
   await hostPost("/dsh-stock-leek/config", { config: Object.assign({}, cfgNow(), { alerts: [] }) });
+  ovNode = ov.render({}); renderTree(ovNode);
+}
+
+// ---------- 预警通知层：隐藏不断流 / 三级降级 / 权限申请时机 / 多标签去重 ----------
+{
+  const stubNotification = (permission) => {
+    const calls = [];
+    function Fake(title, opts) { calls.push({ title, opts }); }
+    Fake.permission = permission;
+    Fake.requestPermission = async () => { calls.push({ asked: true }); return permission; };
+    global.Notification = Fake;
+    global.window.Notification = Fake;
+    return calls;
+  };
+  const setHidden = (v) => { global.document.hidden = v; };
+
+  // 1) 权限只在用户手势时申请：加载/渲染预警页都不该触发 requestPermission
+  const calls = stubNotification("default");
+  ovNode = ov.render({}); renderTree(ovNode);
+  ovText = clickTab("预警");
+  check("渲染预警页不申请通知权限（需用户手势）", !calls.some((c) => c.asked), calls);
+
+  // 2) 按钮点击才申请，并把结果写进 state
+  const askBtn = findNode(ovNode, (n) => n.type === "button" && /开启桌面通知|通知已开启/.test(String((n.children && n.children[0]) || "")));
+  check("预警页有桌面通知按钮", !!askBtn, textOf(ovNode).join(" ").slice(0, 200));
+  if (askBtn) {
+    click(askBtn);
+    await wait(60);
+    check("点击后确实申请了权限", calls.some((c) => c.asked), calls);
+  }
+
+  // 3) 三级降级之一：**可见**时触发 → toast（不弹系统通知）
+  {
+    const c2 = stubNotification("granted");
+    setHidden(false);
+    __alertTickForTest(
+      { remind: true, positions: [], alerts: [{ id: "n1", code: "sh600519", type: "price_above", value: 1, enabled: true }] },
+      [{ code: "sh600519", name: "贵州茅台", price: 1700, percent: 2, time: "20261015100000" }], {});
+    // 直接把事件喂给通道回调（等价于 SSE 收到一帧）
+    const before = c2.length;
+    await globalThis.__sl_notify_test__({ ruleId: "n1", at: Date.now(), code: "sh600519", name: "贵州茅台", type: "price_above", value: 1, price: 1700 });
+    check("可见时走 toast 而非系统通知", c2.length === before, { notif: c2.length, before });
+    check("可见时 toast 已显示预警文案", /🔔/.test(String((globalThis.__sl_test_state__.toast || {}).text || "")), globalThis.__sl_test_state__.toast);
+  }
+
+  // 4) 三级降级之二：**隐藏 + 已授权** → 系统通知
+  {
+    const c3 = stubNotification("granted");
+    setHidden(true);
+    await globalThis.__sl_notify_test__({ ruleId: "n2", at: Date.now() + 1, code: "sh600519", name: "贵州茅台", type: "pct_up", value: 3, price: 1700 });
+    await wait(30);
+    check("隐藏+已授权 → 弹系统通知", c3.length >= 1, c3.length);
+    check("通知标题含预警与股票名", c3.length > 0 && /预警/.test(c3[0].title) && /贵州茅台/.test(c3[0].title), c3[0]);
+  }
+
+  // 5) 三级降级之三：**隐藏 + 未授权** → document.title 加 ⚠ 前缀
+  {
+    stubNotification("default");
+    setHidden(true);
+    global.document.title = "DSH";
+    await globalThis.__sl_notify_test__({ ruleId: "n3", at: Date.now() + 2, code: "sh600519", name: "贵州茅台", type: "pct_up", value: 3, price: 1700 });
+    await wait(30);
+    check("隐藏+未授权 → 标题闪烁兜底", /^⚠ /.test(String(global.document.title)), global.document.title);
+    global.document.title = "DSH";
+  }
+
+  // 6) Notification 不可用（webview）→ 不抛异常，仍降级到标题
+  {
+    delete global.Notification;
+    delete global.window.Notification;
+    setHidden(true);
+    global.document.title = "DSH";
+    let threw = false;
+    try {
+      await globalThis.__sl_notify_test__({ ruleId: "n4", at: Date.now() + 3, code: "sh600519", name: "贵州茅台", type: "pct_up", value: 3, price: 1700 });
+      await wait(30);
+    } catch { threw = true; }
+    check("Notification 不可用时不抛异常（降级兜底）", !threw);
+    check("不可用时仍走标题闪烁", /^⚠ /.test(String(global.document.title)), global.document.title);
+    global.document.title = "DSH";
+  }
+
+  // 7) 隐藏时**不断**预警流：visibilitychange 只关行情流，预警流保持
+  {
+    const before = global.__esOpen("/alert-stream");
+    setHidden(true);
+    global.__docDispatch("visibilitychange");
+    await wait(20);
+    check("隐藏时预警流保持连接（有意破例）", before && global.__esOpen("/alert-stream"), { before, now: global.__esOpen("/alert-stream") });
+    check("隐藏时行情流确实断开了（对照，防破例扩散）", !global.__esOpen("/stream?") && !global.__esOpen("/stream"), ES_INSTANCES.filter((e) => e.url.indexOf("/stream") >= 0 && !e.url.indexOf("alert")).map((e) => ({ url: e.url.slice(-30), closed: e.closed })));
+    setHidden(false);
+    global.__docDispatch("visibilitychange");
+    await wait(30);
+    check("恢复可见后预警流仍在", global.__esOpen("/alert-stream"));
+  }
+
+  // 8) 多标签页去重：navigator.locks 抢不到时不弹
+  {
+    stubNotification("granted");
+    setHidden(true);
+    // Node 24 的 global.navigator 是只读 getter，直接赋值会抛 TypeError → 用 defineProperty
+    const navDesc = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      get: () => ({ locks: { request: (name, opts, cb) => Promise.resolve(cb(null)) } }), // 模拟"锁被别的标签页持有"
+    });
+    let constructed = 0;
+    function Counting() { constructed++; }
+    Counting.permission = "granted";
+    global.Notification = Counting;
+    global.window.Notification = Counting;
+    await globalThis.__sl_notify_test__({ ruleId: "n5", at: Date.now() + 4, code: "sh600519", name: "贵州茅台", type: "pct_up", value: 3, price: 1700 });
+    await wait(40);
+    check("抢不到锁时不重复弹通知（多标签去重）", constructed === 0, constructed);
+    if (navDesc) Object.defineProperty(globalThis, "navigator", navDesc);
+    else delete globalThis.navigator;
+  }
+
+  // 复位
+  setHidden(false);
+  global.document.title = "DSH";
+  stubNotification("default");
   ovNode = ov.render({}); renderTree(ovNode);
 }
 

@@ -612,6 +612,8 @@ window.__ModuleLoader__.load({
       alertEvents: [], // GET /alerts 的触发历史（Host 账本快照；重连/重开页面靠它补齐）
       alertStates: {}, // ruleId → {phase, day}，展示每条规则的滞回/待命状态
       alertSeenAt: 0, // 角标已读时间戳（localStorage 恢复；unread = events 中 at > 它的条数）
+      alertLive: false, // 预警推送通道是否已连上（隐藏时也保持连接）
+      notifyPerm: "default", // 桌面通知权限：granted | denied | default | unsupported
       addAlert: null, // 右键「设为预警」弹出的规则对话框 {code, name, preset}
     };
     function setState(patch) {
@@ -942,14 +944,150 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       refreshQuotes();
       schedulePoll();
     }
+    // ================================================================ 预警推送通道 + 通知降级
+    //
+    // 与行情流刻意不同：**隐藏时不关**（docs/alerts-plan.md §7.1）。
+    // 这条流只在触发时才有数据（一天几条），零上游请求，与「隐藏断流」
+    // 原本要对齐的连接数目标不冲突；行情流照旧隐藏即断。
+    let alertEs = null;
+    let alertEsTried = false;
+    /** 桌面通知能力探测：DSH 宿主可能是 webview，Notification 未必存在 */
+    function notifySupported() {
+      return typeof Notification === "function";
+    }
+    function notifyPermission() {
+      if (!notifySupported()) return "unsupported";
+      return Notification.permission; // "granted" | "denied" | "default"
+    }
+    /**
+     * 三级降级（§7.3）：
+     *   页面可见            → toast + 铃铛角标
+     *   隐藏 + 已授权        → 系统通知（点击回到页面）
+     *   隐藏 + 未授权/不可用 → document.title 加 ⚠ 前缀
+     * 全不可用也仍有历史 + 角标——功能不依赖通知成立。
+     */
+    function flashTitle(text) {
+      const base = document.title.replace(/^⚠ /, "");
+      document.title = "⚠ " + base;
+      clearTimeout(flashTitle._t);
+      flashTitle._t = setTimeout(() => { document.title = base; }, 6000);
+    }
+    /**
+     * 多标签页去重（§7.4）：三个标签页都隐藏 → 会弹三条重复系统通知。
+     * 用 navigator.locks 按事件 id 认领，抢到的才弹；不支持时退回「照弹」。
+     */
+    function claimEvent(key) {
+      if (typeof navigator === "undefined" || !navigator.locks || !navigator.locks.request) {
+        return Promise.resolve(true); // 无 locks：照弹（注释说明，不静默丢通知）
+      }
+      return new Promise((resolve) => {
+        try {
+          navigator.locks.request("sl-alert-" + key, { ifAvailable: true }, (lock) => {
+            if (!lock) { resolve(false); return undefined; } // 别的标签页抢到了
+            resolve(true);
+            return new Promise((r) => setTimeout(r, 1500)); // 持锁一小会儿，挡住并发重复
+          }).catch(() => resolve(true));
+        } catch {
+          resolve(true);
+        }
+      });
+    }
+    /** 收到一条预警事件：按可见性走降级链 */
+    async function notifyAlert(ev) {
+      const name = (ev && ev.name) || displayCode(ev && ev.code);
+      const body = name + " " + ((ALERT_TYPE_LABEL[ev.type] || ev.type) + " " + alertValueText(ev)) + "，现价 " + fmtPrice(ev.price);
+      const hidden = typeof document !== "undefined" && document.hidden;
+      const granted = notifyPermission() === "granted";
+      if (hidden && granted) {
+        const mine = await claimEvent(String(ev.ruleId || "") + ":" + String(ev.at || ""));
+        if (!mine) return; // 另一个标签页已弹过
+        try {
+          const n = new Notification("🔔 预警 · " + name, { body, tag: "sl-" + (ev.ruleId || "") + "-" + (ev.at || "") });
+          n.onclick = () => { try { window.focus(); } catch { /* ignore */ } markAlertsSeen(); openOverlay("alert"); };
+        } catch {
+          flashTitle(body); // 构造失败（权限被收回等）→ 继续降级
+        }
+        return;
+      }
+      if (hidden) {
+        flashTitle(body); // 隐藏且无通知权限：标题闪烁兜底
+        return;
+      }
+      toast("🔔 " + body, "#e6a23c"); // 可见：toast + 角标（角标由 store 驱动）
+    }
+    // 测试钩子：暴露真实内部路径供 e2e 驱动通知降级/通道语义。
+    // 用 globalThis 而非 export（浏览器工厂没有模块出口），与 __sl_test_state__ 同惯例。
+    globalThis.__sl_notify_test__ = notifyAlert;
+    globalThis.__sl_alert_stream_open__ = () => !!alertEs;
+    function openAlertStream() {
+      if (!sseSupported()) return;
+      closeAlertStream();
+      try {
+        alertEs = new EventSource(BASE + "/alert-stream");
+      } catch {
+        alertEs = null;
+        return;
+      }
+      alertEs.onopen = () => {
+        alertEsTried = true;
+        // 重连后先对账：冻结期间漏掉的事件靠账本补齐（不假设流不断，§7.1 修订）
+        refreshAlerts();
+      };
+      alertEs.onmessage = (evt) => {
+        let payload;
+        try {
+          payload = JSON.parse(evt.data);
+        } catch {
+          return;
+        }
+        if (!payload || payload.type !== "alert" || !payload.event) return;
+        const e = payload.event;
+        setState({ alertEvents: (state.alertEvents || []).concat([e]).slice(-200) });
+        notifyAlert(e);
+      };
+      alertEs.onerror = () => {
+        // 与行情流不同：这里**不回落到轮询**，只标注断开并稍后重连——
+        // 预警数据由 Host 照常记录，客户端断了也不丢事件。
+        setState({ alertLive: false });
+        closeAlertStream();
+        clearTimeout(openAlertStream._t);
+        openAlertStream._t = setTimeout(() => { if (!document.hidden) openAlertStream(); }, 15000);
+      };
+      setState({ alertLive: true });
+    }
+    function closeAlertStream() {
+      if (!alertEs) return;
+      try {
+        alertEs.close();
+      } catch { /* ignore */ }
+      alertEs = null;
+      setState({ alertLive: false });
+    }
+    /** 申请桌面通知权限：**只在用户点按钮时**调用（浏览器要求手势，开局弹框体验也差） */
+    async function requestNotifyPermission() {
+      if (!notifySupported()) { toast("当前环境不支持系统通知（历史与角标仍可用）", "#e6a23c"); return "unsupported"; }
+      try {
+        const p = await Notification.requestPermission();
+        setState({ notifyPerm: p });
+        toast(p === "granted" ? "已开启桌面通知" : "未获得通知权限（历史与角标仍可用）", p === "granted" ? null : "#e6a23c");
+        return p;
+      } catch {
+        return "unsupported";
+      }
+    }
+
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
         clearTimeout(pollTimer);
-        closeStream(); // 隐藏时断开 SSE（与服务端连接数对齐）
+        closeStream(); // 隐藏时断开行情 SSE（与服务端连接数对齐）
+        // 预警流**故意不断**：它只在触发时有数据、零上游请求（§7.1）。
+        // 这正是「关掉页面也能收到预警」成立的前提。
       } else if (pollActive) {
         refreshQuotes();
         schedulePoll();
-        if (sseTried && sseSupported()) openStream(); // 可见时恢复实时通道
+        if (sseTried && sseSupported()) openStream(); // 可见时恢复行情通道
+        refreshAlerts(); // 回到页面先对账（冻结期间可能漏了事件）
+        if (!alertEs && sseSupported()) openAlertStream();
       }
     });
 
@@ -983,6 +1121,8 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         const seen = Number(localStorage.getItem(LS_ALERT_SEEN));
         if (Number.isFinite(seen) && seen > 0) setState({ alertSeenAt: seen });
       } catch { /* ignore */ }
+      // 通知权限只**读**不申请（申请必须由用户手势触发，§7.2）
+      setState({ notifyPerm: notifyPermission() });
       if (cfg && Array.isArray(cfg.indices)) setState({ config: cfg });
       try {
         const r = await api("/config");
@@ -1008,6 +1148,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       } catch { /* host 不可达：用本地缓存 */ }
       startPolling();
       refreshAlerts(); // 首屏补一次触发历史/角标（不等 alert-stream 连上）
+      openAlertStream(); // 预警通道与行情通道独立：隐藏不断，重连先对账
     }
 
     // 配置操作 helpers
@@ -2677,6 +2818,23 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               "data-sltip": on ? "评估中：Host 独立循环按刷新间隔检查全部启用规则" : "已关闭：规则保留但不评估，零上游请求",
               onClick: () => updateConfig((c) => { c.remind = !on; return c; }),
             }, on ? "已开启" : "已关闭"))),
+        // 桌面通知：权限只在这里申请（用户手势），绝不在加载时弹框（§7.2）
+        h("div", { className: "sl-setrow" },
+          h("span", { className: "sl-setlabel" }, "桌面通知"),
+          h("span", { style: { display: "flex", alignItems: "center", gap: 6 } },
+            h("span", {
+              className: "sl-alert-unit",
+              "data-sltip": s.alertLive
+                ? "预警通道已连接：隐藏页面也会保持（零上游请求），触发即推送"
+                : "预警通道未连接：触发事件仍由 Host 记录，回到页面会自动对账补齐",
+            }, s.alertLive ? "通道已连接" : "通道未连接"),
+            h("button", {
+              className: "sl-btn" + (s.notifyPerm === "granted" ? "" : " sl-btn-ghost"),
+              "data-sltip": notifyPermission() === "unsupported"
+                ? "当前环境没有 Notification（webview 常见）：历史与角标照常可用"
+                : "点此申请系统通知权限（浏览器要求用户手势，所以不在加载时弹）",
+              onClick: () => requestNotifyPermission(),
+            }, s.notifyPerm === "granted" ? "通知已开启" : "开启桌面通知"))),
         // 新增规则：代码 + 类型 + 阈值
         h("div", { className: "sl-alert-add" },
           h("input", {
