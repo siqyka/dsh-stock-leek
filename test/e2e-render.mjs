@@ -33,6 +33,8 @@ const ORIGIN = "http://127.0.0.1:" + server.address().port;
 
 // ---------- mini React（支持函数组件 + 类组件；hooks 按节点隔离） ----------
 let curNode = null;
+/** 排队等待「ref 已挂载」后再执行的 effect（见 React.useEffect 内注释） */
+const pendingEffects = [];
 class ReactComponent {
   constructor(props) { this.props = props; this.state = this.state || {}; }
   setState(patch) { this.state = Object.assign({}, this.state, typeof patch === "function" ? patch(this.state, this.props) : patch); }
@@ -60,9 +62,12 @@ const React = {
     const same = prev && deps && prev.deps && prev.deps.length === deps.length && prev.deps.every((d, k) => d === deps[k]);
     if (prev && same) return;
     if (prev && prev.cleanup) { try { prev.cleanup(); } catch { /* ignore */ } }
-    let cleanup;
-    try { cleanup = fn(); } catch { /* ignore */ }
-    curNode.__h[i] = { deps, cleanup: typeof cleanup === "function" ? cleanup : null };
+    // 真实 React 里 ref 在 commit 阶段先挂好，passive effect 才执行；
+    // 这里 effect 体若在 walk 期间就地跑，会早于 attachRefs，
+    // 于是「读 ref.current 量行高」这类 effect 永远拿到 null。
+    // 故推迟到 attachRefs 之后再执行，顺序才对齐真实 React。
+    pendingEffects.push({ fn, hookState: curNode.__h, i });
+    curNode.__h[i] = { deps, cleanup: null };
   },
   useRef: (v) => {
     if (!curNode.__h) curNode.__h = [];
@@ -119,9 +124,12 @@ global.window.innerWidth = 1400;
 global.window.innerHeight = 900;
 global.window.matchMedia = () => ({ matches: false });
 const REAL_FETCH = global.fetch;
+// POST /config 的累计次数：让「等配置落库」变成等条件，而不是睡固定 700ms
+let configPostCount = 0;
 // LF_DROP_MA=1：模拟旧版 host（不认识 ma 字段，保存后回填的配置里没有它）
 const patchedFetch = async (url, opts) => {
   const u = String(url);
+  if (/\/config/.test(u) && opts && opts.method === "POST") configPostCount++;
   const r = await REAL_FETCH(u.startsWith("http") ? u : ORIGIN + u, opts);
   if (process.env.LF_DROP_MA === "1" && /\/config/.test(u) && opts && opts.method === "POST") {
     const j = await r.clone().json();
@@ -222,6 +230,13 @@ function renderTree(node) {
   for (let pass = 0; pass < 4; pass++) {
     const found = walk(node, [], "root");
     attachRefs(node);
+    // ref 就位后再跑 effect，顺序与真实 React 一致
+    const q = pendingEffects.splice(0);
+    for (const e of q) {
+      let cleanup;
+      try { cleanup = e.fn(); } catch { /* ignore */ }
+      e.hookState[e.i] = { deps: e.hookState[e.i].deps, cleanup: typeof cleanup === "function" ? cleanup : null };
+    }
     for (const f of found) if (f.error) errs.push(f);
   }
   return errs;
@@ -329,6 +344,69 @@ function posRow(root) {
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 配置落库防抖改成 0：线上 500ms 是为了合并连续改动（拖排序等），
+// 测试里却逼着每条「等落库」的用例各睡 700ms——整个套件 25 秒里有一大截是这么来的。
+// 注意必须在 client.js 被加载**之前**设好，见本文件顶部的全局 stub 区。
+globalThis.__SL_SAVE_DEBOUNCE__ = 0;
+
+/**
+ * 轮询等待某个条件成立。
+ *
+ * 固定 sleep 是测试变慢的主因：绝大多数「等 X 准备好」其实几十毫秒就绪，
+ * 但没人敢赌，只能睡满上限。改成轮询后，常态路径立刻返回；
+ * 慢的时候也不会比原来的固定上限更糟（超时即放弃）。
+ */
+async function until(pred, timeoutMs = 3000, step = 20) {
+  const t0 = Date.now();
+  for (;;) {
+    let v = false;
+    try { v = pred(); } catch { v = false; }
+    if (v) return true;
+    if (Date.now() - t0 >= timeoutMs) return false;
+    await wait(step);
+  }
+}
+
+/** 等 store 里出现某只股票的行情（首屏 /quotes 往返） */
+const waitQuotes = (code, timeout = 5000) =>
+  until(() => !!((global.__sl_test_state__ || {}).quotes || {})[code], timeout);
+
+/**
+ * 解析带「万/亿」后缀的金额（floatSigned/fmtSigned 会自动换算单位）。
+ * 只支持 +/- 数字 + 可选单位，够用即可。
+ */
+function parseAmt(s) {
+  if (s === undefined || s === null) return NaN;
+  const m = /([+-]?[\d.]+)\s*(万|亿)?/.exec(String(s));
+  if (!m) return NaN;
+  let n = Number(m[1]);
+  if (!Number.isFinite(n)) return NaN;
+  if (m[2] === "万") n *= 1e4;
+  else if (m[2] === "亿") n *= 1e8;
+  return n;
+}
+
+/**
+ * 从**指数栏收益胶囊的悬浮浮层**里读今日/累计金额。
+ *
+ * 刻意不读持仓页表头：那条路径历史上本来就是对的（它逐行算，不跳过 qty=0），
+ * 读它会让断言变绿却测不到被修的 bug——踩过一次。
+ * 胶囊浮层走的是 earningsDetail，正是清仓后丢收益的那条路径。
+ */
+function readBarEarn(root) {
+  const txt = textOf(root || {}).join(" ");
+  const t = /今日收益\s*([+-][\d.]+\s*(?:万|亿)?)/.exec(txt);
+  const p = /累计收益\s*([+-][\d.]+\s*(?:万|亿)?)/.exec(txt);
+  return { today: t ? parseAmt(t[1]) : NaN, pnl: p ? parseAmt(p[1]) : NaN, txt };
+}
+
+/** 指数栏里是否还有收益胶囊（无持仓时 computeEarnings.has=false，胶囊不渲染） */
+function readBarEarnText() {
+  let bn = floatReg.render({});
+  renderTree(bn);
+  return !!findNode(bn, (n) => n.type === "span" && String((n.props && n.props.className) || "").indexOf("sl-chip-earn") >= 0);
+}
+
 // ---------- 1. 指数栏（默认 floating：经 shell.overlay 锚定，新会话页也显示） ----------
 const dockReg = findReg("conversation.composer.dock", "dsh-stock-leek.bar");
 const floatReg = findReg("shell.overlay", "dsh-stock-leek.floating-bar");
@@ -344,7 +422,9 @@ check("FloatingIndexBar 无渲染错误", errs.length === 0, errs[0] && (errs[0]
 const dockNode = dockReg.render({});
 renderTree(dockNode);
 check("floating 模式下 dock IndexBar 不渲染", textOf(dockNode).join("").trim() === "", textOf(dockNode).join(" ").slice(0, 80));
-await wait(1500); // 等 /config 与 /quotes 返回
+// 等 /config 与 /quotes 返回：原来无脑睡 1500ms，实际通常几百毫秒就好了。
+// 改成等条件——store 里出现指数行情即继续，顺带把网络抖动的影响也削掉。
+await until(() => Object.keys((global.__sl_test_state__ || {}).quotes || {}).length > 0, 6000);
 barNode = floatReg.render({});
 errs = renderTree(barNode);
 check("FloatingIndexBar 二次渲染无错误", errs.length === 0, errs[0] && (errs[0].error.stack || errs[0].error));
@@ -458,6 +538,23 @@ console.log("   悬浮窗(大盘)片段:", ovText.slice(0, 300));
 check("大盘 tab 标题", /上证指数/.test(ovText), ovText.slice(0, 120));
 check("大盘 tab 有行情数字", /\d{3,6}\.\d/.test(ovText), ovText.slice(0, 120));
 check("大盘含左下角勾选列", /栏/.test(ovText));
+
+// ---------- 2b. 列表超过 10 行时内部出现滚动条 ----------
+// 默认配置有 12 个指数，正好超过阈值；测试桩里假行高为 28px，
+// 因此期望上限 = 28 * 10 + 1 = 281px（+1 容纳行间分隔线）。
+{
+  const listNode = findNode(ovNode, (n) => String((n.props && n.props.className) || "").indexOf("sl-sortable") === 0);
+  const cls = String((listNode && listNode.props && listNode.props.className) || "");
+  const rawCap = (listNode && listNode.props && listNode.props.style && listNode.props.style.maxHeight) || "";
+  // style.maxHeight 是 "281px" 这样的字符串，Number("281px") 是 NaN，必须先剥掉单位
+  const capPx = parseInt(String(rawCap), 10);
+  check("超 10 行时列表加滚动类", cls.indexOf("sl-sortable-cap") >= 0, cls);
+  check("滚动上限按实测行高算（28px×10+1=281）", capPx === 281, { raw: rawCap, got: capPx });
+  // 关键：上限落在**列表容器**上，而不是整个 .sl-body——
+  // 否则表头和底部搜索框会被一起滚走，那正是本次要修的问题。
+  const bodyNode = findNode(ovNode, (n) => (n.props && n.props.className) === "sl-body");
+  check("滚动上限不在 .sl-body 上（表头/搜索框保持可见）", !(bodyNode && bodyNode.props.style && bodyNode.props.style.maxHeight), bodyNode && bodyNode.props.style);
+}
 const titleOf = (node) => {
   const t = findNode(node, (n) => n.type === "span" && String((n.props && n.props.className) || "") === "sl-title");
   return t ? { text: String((t.children && t.children[0]) || ""), tip: String(t.props["data-sltip"] || "") } : null;
@@ -509,7 +606,12 @@ click(row);
 ovNode = ov.render({});
 errs = renderTree(ovNode);
 check("详情渲染无错误", errs.length === 0, errs[0] && (errs[0].error.stack || errs[0].error));
-await wait(1200);
+// 等日K 的 K 线真的画出来（原来睡 1200ms 等 /kline 往返）
+await until(() => {
+  ovNode = ov.render({});
+  renderTree(ovNode);
+  return !!findNode(ovNode, (n) => n.type === "svg");
+}, 6000);
 ovNode = ov.render({});
 renderTree(ovNode);
 ovText = textOf(ovNode).join(" ");
@@ -522,7 +624,14 @@ click(dayBtn);
 ovNode = ov.render({});
 errs = renderTree(ovNode);
 check("日K 渲染无错误", errs.length === 0, errs[0] && (errs[0].error.stack || errs[0].error));
-await wait(1000);
+// 等 MA 数值标注真的算出来（原来睡 1000ms）。
+// 判据要用「MA5 <数字>」这种带数值的形状——只匹配 /MA5|MA10/ 会命中常驻的切换按钮，
+// 条件立刻成立、实际 K 线还没加载完，后面的数值断言就会红（踩过）。
+await until(() => {
+  ovNode = ov.render({});
+  renderTree(ovNode);
+  return /MA5 [\d.]+/.test(textOf(ovNode).join(" "));
+}, 6000);
 ovNode = ov.render({});
 renderTree(ovNode);
 check("日K 含 MA 切换", /MA5|MA10/.test(textOf(ovNode).join(" ")));
@@ -562,7 +671,7 @@ check("日K 含 MA 切换", /MA5|MA10/.test(textOf(ovNode).join(" ")));
   check("MA 可还原为默认", maOnCfg().join() === "5,10,20", JSON.stringify(maOnCfg()));
   // 回归：host 回填的配置若丢掉 ma（旧版 host），选择不得弹回默认
   click(maBtn(20)); // 关掉 MA20
-  await wait(900); // 超过 persistConfig 的 500ms 防抖，模拟保存成功后的回填
+  await wait(150); // 配置落库：本机 Host + 防抖已置 0，150ms 足够（原 900ms）
   ovNode = ov.render({}); renderTree(ovNode);
   check("host 回填丢 ma 时不弹回默认", maOnCfg().join() === "5,10", JSON.stringify(maOnCfg()));
   click(maBtn(20)); // 恢复
@@ -739,7 +848,12 @@ const input = findNode(ovNode, (n) => n.type === "input" && typeof n.props.place
 check("自选页有搜索输入框", !!input);
 input.props.onChange({ target: { value: "比亚迪" } });
 renderTree(ovNode); // 触发 SearchBox 的 useEffect（设 320ms 防抖）
-await wait(1200);   // 等防抖 + fetch 完成
+// 等搜索下拉真的出结果（原来睡 1200ms：320ms 防抖 + fetch 全程）
+await until(() => {
+  ovNode = ov.render({});
+  renderTree(ovNode);
+  return !!findNode(ovNode, (n) => n.type === "button" && n.props && String(n.props.className || "").indexOf("sl-sug") >= 0);
+}, 6000);
 ovNode = ov.render({});
 renderTree(ovNode);
 const sug = findNode(ovNode, (n) => n.type === "button" && n.props && String(n.props.className || "").indexOf("sl-sug") >= 0);
@@ -851,7 +965,6 @@ if (txnMi) {
   check("变动菜单显示 2 笔", !!findMenuItem(ovNode, "2 笔"), textOf(ovNode).join(" ").slice(0, 160));
   dismissMenu();
 }
-
 // ---------- 8. 收益胶囊 hover 浮层（市值/累计收益+%/每只持仓今日盈亏+当日涨幅） ----------
 {
   // 重新渲染悬浮指数栏（此时已有持仓 + 行情）
@@ -888,7 +1001,7 @@ if (txnMi) {
   const ovAfter = ovReg.render({});
   renderTree(ovAfter);
   const tAfter = titleOf(ovAfter);
-  const MOODS = ["📈 观望中", "🍗 加鸡腿", " 起飞了", "🍜 关灯吃面", "🧘 天台吹风"];
+  const MOODS = ["📈 观望中", "🍗 加鸡腿", "🚀 起飞了", "🍜 关灯吃面", "🧘 天台吹风"];
   check("持仓后标题属于变脸集合", !!tAfter && MOODS.includes(tAfter.text), tAfter && tAfter.text);
 
   // 有持仓后再进 K 线详情 → 应出现成本线与成本标签
@@ -902,7 +1015,12 @@ if (txnMi) {
     ovNode = ov.render({}); renderTree(ovNode);
     const dbtn = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "日K");
     click(dbtn);
-    await wait(1800); // 等 K 线异步加载完成
+    // 等 K 线真的画出来，而不是无脑睡 1800ms：
+    // 反复重画直到出现 K 线容器（candles），否则就等到超时。
+    const gotK = await until(() => {
+      ovNode = ov.render({}); renderTree(ovNode);
+      return !!findNode(ovNode, (n) => n.type === "svg");
+    }, 6000);
     ovNode = ov.render({}); renderTree(ovNode);
     const costTxt = textOf(ovNode).join(" ");
     check("有持仓时详情显示成本徽标", /成本 [\d.]+/.test(costTxt), costTxt.slice(0, 200));
@@ -923,7 +1041,11 @@ if (txnMi) {
   // 当日盈亏走势曲线
   {
     clickTab("持仓");
-    await wait(1500); // 等各持仓分时拉取完成
+    // 等曲线真的出现（含分时拉取），而不是固定睡 1500ms
+    await until(() => {
+      ovNode = ov.render({}); renderTree(ovNode);
+      return !!findNode(ovNode, (n) => n.type === "svg");
+    }, 6000);
     ovNode = ov.render({}); renderTree(ovNode);
     const curveBox = findNode(ovNode, (n) => n.type === "div" && String((n.props && n.props.className) || "") === "sl-pnlcurve");
     check("持仓页显示今日盈亏走势", !!curveBox, "");
@@ -953,12 +1075,165 @@ if (txnMi) {
       check("曲线含零轴/折线/填充", hasZero && hasPoly && hasArea, JSON.stringify({ hasZero, hasPoly, hasArea }));
       check("曲线带时间刻度", /09:|10:|11:|13:|14:|15:/.test(textOf(svg).join(" ")), textOf(svg).join(" ").slice(0, 120));
     }
+
+    // ---------- 曲线必须跟随行情刷新 ----------
+    // 回归：effect 依赖里原本只有 posKey/curveOn，盘中行情刷新多少次曲线都不动。
+    // 现在依赖 curveRefreshTick(updatedAt)，跨分钟即重拉 /minute 并重绘。
+    //
+    // 阈值逻辑由 test/shared-drift.mjs 对拍 curveRefreshTick 守住（同时跑
+    // lib/shared.js 与 client.js 的真实源码），这里只验证**接线**：展开状态下
+    // 确实会去拉分时，否则曲线压根没有数据来源。
+    //
+    // 做法：先收起再展开——收起会把 curve 置空并让依赖变化，必然重新拉一次分时，
+    // 这样计数才是确定的（直接 mount 时若上一轮已缓存，effect 不会重跑）。
+    {
+      const toggleNow = () => {
+        const b = findNode(ovNode, (n) => n.type === "button" && /^(收起|展开)$/.test(String(n.children && n.children[0])));
+        if (b) b.props.onClick({});
+        ovNode = ov.render({});
+        renderTree(ovNode);
+        return b ? String(b.children && b.children[0]) : null;
+      };
+      toggleNow(); // 先收起
+      await wait(400);
+
+      let minuteCalls = 0;
+      const spy = async (url, opts) => {
+        if (/\/minute/.test(String(url))) minuteCalls++;
+        return REAL_FETCH(String(url).startsWith("http") ? url : ORIGIN + url, opts);
+      };
+      global.window.fetch = spy;
+      global.fetch = spy;
+      const was = toggleNow(); // 再展开 → 触发一次拉分时
+      await wait(600);
+      check("重新展开会拉取分时（曲线有数据来源）", minuteCalls > 0, { was, minuteCalls });
+
+      // 同一分钟内反复重画不应重复打上游（tick 未推进 → 依赖不变 → effect 不重跑）
+      const afterExpand = minuteCalls;
+      for (let i = 0; i < 3; i++) { ovNode = ov.render({}); renderTree(ovNode); await wait(120); }
+      check("同一分钟内不重复拉分时（避免打爆上游）", minuteCalls === afterExpand, { afterExpand, now: minuteCalls });
+
+      // 下面要改刷新间隔，先记下原值供末尾复位
+      let pollMsBefore = Number((global.__sl_test_state__ || {}).config?.pollMs);
+      if (!Number.isFinite(pollMsBefore) || pollMsBefore < 1000) pollMsBefore = 5000;
+      const restorePoll = async (ms) => {
+        clickTab("设置");
+        const btn = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === String(ms / 1000) + "s");
+        if (btn) {
+          btn.props.onClick({});
+          ovNode = ov.render({});
+          renderTree(ovNode);
+          await wait(700);
+        }
+        clickTab("持仓");
+      };
+
+      // 曲线真正"跟随行情"的判据：点 ⟳ 触发一次真实 refreshQuotes()，
+      // 若 Host 返回的 updatedAt 跨过了当前 tick 窗口，依赖变化 → 重新拉分时。
+      // 修复前依赖只有 posKey，无论刷新多少次都不会重拉。
+      //
+      // 不能用「收起→展开」代替：那条路径 curveOn 本就在依赖里，修复前后表现一致，测不出差别。
+      {
+        // **必须把刷新间隔调到 3s**，否则本用例测不出用户报的 bug。
+        // 若沿用默认 5s（或任何 ≥60s 的值），"跨越一个 tick" 与 "跨越一分钟"
+        // 这两件事会同时发生，窗口写成 60s 照样能通过——测试就废了。
+        // 设成 3s 后，跨一个 tick 仍在同一分钟内：窗口若写死 60s 就不会重拉，断言变红。
+        const curPoll = Number((global.__sl_test_state__ || {}).config?.pollMs);
+        const hadPoll = curPoll === 3000;
+        if (!hadPoll) {
+          clickTab("设置");
+          const threeS = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "3s");
+          if (threeS) {
+            threeS.props.onClick({});
+            ovNode = ov.render({});
+            renderTree(ovNode);
+            await wait(150); // 等配置落库（本机 Host，防抖 0）
+          }
+          clickTab("持仓"); // ⟳ 在标题栏，必须回到持仓页
+        }
+        const st = global.__sl_test_state__;
+        const poll = Number(st && st.config && st.config.pollMs);
+        check("刷新间隔已设为 3s（短窗口才能区分 3s 与 60s）", poll === 3000, { poll });
+
+        // 锚在某一分钟的**中间**（第 30 秒），前后各留出足够余量，
+        // 保证 pastAt 与 futureAt 落在同一分钟内、却跨过了 3s 的 tick 边界。
+        // → 3s 窗口认为变了，60s 窗口认为没变。这正是要区分的两者。
+        const anchor = Math.floor(Date.now() / 60000) * 60000 + 30000;
+        const pastAt = anchor - 10 * poll; // 往回 30s，仍在同一分钟内
+        const futureAt = anchor;
+        check("构造的 tick 边界：3s 窗口认为变了、60s 窗口认为没变",
+          Math.floor(pastAt / poll) !== Math.floor(futureAt / poll) &&
+          Math.floor(pastAt / 60000) === Math.floor(futureAt / 60000),
+          { poll, pastAt, futureAt });
+
+        let phase = "past";
+        const spy = async (url, opts) => {
+          const u = String(url);
+          if (/\/minute/.test(u)) minuteCalls++;
+          const r = await REAL_FETCH(u.startsWith("http") ? u : ORIGIN + u, opts);
+          // 让 /quotes 返回指定 tick 的时间戳，模拟时间推进
+          if (/\/quotes/.test(u)) {
+            const jj = await r.clone().json();
+            jj.updatedAt = phase === "past" ? pastAt : futureAt;
+            return jsonResponse(jj, r.status);
+          }
+          return r;
+        };
+        global.window.fetch = spy;
+        global.fetch = spy;
+        minuteCalls = 0;
+        const findRefresh = () => findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "⟳");
+        check("找到 ⟳ 手动刷新按钮", !!findRefresh(), "（需先切回持仓页，⟳ 在标题栏）");
+        // ⟳ 每次重画都要重新找：clickTab 会让组件重挂载，旧节点上的闭包已失效
+        const doRefresh = async () => {
+          const b = findRefresh();
+          if (b) b.props.onClick({});
+          await wait(400);
+          ovNode = ov.render({});
+          renderTree(ovNode);
+          await wait(700);
+        };
+
+        // 第 0 拍：先把 store 落到 pastAt 这个 tick 上（此时是否重拉都无所谓，不做断言）
+        phase = "past";
+        await doRefresh();
+
+        // 第 1 拍：跨过 3s tick 边界 —— 必须重拉分时
+        phase = "future";
+        minuteCalls = 0;
+        await doRefresh();
+        check("跨过 3s tick 后曲线重新拉分时（跟随设置的刷新间隔）", minuteCalls > 0, { poll, minuteCalls });
+      }
+
+      global.window.fetch = patchedFetch;
+      global.fetch = patchedFetch;
+
+      // 复位刷新间隔：上面为了区分 3s/60s 把 pollMs 改成了 3000。
+      // 不复位的话，这个用例就成了「顺序依赖」——同一条测试连跑两次，
+      // 第二次的起点已经是 3s，断言含义都变了。测完必须还原现场。
+      await restorePoll(pollMsBefore);
+    }
+    // 注意：上面的用例会来回切换曲线，**必须复位到展开态**，
+    // 否则后续「点按后收起」用例的前提（进来时是展开）不成立。
+    {
+      const lblNow = () => {
+        const b = findNode(ovNode, (n) => n.type === "button" && /^(收起|展开)$/.test(String(n.children && n.children[0])));
+        return b ? String(b.children && b.children[0]) : null;
+      };
+      if (lblNow() === "展开") { // 当前是收起 → 展开回去
+        const b = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "展开");
+        b.props.onClick({});
+        ovNode = ov.render({});
+        renderTree(ovNode);
+        await wait(150); // 等配置落库（本机 Host，防抖 0）
+      }
+    }
     // 收起/展开：状态写入配置，切换标签页后仍保持（这正是改成配置态的原因）
     const toggleBtn = () => findNode(ovNode, (n) => n.type === "button" && /^(收起|展开)$/.test(String(n.children && n.children[0])));
     let tg = toggleBtn();
     if (tg) {
       tg.props.onClick({});
-      await wait(700); // 等配置落库（防抖 500ms）
+      await wait(150); // 等配置落库（本机 Host，防抖 0）
       ovNode = ov.render({}); renderTree(ovNode);
       check("点按后收起走势曲线", String(toggleBtn() && toggleBtn().children[0]) === "展开", String(toggleBtn() && toggleBtn().children[0]));
 
@@ -974,11 +1249,111 @@ if (txnMi) {
       tg = toggleBtn();
       if (tg) {
         tg.props.onClick({});
-        await wait(1400); // 重新展开需要拉分时
+        // 重新展开要拉分时：等曲线真的画出来，别睡满 1400ms
+        await until(() => {
+          ovNode = ov.render({}); renderTree(ovNode);
+          return !!findNode(ovNode, (n) => n.type === "svg");
+        }, 6000);
         ovNode = ov.render({}); renderTree(ovNode);
         check("可重新展开走势曲线", String(toggleBtn() && toggleBtn().children[0]) === "收起", String(toggleBtn() && toggleBtn().children[0]));
       }
     }
+  }
+}
+
+// ---------- 8b. 清仓：收益不能因为 qty 归零而消失 ----------
+// 回归：computeEarnings / earningsDetail 以前用 `if (!qty) continue` 把清仓股
+// 整只跳过，于是今日已实现盈亏从汇总里凭空消失，累计盈亏也在清仓瞬间归零。
+//
+// **必须放在最后**：清仓是破坏性的（qty→0），后面任何依赖"有持仓"的用例都会失效。
+// 之前放在买/卖用例后面，直接把后面 3 条 hover 浮层断言弄红了。
+{
+  clickTab("持仓");
+  await until(() => {
+    ovNode = ov.render({}); renderTree(ovNode);
+    return !!findNode(ovNode, (n) => n.type === "div" && String((n.props && n.props.className) || "") === "sl-pnlcurve");
+  }, 6000);
+  ovNode = ov.render({}); renderTree(ovNode);
+
+  // 悬浮明细走 earningsDetail —— 正是被修的那条路径，前后各读一次做对比
+  const openChip = () => {
+    let bn = floatReg.render({});
+    renderTree(bn);
+    const chip = findNode(bn, (n) => n.type === "span" && String((n.props && n.props.className) || "").indexOf("sl-chip-earn") >= 0);
+    if (!chip) return { node: bn, chip: null };
+    chip.props.onMouseEnter({});
+    renderTree(bn);
+    bn = floatReg.render({});
+    renderTree(bn);
+    return { node: bn, chip };
+  };
+  const pre = openChip();
+  const before = readBarEarn(pre.node);
+  check("清仓前浮层可读出今日收益（非零，有可验证的基数）", Number.isFinite(before.today) && before.today !== 0, before);
+  if (pre.chip) { pre.chip.props.onMouseLeave({}); renderTree(pre.node); await wait(260); }
+
+  const fi = (ph) => findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === ph && typeof n.props.onChange === "function");
+  const sellTab = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "卖出");
+  click(sellTab);
+  ovNode = ov.render({}); renderTree(ovNode);
+  // 必须卖**恰好**等于当前持股数：addTxn 有「卖出超过持仓」的拦截，
+  // 写 99999 会被拒，qty 根本不会归零（第一版就栽在这，看起来像修复失效）。
+  const holdQty = ((global.__sl_test_state__ || {}).config?.positions || [])[0]?.qty || 0;
+  check("清仓前持股数 > 0", holdQty > 0, holdQty);
+  fi("价格").props.onChange({ target: { value: "1350" } });
+  fi("股数").props.onChange({ target: { value: String(holdQty) } });
+  ovNode = ov.render({}); renderTree(ovNode);
+  click(findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]).indexOf("记一笔") >= 0));
+  await wait(400);
+  ovNode = ov.render({}); renderTree(ovNode);
+
+  const st = global.__sl_test_state__ || {};
+  const pos = (st.config && st.config.positions || [])[0];
+  check("清仓后持仓保留但股数为 0（而不是被删掉）", !!pos && pos.qty === 0, pos && pos.qty);
+
+  const post = openChip();
+  const after = readBarEarn(post.node);
+  check("清仓后收益胶囊仍在（汇总 has 仍为真）", !!post.chip);
+  check("清仓后今日收益仍非零（已实现部分继续计入）", Number.isFinite(after.today) && after.today !== 0, after);
+  check("清仓前后累计盈亏连续（不凭空归零）", Number.isFinite(after.pnl) && Math.abs(after.pnl - before.pnl) < Math.abs(before.pnl) * 0.5 + 800,
+    { before: before.pnl, after: after.pnl });
+  check("悬浮明细里清仓股仍出现并标「已清仓」", /贵州茅台（已清仓）/.test(after.txt), after.txt.slice(0, 240));
+
+  // ---------- 下一个交易日：自动移除已清仓的持仓 ----------
+  // 当日清仓要保留（上面已验证）；一旦行情日期跨到下一交易日，它就该消失。
+  // 这里把 /quotes 的行情日期改成「清仓日的次日」来模拟。
+  if (post.chip) { post.chip.props.onMouseLeave({}); renderTree(post.node); await wait(260); }
+  {
+    const lastDate = (((global.__sl_test_state__ || {}).config?.positions || [])[0]?.txns || [])
+      .reduce((a, t) => (String(t.date) > a ? String(t.date) : a), "");
+    check("能取到清仓日（用于推算次日）", !!lastDate, lastDate);
+    const nextDay = lastDate ? new Date(Date.parse(lastDate + "T00:00:00Z") + 86400000).toISOString().slice(0, 10) : "";
+    const nextTime = nextDay ? nextDay.replace(/-/g, "") + "150000" : ""; // 行情日期藏在 14 位 time 里
+    const spy = async (url, opts) => {
+      const u = String(url);
+      const r = await REAL_FETCH(u.startsWith("http") ? u : ORIGIN + u, opts);
+      if (/\/quotes/.test(u)) {
+        const j = await r.clone().json();
+        for (const row of (j.rows || [])) row.time = nextTime; // 行情日期推进一天
+        return jsonResponse(j, r.status);
+      }
+      return r;
+    };
+    global.window.fetch = spy;
+    global.fetch = spy;
+
+    const rf = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "⟳");
+    check("找到 ⟳ 以触发行情刷新", !!rf);
+    if (rf) rf.props.onClick({});
+    await until(() => !(((global.__sl_test_state__ || {}).config?.positions) || []).length, 6000);
+    ovNode = ov.render({}); renderTree(ovNode);
+
+    const left = ((global.__sl_test_state__ || {}).config?.positions) || [];
+    check("行情日期跨到下一交易日后，已清仓持仓被自动移除", left.length === 0, JSON.stringify(left));
+    check("移除后持仓页回到「还没有持仓」空态", /还没有持仓/.test(textOf(ovNode).join(" ")), textOf(ovNode).join(" ").slice(0, 160));
+    check("移除后收益胶囊消失（无持仓即无汇总）", !readBarEarnText(), "");
+    global.window.fetch = patchedFetch;
+    global.fetch = patchedFetch;
   }
 }
 

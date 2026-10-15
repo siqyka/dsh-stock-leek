@@ -152,6 +152,13 @@ window.__ModuleLoader__.load({
 .sl-sug-tag{font-size:9px;border:1px solid var(--sl-border-soft);border-radius:4px;padding:0 4px;color:var(--sl-dim)}
 /* 拖动排序 */
 .sl-sortable{position:relative}
+/* 行数超过阈值时列表内部滚动：表头与搜索框因此始终可见，不必滚到最底才找得到。
+   阈值不是 CSS 常量而是实测行高（各列表行高不同），见 useListCap。 */
+.sl-sortable-cap{overflow-y:auto;overscroll-behavior:contain}
+.sl-sortable-cap::-webkit-scrollbar{width:8px}
+.sl-sortable-cap::-webkit-scrollbar-thumb{background:var(--sl-border);border-radius:4px;border:2px solid transparent;background-clip:content-box}
+.sl-sortable-cap::-webkit-scrollbar-thumb:hover{background:var(--sl-muted);background-clip:content-box}
+.sl-sortable-cap::-webkit-scrollbar-track{background:transparent}
 .sl-grip{flex:none;width:14px;text-align:center;color:var(--sl-muted);cursor:grab;user-select:none;-webkit-user-select:none;font-size:12px;line-height:1.4;opacity:0;touch-action:none;transition:opacity .12s ease,color .12s ease}
 .sl-row:hover .sl-grip,.sl-pos:hover .sl-grip,.sl-grip:hover{opacity:.75}
 .sl-grip:hover{opacity:1;color:var(--sl-accent)}
@@ -305,6 +312,15 @@ window.__ModuleLoader__.load({
     function clamp(v, a, b) {
       return Math.min(b, Math.max(a, v));
     }
+    // lib/shared.js 的内联副本：client.js 无法 import 共享模块（见 docs/architecture.md）。
+    // 任何一侧单独改动都会被 test/shared-drift.mjs 对拍出来。
+    function curveRefreshTick(updatedAt, pollMs) {
+      const t = Number(updatedAt);
+      if (!Number.isFinite(t) || t <= 0) return 0;
+      const p = Number(pollMs);
+      const win = Number.isFinite(p) && p >= 1000 ? p : 5000;
+      return Math.floor(t / win);
+    }
     function fmtPrice(p) {
       const n = Number(p);
       if (!Number.isFinite(n)) return "--";
@@ -451,6 +467,9 @@ window.__ModuleLoader__.load({
     };
     function setState(patch) {
       state = Object.assign({}, state, patch);
+      // 测试钩子：暴露当前 store，供 e2e 读取真实配置（如 pollMs）而非猜测。
+      // 用 globalThis 而非 export —— 这里是浏览器工厂，没有模块出口。
+      globalThis.__sl_test_state__ = state;
       for (const l of listeners) l();
     }
     function subscribe(l) {
@@ -565,6 +584,24 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     }
 
     let saveTimer = null;
+    /**
+     * 配置落库的防抖延迟（毫秒）。
+     *
+     * 存在的意义是把连续多次改动（比如拖动排序）合并成一次 POST。
+     * 代价是**每次改配置后都有 500ms 内数据不一致的窗口**：测试里必须
+     * 「等落库」再断言，于是几十条用例各睡 700ms，整个套件要 25 秒。
+     *
+     * 因此把延迟抽出来，并允许测试用 globalThis.__SL_SAVE_DEBOUNCE__ 覆盖成 0。
+     * 注意不能用 process.env——浏览器里没有 process（见 docs/development.md）。
+     */
+    function saveDebounceMs() {
+      try {
+        const v = Number(globalThis.__SL_SAVE_DEBOUNCE__);
+        if (Number.isFinite(v) && v >= 0) return v;
+      } catch { /* ignore */ }
+      return 500;
+    }
+
     function persistConfig(cfg) {
       try {
         localStorage.setItem(LS_CONFIG, JSON.stringify(cfg));
@@ -592,7 +629,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         } catch {
           toast("配置保存到 Host 失败（已存本地缓存）", "#ff5555");
         }
-      }, 500);
+      }, saveDebounceMs());
     }
 
     function updateConfig(mutator) {
@@ -643,6 +680,33 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       const quotes = Object.assign({}, state.quotes);
       for (const row of rows || []) quotes[row.code] = row;
       setState({ quotes, updatedAt: updatedAt || Date.now(), error: error === undefined ? state.error : error });
+      // 行情日期变了才可能跨过"下一个交易日"，这里做一次清理。
+      // 每轮都调也没关系：判定是纯计算，没得删时立刻返回，不产生任何写入。
+      purgeStaleClosedPositions();
+    }
+    /**
+     * 移除「上一交易日已清仓」的持仓。
+     *
+     * 当日清仓的**保留**（用户还要看今天赚没赚），跨到下一个交易日才删。
+     * 刻意放在行情更新后触发：只有行情日期前进才可能判定过期，
+     * 周末/节假日期间行情日期不动，于是不会误删。
+     */
+    function purgeStaleClosedPositions() {
+      const cfg = state.config;
+      if (!cfg || !Array.isArray(cfg.positions) || !cfg.positions.length) return 0;
+      const quotes = state.quotes || {};
+      const stale = [];
+      for (const p of cfg.positions) {
+        const q = quotes[p.code];
+        if (isStaleClosedPosition(p, q ? quoteDate(q) : "")) stale.push(p.code);
+      }
+      if (!stale.length) return 0;
+      updateConfig((c) => {
+        c.positions = c.positions.filter((p) => stale.indexOf(p.code) < 0);
+        return c;
+      });
+      toast("已清理 " + stale.length + " 只上一交易日清仓的持仓", "#8be9fd");
+      return stale.length;
     }
     function sseSupported() {
       return typeof EventSource === "function";
@@ -906,6 +970,55 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     function DropLine() {
       return h("div", { className: "sl-dropline" });
     }
+
+    /** 列表超过该行数时，内部出现滚动条（表头与搜索框留在视野内） */
+    const MAX_VISIBLE_ROWS = 10;
+
+    /**
+     * 给可排序列表加「最多显示 MAX_VISIBLE_ROWS 行」的上限。
+     *
+     * 上限按**实测行高**算，而不是写死像素：大盘行是两行式名称（名称+代码），
+     * 自选行更矮，写死常量会在其中一种布局下多露半行或提前截断。
+     *
+     * 行高取前若干行的**最小值**：持仓行展开后会多出交易面板，比收起时高得多，
+     * 若恰好用第一行（可能正展开着）当基准，上限会被撑成一大截，等于没限制。
+     *
+     * 行数不足上限时返回 null，不加 class，让容器自然撑开
+     * （否则会出现"能滚但没内容"的空滚动条）。
+     *
+     * 用 ResizeObserver 跟踪：窗口缩放会改变字号进而改变行高，只测一次会失准。
+     */
+    function useListCap(listRef, count) {
+      const [cap, setCap] = useState(null);
+      useEffect(() => {
+        const el = listRef.current;
+        if (!el) return undefined;
+        const measure = () => {
+          if (count <= MAX_VISIBLE_ROWS) { setCap(null); return; }
+          const rows = el.querySelectorAll("[data-sl-idx]");
+          let rowH = 0;
+          const n = Math.min(rows.length, 12);
+          for (let i = 0; i < n; i++) {
+            const h = rows[i].getBoundingClientRect().height;
+            // 测试环境与首帧可能量不到高度，量不到就保持现状，等下一轮
+            if (h > 0 && (rowH === 0 || h < rowH)) rowH = h;
+          }
+          if (!rowH) return;
+          setCap(Math.round(rowH * MAX_VISIBLE_ROWS) + 1);
+        };
+        measure();
+        let ro = null;
+        try {
+          if (typeof ResizeObserver === "function") {
+            ro = new ResizeObserver(measure);
+            ro.observe(el);
+          }
+        } catch { /* 老浏览器无 ResizeObserver，量一次也够用 */ }
+        return () => { if (ro) ro.disconnect(); };
+      }, [listRef, count]);
+      return cap;
+    }
+
     function addWatch(item) {
       updateConfig((cfg) => {
         if (cfgFind(cfg.watchlist, item.code)) {
@@ -1054,6 +1167,49 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       if (yest === null) return 0; // 无昨收：无法计算今日，返回 0
       const heldFromYesterday = qty - net;
       return qty * now + sellAmt - buyAmt - heldFromYesterday * yest;
+    }
+    /**
+     * 这只持仓是否已过期（下一个交易日该移除）。lib/shared.js 的内联副本。
+     * 判据用**行情日期**而非本地日期：行情日期天然跳过周末/节假日与盘前时段，
+     * 不会在周末误删周五清仓的票。详见 lib/shared.js 的注释。
+     */
+    function isStaleClosedPosition(p, refDate) {
+      if (!p || (p.qty || 0) !== 0) return false;
+      const txns = Array.isArray(p.txns) ? p.txns : [];
+      if (!txns.length) return false;
+      let last = "";
+      for (const t of txns) {
+        const d = String((t && t.date) || "");
+        if (d > last) last = d;
+      }
+      if (!last) return false;
+      const ref = String(refDate || "");
+      if (!ref) return false;
+      return ref > last;
+    }
+    /**
+     * 已实现盈亏（相对成本口径），用于**清仓后**的累计盈亏。
+     *   已实现 = 今日卖出额 − 今日买入额 − 昨仓 × 成本
+     * 清仓时市值与成本都归零，`value − cost` 会让累计盈亏凭空归零——但钱是赚到了的。
+     * 用它接住，让累计盈亏在清仓瞬间保持连续：
+     *   卖出前 (12−10)×100 = 200；清仓后 1200 − 0 − 100×10 = 200
+     * lib/shared.js 的内联副本，两端由 test/shared-drift.mjs 对拍。
+     */
+    function realizedPnl(p, q) {
+      if (!q || !Number.isFinite(q.price)) return 0;
+      const today = quoteDate(q);
+      const txns = (p.txns || []).filter((t) => t.date === today);
+      if (txns.length === 0) return 0;
+      const qty = p.qty || 0;
+      const cost = Number.isFinite(p.cost) ? p.cost : 0;
+      let net = 0, buyAmt = 0, sellAmt = 0;
+      for (const t of txns) {
+        net += t.qty;
+        if (t.qty > 0) buyAmt += t.price * t.qty;
+        else sellAmt += t.price * -t.qty;
+      }
+      const heldFromYesterday = qty - net;
+      return sellAmt - buyAmt - heldFromYesterday * cost;
     }
     function openOverlay(tab) {
       setState({ open: true, tab: tab || state.tab });
@@ -1245,10 +1401,14 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
  * 基线 0 元即「今日不赚不亏」，能直观看出今天几点开始赚的 / 从哪里开始亏的。
  */
     function PnlCurve(props) {
-      const rows = props.rows || []; // [{code,name,series:[{t,v}]}]
+      const rows = props.rows || []; // [{code,series:[{t,p}],yest,qty,heldYest,buyAmt,sellAmt}]
       const W = props.width || 404;
       const H = props.height || 96;
       const padL = 4, padR = 52, padT = 10, padB = 16;
+      // 实时价在渲染时现取，而不是存进 curve state。
+      // 这样每次行情推送（按设置的刷新间隔）曲线末端都会跟着动，
+      // 不必等 /minute 重拉——曲线是「随行情刷新」的，不是「随分时刷新」的。
+      const quotes = (props.quotes) || {};
       if (!rows.length || !rows.some((r) => r.series && r.series.length >= 2)) {
         return h("div", { className: "sl-empty" }, "暂无当日盈亏曲线（休市或该市场不支持分时）");
       }
@@ -1274,6 +1434,20 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         }
         return { t, p: sum };
       });
+      // 末端接上实时价：分时接口是分钟粒度，最后一个点可能落后好几分钟，
+      // 直接取它会让曲线右端比实际持仓盈亏"卡住"，与上方数字对不上。
+      // 用当前报价替换末点价格，使曲线末值 ≡ 持仓页的今日盈亏（同一口径）。
+      if (pts.length) {
+        let lastSum = 0, any = false;
+        for (const r of rows) {
+          const q = quotes[r.code];
+          const live = q && Number.isFinite(q.price) ? q.price : null;
+          if (live === null || r.yest === null || !Number.isFinite(r.yest)) continue;
+          lastSum += live * r.qty + r.sellAmt - r.buyAmt - r.heldYest * r.yest;
+          any = true;
+        }
+        if (any) pts[pts.length - 1] = { t: pts[pts.length - 1].t, p: lastSum };
+      }
       let min = Infinity, max = -Infinity;
       for (const p of pts) { if (p.p < min) min = p.p; if (p.p > max) max = p.p; }
       min = Math.min(min, 0);
@@ -1727,6 +1901,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       const cfg = s.config;
       const listRef = useRef(null);
       const { drag, startDrag } = useDragReorder(listRef, (from, to) => reorderList("indices", from, to));
+      const cap = useListCap(listRef, cfg ? cfg.indices.length : 0);
       if (!cfg) return h("div", { className: "sl-empty" }, "加载中…");
       const dropAt = (i) => drag && drag.overAt === i;
       return h(
@@ -1739,7 +1914,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           h("span", { className: "sl-h-pct" }, "涨跌幅"),
           h("span", { className: "sl-h-amt" }, "成交额"),
           h("span", { className: "sl-h-turn" }, "换手")),
-        h("div", { className: "sl-sortable" + (drag ? " sl-sorting" : ""), ref: listRef },
+        h("div", { className: "sl-sortable" + (cap ? " sl-sortable-cap" : "") + (drag ? " sl-sorting" : ""), ref: listRef, style: cap ? { maxHeight: cap + "px" } : null },
           cfg.indices.map((idx, i) => {
             const q = s.quotes[idx.code];
             const pct = q ? q.percent : null;
@@ -1794,6 +1969,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       const cfg = s.config;
       const listRef = useRef(null);
       const { drag, startDrag } = useDragReorder(listRef, (from, to) => reorderList("watchlist", from, to));
+      const cap = useListCap(listRef, cfg ? cfg.watchlist.length : 0);
       if (!cfg) return h("div", { className: "sl-empty" }, "加载中…");
       const dropAt = (i) => drag && drag.overAt === i;
       return h(
@@ -1810,7 +1986,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               h("span", { className: "sl-h-amt" }, "成交额"),
               h("span", { className: "sl-h-turn" }, "换手"))
           : null,
-        h("div", { className: "sl-sortable" + (drag ? " sl-sorting" : ""), ref: listRef },
+        h("div", { className: "sl-sortable" + (cap ? " sl-sortable-cap" : "") + (drag ? " sl-sorting" : ""), ref: listRef, style: cap ? { maxHeight: cap + "px" } : null },
           cfg.watchlist.map((w, i) => {
             const q = s.quotes[w.code];
             const pct = q ? q.percent : null;
@@ -1912,10 +2088,24 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       // 注意：Hooks 必须无条件调用，因此放在 cfg 为空的早返回之前
       const posList = cfg ? cfg.positions : [];
       const posKey = posList.map((p) => p.code + ":" + p.qty + ":" + (p.txns || []).length).join("|");
+      const posCap = useListCap(listRef, posList.length);
+
+      // 曲线要跟着行情一起长：右侧端点与末值都随行情变动。
+      // 原本依赖里只有 posKey/curveOn，盘中无论行情刷新多少次曲线都纹丝不动。
+      //
+      // 这里依赖 s.updatedAt（每轮行情推送都会变），但**不直接跟着它跑**：
+      // SSE 推送频率高，逐次重拉会把 /minute 打成小 hammers。
+      // 故取「一个刷新周期」的 tick 作依赖——窗口用设置里的 pollMs，
+      // 用户把刷新间隔调到 3s，曲线就每 3s 跟一次，不会被写死的一分钟拖住。
+      // 逻辑抽在 lib/shared.js 的 curveRefreshTick，可被 shared-drift 直接对拍。
+      const pollMs = cfg && Number.isFinite(cfg.pollMs) ? cfg.pollMs : 5000;
+      const quoteTick = curveRefreshTick(s.updatedAt, pollMs);
+      const curveKey = posKey + "@" + quoteTick + "@" + pollMs;
       useEffect(() => {
         if (!curveOn || !posList.length) { setCurve(null); return undefined; }
         let alive = true;
-        setCurve(null);
+        // 不再 setCurve(null)：重拉时若先清空，曲线会闪一下。
+        // 保留旧曲线，等新数据到了再替换。
         Promise.all(
           posList.map((p) =>
             api("/minute", { code: p.code })
@@ -1934,6 +2124,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             if (yest === null) continue;
             let buyAmt = 0, sellAmt = 0, net = 0;
             for (const t of txns) { net += t.qty; if (t.qty > 0) buyAmt += t.price * t.qty; else sellAmt += t.price * -t.qty; }
+            // 注意：这里**不存实时价**。curve 只放 /minute 的形状（分钟粒度，很少变）；
+            // 实时价由 PnlCurve 在渲染时从 quotes 现取，
+            // 这样曲线末端才能跟着刷新间隔每次推送都动，而不是等下次重拉分时才更新。
             rows.push({
               code: p.code,
               series: r.points.map((pt) => ({ t: pt.t, p: pt.p })),
@@ -1947,17 +2140,20 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           setCurve(rows);
         });
         return () => { alive = false; };
-      }, [posKey, curveOn]);
+      }, [curveKey, curveOn]);
       if (!cfg) return h("div", { className: "sl-empty" }, "加载中…");
-      let totalCost = 0, totalValue = 0, totalToday = 0;
+      let totalCost = 0, totalValue = 0, totalToday = 0, totalRealized = 0;
       const rows = cfg.positions.map((p) => {
         const q = s.quotes[p.code];
         const price = q ? q.price : null;
         const cost = p.cost || 0;
         const qty = p.qty || 0;
         const mv = price !== null && qty ? price * qty : 0;
-        const pnl = cost && qty && price !== null ? (price - cost) * qty : 0;
-        const pnlPct = cost && price !== null ? ((price - cost) / cost) * 100 : null;
+        // 清仓（qty=0）：市值与浮盈都归零，但累计盈亏要接住已实现部分，
+        // 否则「累计」会在清仓瞬间从 +X 跳成 0，与顶部总览口径也对不上。
+        const rp = qty ? 0 : realizedPnl(p, q);
+        const pnl = cost && qty && price !== null ? (price - cost) * qty : rp;
+        const pnlPct = cost && price !== null && qty ? ((price - cost) / cost) * 100 : null;
         const today = price !== null ? todayPnl(p, q) : 0;
         const yestValue = mv - today; // 昨收市值 = 现市值 − 今日盈亏
         const todayPct = qty && yestValue > 0 ? (today / yestValue) * 100 : null;
@@ -1966,9 +2162,10 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         totalCost += cost * qty;
         totalValue += mv;
         totalToday += today;
-        return { p, q, price, mv, pnl, pnlPct, today, todayPct, txnCount, todayTxn };
+        totalRealized += rp;
+        return { p, q, price, mv, pnl, pnlPct, today, todayPct, txnCount, todayTxn, closed: !qty };
       });
-      const totalPnl = totalValue - totalCost;
+      const totalPnl = totalValue - totalCost + totalRealized;
       const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : null;
       const sign = (v) => (v > 0 ? "sl-up" : v < 0 ? "sl-down" : "sl-flat");
       const resetForm = () => setForm({ side: "buy", price: "", qty: "", date: "" });
@@ -2007,10 +2204,10 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                   onClick: () => updateConfig((c) => { c.pnlCurve = !curveOn; return c; }),
                   "data-sltip": curveOn ? "点击收起曲线" : "点击展开曲线（会拉取各持仓分时）",
                 }, curveOn ? "收起" : "展开")),
-              curveOn ? h(PnlCurve, { rows: curve || [] }) : null)
+              curveOn ? h(PnlCurve, { rows: curve || [], quotes: s.quotes }) : null)
           : null,
         h("div", { className: "sl-headrow" }, h("span", null, ""), h("span", null, "持仓"), h("span", null, "成本/现价"), h("span", null, "股数"), h("span", null, "市值/涨幅"), h("span", null, "盈亏"), h("span", null, "今日")),
-        h("div", { className: "sl-sortable" + (drag ? " sl-sorting" : ""), ref: listRef },
+        h("div", { className: "sl-sortable" + (posCap ? " sl-sortable-cap" : "") + (drag ? " sl-sorting" : ""), ref: listRef, style: posCap ? { maxHeight: posCap + "px" } : null },
           rows.map(({ p, q, price, mv, pnl, pnlPct, today, todayPct, txnCount, todayTxn }, i) => {
             const expanded = openCode === p.code;
             return h(
@@ -2484,11 +2681,14 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               detail.rows.map((r) =>
                 h("div", {
                   key: r.code, className: "sl-pop-row",
-                  "data-sltip": r.name + "（" + displayCode(r.code) + "）\n今日 " + fmtMoneyExact(r.today) + " 元" + (r.todayPct !== null ? "（" + fmtPct(r.todayPct) + "）" : "")
+                  // 已清仓：市值归零但今日/累计是已实现盈亏，必须显式说明，
+                  // 否则用户以为这只票的收益被系统吞了
+                  "data-sltip": r.name + "（" + displayCode(r.code) + "）" + (r.closed ? "　已清仓" : "")
+                    + "\n今日 " + fmtMoneyExact(r.today) + " 元" + (r.todayPct !== null ? "（" + fmtPct(r.todayPct) + "）" : "")
                     + "\n累计 " + fmtMoneyExact(r.pnl) + " 元" + (r.pnlPct !== null ? "（" + fmtPct(r.pnlPct) + "）" : "")
                     + "\n成本 " + (r.cost ? fmtPrice(r.cost) : "—") + " × " + r.qty + " 股 · 现价 " + fmtPrice(r.price) + " · 市值 " + fmtExact(r.mv) + " 元",
                 },
-                  h("span", { className: "sl-pop-nm" }, r.name),
+                  h("span", { className: "sl-pop-nm" }, r.name + (r.closed ? "（已清仓）" : "")),
                   h("span", { className: "sl-pop-pnl " + sign(r.today) }, fmtSigned(r.today) + " " + fmtPrice(r.price) + (r.todayPct !== null ? " " + fmtPct(r.todayPct) : "")))),
               h("div", { className: "sl-pop-foot" }, "点击管理持仓"),
             )
@@ -2525,21 +2725,30 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       };
     }
 
-    /** 汇总持仓收益：{ has, cost, value, today, pnl, pnlPct }（依赖已填成本/股数的持仓） */
+    /** 汇总持仓收益：{ has, cost, value, today, realized, pnl, pnlPct }（依赖已填成本/股数的持仓） */
     function computeEarnings(cfg, quotes) {
-      let cost = 0, value = 0, today = 0, has = false;
+      let cost = 0, value = 0, today = 0, realized = 0, has = false;
       for (const p of cfg.positions || []) {
         const q = quotes[p.code];
+        if (!q) continue; // 没行情：整只跳过，不能凭空造数
         const qty = p.qty || 0;
         const c = p.cost || 0;
-        if (!q || !qty) continue;
+        // 今日盈亏与是否持仓无关：清仓股当天卖出的钱是真实盈亏，
+        // 不能因为 qty 归零就从汇总里抹掉（这是清仓后收益消失的根因）。
+        const td = todayPnl(p, q);
+        today += td;
+        if (!qty) {
+          // 清仓：市值/成本按 0 计，但已实现盈亏要接住，否则累计会凭空归零
+          realized += realizedPnl(p, q);
+          if (td !== 0) has = true; // 今天动过这只，界面仍需展示汇总
+          continue;
+        }
         has = true;
         cost += c * qty;
         value += q.price * qty;
-        today += todayPnl(p, q);
       }
-      const pnl = value - cost;
-      return { has, cost, value, today, pnl, pnlPct: cost > 0 ? (pnl / cost) * 100 : null };
+      const pnl = value - cost + realized;
+      return { has, cost, value, today, realized, pnl, pnlPct: cost > 0 ? (pnl / cost) * 100 : null };
     }
     /**
      * 悬浮窗标题随今日盈亏「变脸」（纯 UI 彩蛋，不影响任何数据）：
@@ -2555,31 +2764,42 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     }
     /** 收益明细：汇总 + 每只持仓（用于悬浮窗 hover 浮层） */
     function earningsDetail(cfg, quotes) {
-      let cost = 0, value = 0, today = 0, has = false;
+      let cost = 0, value = 0, today = 0, realized = 0, has = false;
       const rows = [];
       for (const p of cfg.positions || []) {
         const q = quotes[p.code];
+        if (!q) continue; // 没行情：整只跳过
         const qty = p.qty || 0;
         const c = p.cost || 0;
-        if (!q || !qty) continue;
+        const td = todayPnl(p, q);
+        if (!qty) {
+          // 清仓股：市值/成本为 0，但今日已实现盈亏要显示出来，
+          // 否则用户卖完后从明细里看到这只票凭空消失，以为数据丢了。
+          const rp = realizedPnl(p, q);
+          if (rp === 0 && td === 0) continue; // 既没持仓又没今日成交：不必展示
+          has = true;
+          today += td;
+          realized += rp;
+          rows.push({ code: p.code, name: q.name || p.name || displayCode(p.code), price: q.price, qty: 0, cost: c, mv: 0, pnl: rp, pnlPct: null, today: td, todayPct: null, closed: true });
+          continue;
+        }
         has = true;
         const mv = q.price * qty;
         const pnl = c ? (q.price - c) * qty : 0;
         const pnlPct = c ? ((q.price - c) / c) * 100 : null;
-        const td = todayPnl(p, q);
         // 当日涨幅 = 今日盈亏 / 昨收市值（昨收市值 = 现市值 − 今日盈亏），与持仓页口径一致
         const yestValue = mv - td;
-        const todayPct = qty && yestValue > 0 ? (td / yestValue) * 100 : null;
+        const todayPct = yestValue > 0 ? (td / yestValue) * 100 : null;
         cost += c * qty;
         value += mv;
         today += td;
         rows.push({ code: p.code, name: (q && q.name) || p.name || displayCode(p.code), price: q.price, qty, cost: c, mv, pnl, pnlPct, today: td, todayPct });
       }
-      const pnl = value - cost;
+      const pnl = value - cost + realized;
       const yestTotal = value - today;
       rows.sort((a, b) => b.mv - a.mv);
       return {
-        has, cost, value, today, pnl,
+        has, cost, value, today, realized, pnl,
         pnlPct: cost > 0 ? (pnl / cost) * 100 : null,
         todayPct: yestTotal > 0 ? (today / yestTotal) * 100 : null,
         rows,
