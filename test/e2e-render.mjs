@@ -1636,18 +1636,56 @@ if (txnMi) {
   };
   // 复位到已知状态：清掉可能残留的规则与已读时间
   const cfgNow = () => globalThis.__sl_test_state__.config;
+  /** 走真实交互进入预警二级页：点「设置」tab → 点「🔔 预警」按钮 */
+  const openAlertPanelForTest = () => {
+    const t = clickTab("设置");
+    void t;
+    const entry = findNode(ovNode, (n) => n.type === "button" && /🔔 预警/.test(String((n.children && n.children[0]) || "")));
+    if (!entry) return "";
+    click(entry);
+    ovNode = ov.render({}); renderTree(ovNode);
+    return textOf(ovNode).join(" ");
+  };
   await hostPost("/dsh-stock-leek/config", { config: Object.assign({}, cfgNow(), { alerts: [], remind: true }) });
   globalThis.__sl_test_state__ = null;
   try { globalThis.localStorage.removeItem("sl.alert.seen.v1"); } catch { /* ignore */ }
   ovNode = ov.render({});
   renderTree(ovNode);
 
-  // 1) 预警 tab 存在且可进入（第五个 tab）
-  const alertTab = findNode(ovNode, (n) => n.type === "button" && /^预警/.test(String((n.children && n.children[0]) || "")));
-  check("标题栏有「预警」tab", !!alertTab);
-  ovText = clickTab("预警");
-  check("预警页可渲染", /预警总开关/.test(ovText), ovText.slice(0, 120));
+  // 1) 预警**不占 tab**：从设置页按钮进入二级页
+  // 注意：只检查"四个 tab 都在"挡不住"多了一个预警 tab"，必须同时检查数量恰好为 4
+  const tabsNode = findNode(ovNode, (n) => String((n.props && n.props.className) || "") === "sl-tabs");
+  const tabBtnCount = (function count(node) {
+    if (!node || typeof node !== "object") return 0;
+    if (Array.isArray(node)) return node.reduce((a, c) => a + count(c), 0);
+    if (node.type === "button") return 1;
+    return (node.__rendered ? count(node.__rendered) : 0) + (node.children ? count(node.children) : 0);
+  })(tabsNode);
+  check("标题栏恰好四个 tab（预警不占位）", tabBtnCount === 4, tabBtnCount);
+  const tabLabels = ["大盘", "自选", "持仓", "设置"];
+  const tabBtns = tabLabels.map((t) => findNode(ovNode, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === t));
+  check("四个 tab 名称正确", tabBtns.every(Boolean), tabLabels.map((t, i) => t + ":" + !!tabBtns[i]));
+  check("标题栏没有「预警」tab", !findNode(ovNode, (n) => n.type === "button" && /^预警/.test(String((n.children && n.children[0]) || ""))));
+
+  ovText = clickTab("设置");
+  const alertEntry = findNode(ovNode, (n) => n.type === "button" && /🔔 预警/.test(String((n.children && n.children[0]) || "")));
+  check("设置页有预警入口按钮", !!alertEntry, ovText.slice(0, 200));
+  ovText = openAlertPanelForTest();
+  check("点击后进入预警二级页", /预警总开关/.test(ovText), ovText.slice(0, 120));
+  check("二级页有返回按钮", !!findNode(ovNode, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "← 返回"));
   check("空规则时有引导文案", /还没有预警规则/.test(ovText), ovText.slice(0, 160));
+
+  // 点 tab 必须退出二级页回到设置（否则「点了设置却还停在预警」；这是实现里踩过的真问题）
+  ovText = clickTab("设置");
+  check("点「设置」tab 退出二级页回到设置页", /恢复默认|测试数据源/.test(ovText) && !/预警总开关/.test(ovText), ovText.slice(0, 160));
+  // 返回按钮同样退出
+  ovText = openAlertPanelForTest();
+  check("可再次进入二级页", /预警总开关/.test(ovText));
+  click(findNode(ovNode, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "← 返回"));
+  ovNode = ov.render({}); renderTree(ovNode);
+  ovText = textOf(ovNode).join(" ");
+  check("点「← 返回」退出二级页", /恢复默认|测试数据源/.test(ovText) && !/预警总开关/.test(ovText), ovText.slice(0, 160));
+  ovText = openAlertPanelForTest();
 
   // 2) 表单新增规则：走真实输入 onchange（harness 模式）
   const codeInput = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "代码/选择");
@@ -1688,40 +1726,37 @@ if (txnMi) {
   ovNode = ov.render({}); renderTree(ovNode);
   check("再次点击恢复启用", cfgNow().alerts[0].enabled !== false, cfgNow().alerts[0]);
 
-  // 5) 铃铛常驻：**收起态下也必须在**（回来时栏通常是收着的，那正是最想知道错过什么的时刻）
+  // 5) 左下角**不放提醒图标**（用户明确要求）：展开与收起态都不得出现铃铛
   {
     const floatReg2 = findReg("shell.overlay", "dsh-stock-leek.floating-bar");
     const prevNow = globalThis.__sl_now__;
-    // 钉一个「收盘后」时刻：此时按 §8a 的规则，指数胶囊与收益胶囊都应消失
+    const hasBell = (node) => !!findNode(node, (n) => /sl-bell/.test(String((n.props && n.props.className) || "")));
+
+    // 盘中（展开态）
+    globalThis.__sl_now__ = Date.parse("2026-10-15T00:00:00Z") + (10 * 60 - 480) * 60000; // 北京 10:00
+    const bnOpen = floatReg2.render({});
+    renderTree(bnOpen);
+    check("盘中展开态：左下角没有铃铛", !hasBell(bnOpen), textOf(bnOpen).join(" ").slice(0, 120));
+
+    // 收盘后（收起态）
     globalThis.__sl_now__ = Date.parse("2026-10-15T00:00:00Z") + (20 * 60 - 480) * 60000; // 北京 20:00
     const bn = floatReg2.render({});
     renderTree(bn);
     const barTxt = textOf(bn).join(" ");
-    const bell = findNode(bn, (n) => String((n.props && n.props.className) || "").indexOf("sl-bell") >= 0);
-    check("收起态仍渲染铃铛", !!bell, barTxt.slice(0, 120));
+    check("收起态：左下角没有铃铛", !hasBell(bn), barTxt.slice(0, 120));
     check("收起态确实没有指数胶囊（前提成立）", barTxt.indexOf("上证") < 0, barTxt.slice(0, 120));
     check("收起态仍留设置按钮", barTxt.indexOf("⚙") >= 0, barTxt.slice(0, 120));
     globalThis.__sl_now__ = prevNow;
 
-    // 未读角标：**真写一条账本事件**（Host 测试通道），再走客户端真实路径刷新。
-    // 不直接改 store 快照——那不是生产路径，断言会空转。
+    // 账本仍照常写入：提醒图标没了，但「Host 独立评估 + 账本」这条链不受影响
     const c1 = cfgNow();
     await hostPost("/dsh-stock-leek/config", {
       config: Object.assign({}, c1, { remind: true, alerts: [{ id: "bell1", code: "sh600519", type: "price_above", value: 1, enabled: true }] }),
     });
-    // 阈值 1 远低于现价 → 上穿成立，写一条 triggered 事件进账本
     __alertTickForTest({ remind: true, positions: [], alerts: [{ id: "bell1", code: "sh600519", type: "price_above", value: 1, enabled: true }] },
       [{ code: "sh600519", name: "贵州茅台", price: 1700, percent: 2, time: "20261015100000" }], {});
-    try { global.localStorage.removeItem("sl.alert.seen.v1"); } catch { /* ignore */ }
-    // 走真实交互：点铃铛 → 触发 markAlertsSeen + refreshAlerts（真实 HTTP 拉账本）
-    const bnA = floatReg2.render({});
-    renderTree(bnA);
-    const bellBtn = findNode(bnA, (n) => String((n.props && n.props.className) || "").indexOf("sl-bell") >= 0);
-    check("铃铛可点击", !!(bellBtn && typeof bellBtn.props.onClick === "function"));
-    // 先只做「拉取账本」这一半：refreshAlerts 由 initStore/点击触发，这里直接 HTTP 验证账本已有事件
     const ledger = await hostJson("/dsh-stock-leek/alerts");
-    check("Host 账本已写入触发事件（角标的数据源）", Array.isArray(ledger.events) && ledger.events.length > 0, ledger.events && ledger.events.length);
-    void bellBtn;
+    check("无提醒图标但账本照常记录（评估与 UI 解耦）", Array.isArray(ledger.events) && ledger.events.length > 0, ledger.events && ledger.events.length);
   }
 
   // 6) 右键「设为预警」→ 弹层预填现价
@@ -1752,7 +1787,7 @@ if (txnMi) {
 
   // 7) 触发历史渲染（直接读 Host 账本 → 有事件就应出现时间行）
   ovNode = ov.render({}); renderTree(ovNode);
-  ovText = clickTab("预警");
+  ovText = openAlertPanelForTest();
   const hist = await hostJson("/dsh-stock-leek/alerts");
   if (Array.isArray(hist.events) && hist.events.length > 0) {
     ovNode = ov.render({}); renderTree(ovNode);
@@ -1842,10 +1877,15 @@ if (txnMi) {
   };
   const setHidden = (v) => { global.document.hidden = v; };
 
-  // 1) 权限只在用户手势时申请：加载/渲染预警页都不该触发 requestPermission
+  // 1) 权限只在用户手势时申请：加载/进入预警页都不该触发 requestPermission
   const calls = stubNotification("default");
   ovNode = ov.render({}); renderTree(ovNode);
-  ovText = clickTab("预警");
+  clickTab("设置");
+  const entry2 = findNode(ovNode, (n) => n.type === "button" && /🔔 预警/.test(String((n.children && n.children[0]) || "")));
+  check("设置页预警入口存在（通知用例前提）", !!entry2);
+  click(entry2);
+  ovNode = ov.render({}); renderTree(ovNode);
+  ovText = textOf(ovNode).join(" ");
   check("渲染预警页不申请通知权限（需用户手势）", !calls.some((c) => c.asked), calls);
 
   // 2) 按钮点击才申请，并把结果写进 state

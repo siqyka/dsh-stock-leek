@@ -94,12 +94,7 @@ window.__ModuleLoader__.load({
 .sl-bar-btn:hover{color:var(--sl-text);border-color:var(--sl-border-soft);background:var(--sl-hover)}
 .sl-bar-dot{width:6px;height:6px;border-radius:50%;display:inline-block;background:var(--sl-muted)}
 .sl-bar-dot.sl-open{background:var(--sl-up);box-shadow:0 0 6px var(--sl-up)}
-/* 预警铃铛：常驻（含收起态），未读时高亮 + 角标 */
-.sl-bell{position:relative;flex:none;cursor:pointer;font-size:12px;line-height:1.5;padding:0 2px;color:var(--sl-muted);user-select:none;-webkit-user-select:none}
-.sl-bell:hover{color:var(--sl-text)}
-.sl-bell-on{color:var(--sl-warn)}
-.sl-bell-badge{position:absolute;top:-3px;left:9px;min-width:13px;height:13px;padding:0 3px;border-radius:999px;background:var(--sl-up);color:#fff;font-size:9px;line-height:13px;text-align:center;font-variant-numeric:tabular-nums}
-/* ---------------- 预警页 ---------------- */
+/* ---------------- 预警页（设置内的二级页） ---------------- */
 .sl-alert{display:flex;flex-direction:column;gap:6px}
 .sl-alert-add{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 .sl-alert-add .sl-input{padding:3px 6px;font-size:11px}
@@ -612,6 +607,7 @@ window.__ModuleLoader__.load({
       alertEvents: [], // GET /alerts 的触发历史（Host 账本快照；重连/重开页面靠它补齐）
       alertStates: {}, // ruleId → {phase, day}，展示每条规则的滞回/待命状态
       alertSeenAt: 0, // 角标已读时间戳（localStorage 恢复；unread = events 中 at > 它的条数）
+      alertPanel: false, // 设置页里的预警二级页是否打开（预警不占 tab，从设置进入）
       alertLive: false, // 预警推送通道是否已连上（隐藏时也保持连接）
       notifyPerm: "default", // 桌面通知权限：granted | denied | default | unsupported
       addAlert: null, // 右键「设为预警」弹出的规则对话框 {code, name, preset}
@@ -1003,7 +999,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         if (!mine) return; // 另一个标签页已弹过
         try {
           const n = new Notification("🔔 预警 · " + name, { body, tag: "sl-" + (ev.ruleId || "") + "-" + (ev.at || "") });
-          n.onclick = () => { try { window.focus(); } catch { /* ignore */ } markAlertsSeen(); openOverlay("alert"); };
+          n.onclick = () => { try { window.focus(); } catch { /* ignore */ } markAlertsSeen(); openAlertPanel(); };
         } catch {
           flashTitle(body); // 构造失败（权限被收回等）→ 继续降级
         }
@@ -1616,12 +1612,18 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     }
     /** 进入个股详情：若该股不在自选/持仓里，追加订阅，保证详情页有行情 */
     function openDetail(code, name) {
-      state = Object.assign({}, state, { detail: { code, name } }); // 先落 state，供 syncStreamCodes 读到
+      state = Object.assign({}, state, { detail: { code, name }, alertPanel: false }); // 先落 state，供 syncStreamCodes 读到
       for (const l of listeners) l();
       syncStreamCodes(); // 订阅集合变了 → 重连流
     }
     function closeOverlay() {
-      setState({ open: false, detail: null, menu: null, editPos: null, tip: null });
+      setState({ open: false, detail: null, menu: null, editPos: null, tip: null, alertPanel: false });
+    }
+    /** 打开预警二级页（设置页入口与系统通知点击共用），并顺手标记已读 + 拉一次账本 */
+    function openAlertPanel() {
+      markAlertsSeen();
+      refreshAlerts();
+      setState({ open: true, tab: "settings", detail: null, alertPanel: true });
     }
 
     // ================================================================ 组件：搜索框（添加股票/指数）
@@ -2757,6 +2759,13 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             h("input", { className: "sl-color", type: "color", value: cfg.riseColor, onChange: (e) => updateConfig((c) => { c.riseColor = e.target.value; return c; }) }),
             h("input", { className: "sl-color", type: "color", value: cfg.fallColor, onChange: (e) => updateConfig((c) => { c.fallColor = e.target.value; return c; }) }))),
         h("div", { className: "sl-setrow" },
+          h("span", { className: "sl-setlabel" }, "股票预警"),
+          h("button", {
+            className: "sl-btn",
+            "data-sltip": "规则管理 / 触发历史 / 桌面通知\n评估在 Host 独立循环：关掉页面也会照常记录",
+            onClick: () => openAlertPanel(),
+          }, (() => { const n = alertUnread(s); return n > 0 ? "🔔 预警（" + n + " 条未读）" : "🔔 预警"; })())),
+        h("div", { className: "sl-setrow" },
           h("button", {
             className: "sl-btn", disabled: probing,
             onClick: async () => {
@@ -2809,6 +2818,15 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       return h(
         "div",
         { className: "sl-alert" },
+        // 二级页返回头：预警不占 tab，从设置页进入（复用详情页的返回样式）
+        h("div", { className: "sl-dhead" },
+          h("div", { className: "sl-dtop" },
+            h("button", { className: "sl-back", onClick: () => setState({ alertPanel: false }) }, "← 返回"),
+            h("span", { className: "sl-dname" }, "🔔 预警"),
+            h("span", { style: { flex: 1 } }),
+            s.alertLive
+              ? h("span", { style: { color: "var(--sl-muted)", fontSize: 10 }, "data-sltip": "预警通道已连接：隐藏页面也会保持（零上游请求），触发即推送" }, "通道已连接")
+              : null)),
         // 总开关：关掉后规则保留但不评估（Host 侧同样以它为门）
         h("div", { className: "sl-setrow" },
           h("span", { className: "sl-setlabel" }, "预警总开关"),
@@ -3160,7 +3178,6 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       // 标题随今日盈亏变脸（彩蛋）；无持仓/休市无变动时保持默认名
       const earn = s.config ? computeEarnings(s.config, s.quotes) : null;
       const mood = moodTitle(earn);
-      const unread = alertUnread(s); // 预警未读数（tab 与指数栏铃铛共用同一口径）
       const moodTip = earn && earn.has
         ? "今日盈亏 " + fmtMoneyExact(earn.today) + " 元\n标题会随今日战况变脸：赚钱加鸡腿 · 亏钱关灯吃面"
         : "添加持仓并填写成本/股数后，标题会随今日战况变脸 🍗🍜";
@@ -3185,12 +3202,13 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             },
             h("span", { className: "sl-title", "data-sltip": moodTip }, mood),
             h("span", { className: "sl-tabs" },
-              [["market", "大盘"], ["watch", "自选"], ["position", "持仓"], ["alert", "预警"], ["settings", "设置"]].map(([t, label]) =>
+              [["market", "大盘"], ["watch", "自选"], ["position", "持仓"], ["settings", "设置"]].map(([t, label]) =>
                 h("button", {
                   key: t,
-                  className: "sl-tab" + (s.tab === t && !s.detail ? " sl-tab-on" : ""),
-                  onClick: () => { setState({ tab: t, detail: null }); if (t === "alert") markAlertsSeen(); },
-                }, label + (t === "alert" && unread > 0 ? " " + unread : "")))),
+                  className: "sl-tab" + (s.tab === t && !s.detail && !s.alertPanel ? " sl-tab-on" : ""),
+                  // 点任何 tab 都退出二级页（预警面板挂在设置下，否则会「点了设置却还停在预警」）
+                  onClick: () => setState({ tab: t, detail: null, alertPanel: false }),
+                }, label))),
             h(FreshBadge, { updatedAt: s.updatedAt, pollMs: s.config && s.config.pollMs }),
             h("button", { className: "sl-icon", "data-sltip": "立即刷新", onClick: () => refreshQuotes() }, "⟳"),
             themeBtn,
@@ -3202,7 +3220,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               : s.tab === "market" ? h(MarketView)
                 : s.tab === "watch" ? h(WatchView)
                   : s.tab === "position" ? h(PositionView)
-                    : s.tab === "alert" ? h(AlertView)
+                    : s.alertPanel ? h(AlertView)
                       : h(SettingsView)),
           h("div", { className: "sl-foot" },
             h("span", null, s.error ? "⚠ " + s.error : "腾讯行情"),
@@ -3247,25 +3265,8 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         expanded && earn.has
           ? h(EarnChip, { cfg, quotes: s.quotes, theme: s.theme })
           : null,
-        // 预警铃铛：**收起状态下也常驻**——你回来时栏通常是收着的，
-        // 而那恰恰是最想知道「错过了什么」的时刻（docs/alerts-plan.md §8）。
-        h(AlertBell, { unread: alertUnread(s), theme: s.theme }),
         h("button", Object.assign({ className: "sl-bar-btn", "data-sltip": "设置", onClick: () => openOverlay("settings") }, gearProps || {}), "⚙"),
       );
-    }
-    /** 指数栏预警铃铛 + 未读角标（点击进预警页并标记已读） */
-    function AlertBell(props) {
-      const n = Number(props.unread) || 0;
-      const rules = (state.config && state.config.alerts) || [];
-      return h("span", {
-        className: "sl-bell" + (n > 0 ? " sl-bell-on" : ""),
-        "data-sltip": n > 0
-          ? "预警：" + n + " 条未读\n点击查看（Host 独立评估，关掉页面也会记录）"
-          : rules.length ? "预警：暂无未读（" + rules.length + " 条规则在评估）" : "预警：还没有规则，右键自选/持仓行可快速添加",
-        onClick: () => { markAlertsSeen(); openOverlay("alert"); refreshAlerts(); },
-      },
-        "🔔",
-        n > 0 ? h("span", { className: "sl-bell-badge" }, n > 99 ? "99+" : n) : null);
     }
     /**
      * 收益胶囊：hover 弹出浮层展示 市值 / 累计收益(+%) / 今日，以及每只持仓的收益与盈亏%。

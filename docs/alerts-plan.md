@@ -264,18 +264,19 @@ DSH 宿主可能是 webview，`Notification` 未必存在——**降级链必须
 
 | 位置 | 改动 |
 |---|---|
-| 新增第 5 个 tab「**预警**」 | 规则列表（增删改 / 启停）、桌面通知开关、触发历史 |
+| 设置页 | 「🔔 预警」按钮 → **二级页**（规则列表增删改 / 启停、桌面通知开关、触发历史）。⚠️ 修订：预警**不占 tab**——它不常驻查看，占一个 tab 会让标题栏变挤；改为从设置进入的二级页，返回头复用详情页样式 |
 | 自选 / 持仓行右键 | 「设为预警」，预填现价或成本价（复用 [client.js:579 `openMenu`](../client.js#L579)） |
-| 指数栏 | **常驻铃铛 + 未读角标** |
+| 指数栏 | ⚠️ 修订：**不放铃铛/角标**——左下角是常驻区域，提醒图标长期占位是噪音；未读数改在设置页入口按钮上以「🔔 预警（N 条未读）」呈现 |
 
 tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](../client.js#L2667)。
 
-⚠️ 修订（未读语义）：「未读角标」的计数与已读状态定义如下，不另发明：
+⚠️ 修订（未读语义）：「未读」的计数与已读状态定义如下，不另发明：
 - 未读数 = `events` 中 `at > lastSeenAt` 的条数（客户端算）
-- `lastSeenAt` 存 **localStorage**（`sl.alertSeen.<pid或默认>`），打开预警 tab 即更新为当前时间
+- `lastSeenAt` 存 **localStorage**（`sl.alert.seen.v1`），打开预警二级页即更新为当前时间
 - **不进 config**：否则"看一眼"也要 POST 配置、搅动 `__rev` 乐观锁——§6.1 论证过的边界别在 UI 层自己破坏。它是设备偏好（每台设备各看各的），不是持仓数据。
 
-> 角标在指数栏**收起状态下也要显示**。你 20:00 回来时栏是收着的（见 `shouldExpandBar`），而那恰恰是你最想知道「错过了什么」的时刻。
+⚠️ 修订（二级页的进入/退出）：预警面板挂在设置 tab 下，`s.alertPanel` 为真时替代设置页渲染。
+**点任何 tab、进个股详情、关闭悬浮窗都必须复位 `alertPanel`**——否则会出现「点了设置却还停在预警页」。这条有 e2e 断言锁定。
 
 ---
 
@@ -348,7 +349,7 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 |---|---|---|
 | 1 | `feat(alerts): 地基` | `lib/shared.js` 上提时段三函数（共享版 `now` 必填）+ `quoteDayFor` + `sanitizeAlert(s)` + `stepAlert` 状态机；client.js 内联副本；drift 对拍 17→74 项 |
 | 2 | `feat(alerts): Host` | `cfg.alerts` 接入清洗、独立评估循环（零规则休眠）、`config.json.alerts` 账本、`/alerts` + `/alert-stream`；routes 49→63→66 项 |
-| 3 | `feat(alerts): UI` | 第 5 个 tab、AlertBell 角标、右键「设为预警」、吃字段回填保护；e2e 230→261 项 |
+| 3 | `feat(alerts): UI` | 预警二级页（设置内入口，**不占 tab**）、右键「设为预警」、吃字段回填保护；e2e 230→261 项 |
 | 4 | `feat(alerts): 通知层` | 隐藏不断流的破例、三级降级、权限手势申请、`navigator.locks` 去重；e2e 261→276 项 |
 
 验收对照（每条都有承重断言，且做过非空洞验证）：
@@ -364,7 +365,7 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 | 7 | `limit_near` 市场限制 | `sanitizeAlert` + UI option disabled | drift：港美股拒收；routes：POST 清洗后仅留合法条 |
 | 8 | 清仓后 cost 规则跳过 | `costBy` 查不到则 `skipped` | routes：无成本价 → `skipped` 含该 id 且 fired 为空 |
 | 9 | 重连先对账 | `alertEs.onopen → refreshAlerts()` | e2e：隐藏时预警流保持、行情流断开（含对照断言） |
-| 10 | 测试全绿 | — | 456 项（drift 74 / isolation 7 / config-path 14 / routes 66 / security 19 / e2e 276） |
+| 10 | 测试全绿 | — | 468 项（drift 74 / isolation 7 / config-path 14 / routes 66 / security 19 / e2e 288） |
 
 实施中修正的两处**测试方法错误**（都会让断言空转，记录备查）：
 
@@ -372,3 +373,12 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 2. `initStore` 有 `inited` 守卫（一页只跑一次），反复 render **不能**重放初始合并分支 —— 回填保护要改走 `persistConfig` 的回包合并（每次保存都跑）。
 
 另有一处环境兼容：Node 24 的 `global.navigator` 是只读 getter，直接赋值会抛 `TypeError` 并让测试进程非零退出，需用 `defineProperty`。
+
+### 13.1 实施后的 UI 调整（用户要求）
+
+1. **左下角不放提醒图标**：删掉 `AlertBell` 与其 CSS（`sl-bell*`）。左下角是常驻区域，提醒图标长期占位是噪音；未读数改在**设置页入口按钮**上以「🔔 预警（N 条未读）」呈现。评估与账本链路完全不受影响（有断言锁定：无图标时账本照常记录）。
+2. **预警不占 tab**：改为**设置页内的二级页**（`s.alertPanel`），返回头复用详情页的 `sl-dhead`/`sl-back` 样式。
+
+这两处调整暴露了一个实现缺陷并已修复：预警面板挂在设置 tab 下时，**点 tab / 进详情 / 关悬浮窗都必须复位 `alertPanel`**，否则出现「点了设置却还停在预警页」。已补 e2e 断言（点 tab 退出、点「← 返回」退出、可再次进入）。
+
+顺带修掉一条**写法不够严的断言**：「标题栏仍是四个 tab」原本只检查四个 tab 都在，把预警 tab 加回去照样绿。改为**断言数量恰好为 4**，非空洞验证确认此时 2 条变红。
