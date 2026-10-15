@@ -360,7 +360,6 @@ function writeConfig(cfg) {
 // - 账本坏了不值得抢救（是事件流不是持仓）：静默重建空账本，不阻塞评估。
 // ---------------------------------------------------------------------------
 
-const ALERT_EVENTS_MAX = 200; // 环形缓冲上限（与 §6.3 一致）
 const ALERT_BACKOFF_MS = 60000; // 休市/异常/无规则时的低频退避
 /** 预警 SSE 订阅者（模块级：/alert-stream 注册与评估广播共用；与行情 sseClients 互不干涉） */
 const alertClients = new Set();
@@ -380,8 +379,14 @@ function broadcastAlert(ev) {
   }
 }
 
+/**
+ * 读账本。**只保留 states**（用户要求去掉触发历史）：
+ * states 是「每交易日每规则只提示一次」的唯一依据，丢了会在 Host 重启后重复播报。
+ * 事件流水不再落盘，也不再从旧文件里读回来（老文件里残留的 events 会被自然丢弃，
+ * 下次写入即被清掉）。
+ */
 function readAlerts() {
-  const fresh = { version: 1, events: [], states: {} };
+  const fresh = { version: 1, states: {} };
   let text = null;
   try {
     text = readFileSync(alertsPath(), "utf8");
@@ -394,7 +399,6 @@ function readAlerts() {
     if (!j || typeof j !== "object") return fresh;
     return {
       version: 1,
-      events: Array.isArray(j.events) ? j.events.slice(-ALERT_EVENTS_MAX) : [],
       states: j.states && typeof j.states === "object" ? j.states : {},
     };
   } catch {
@@ -448,7 +452,7 @@ function marketTodayFor(code, now) {
  * 单拍评估（纯编排，Host 循环与 __alertTickWith 测试通道共用同一条路径）。
  * @param {object} cfg 已 sanitize 的配置
  * @param {Map} quotes code → 行情行
- * @param {object} data 账本 { events, states }（原地更新）
+ * @param {object} data 账本 { states }（原地更新；触发历史已按要求去掉）
  * @param {Date} now 评估时刻——测试注入固定值；绝不读任何全局时钟钩子
  *   （__sl_now__ 是浏览器全局，Node 里不存在，两条注入路径不混用）
  * @returns {{ fired: object[], skipped: string[] }}
@@ -487,7 +491,12 @@ function applyAlertTick(cfg, quotes, data, now) {
       });
     }
   }
-  if (fired.length) data.events = (data.events || []).concat(fired).slice(-ALERT_EVENTS_MAX);
+  // ⚠️ 不再累积触发历史（用户要求去掉）。
+  // 注意区分两件事：
+  //   - `fired`（本次返回值）→ 仍要用于 **SSE 实时推送**，弹窗靠它；
+  //   - `data.events`（落盘流水）→ 已去掉，账本里只留 `states`。
+  // states 必须留：它是「每交易日只提示一次」的唯一依据，
+  // 丢了会在 Host 重启后重复播报（每天可以多报几次）。
   return { fired, skipped };
 }
 
@@ -1338,14 +1347,14 @@ function apply(ctx) {
     sseTimer = setTimeout(sseTick, Math.min(120000, Math.max(2000, ms)));
   };
 
-  // 预警触发历史（只读账本；客户端每次连 /alert-stream 后先 GET 这里补齐，
-  // 标签页被冻结杀掉 EventSource 时靠它对账，不假设流不断）
+  // 预警规则状态（只读；客户端连 /alert-stream 后拉一次，用于展示「已触发/待命」。
+  // 触发历史已按要求去掉，这里不再返回 events）
   register(PREFIX + "/alerts", async (_req, res) => {
     try {
       const data = readAlerts();
-      sendJson(res, 200, { ok: true, events: data.events, states: data.states, at: Date.now() });
+      sendJson(res, 200, { ok: true, states: data.states, at: Date.now() });
     } catch (e) {
-      sendJson(res, 500, { ok: false, error: String((e && e.message) || e), events: [] });
+      sendJson(res, 500, { ok: false, error: String((e && e.message) || e), states: {} });
     }
   });
 

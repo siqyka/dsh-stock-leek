@@ -1780,7 +1780,10 @@ if (txnMi) {
     __alertTickForTest({ remind: true, positions: [], alerts: [{ id: "bell1", code: "sh600519", type: "price_above", value: 1, enabled: true }] },
       [{ code: "sh600519", name: "贵州茅台", price: 1700, percent: 2, time: todayBJ + "100000" }], {});
     const ledger = await hostJson("/dsh-stock-leek/alerts");
-    check("无提醒图标但账本照常记录（评估与 UI 解耦）", Array.isArray(ledger.events) && ledger.events.length > 0, ledger.events && ledger.events.length);
+    // 用户要求：去掉触发历史（events 不再落盘），但评估仍要工作 → states 必须有记录。
+    // states 是「每交易日只提示一次」的唯一依据，丢了会重复播报。
+    check("评估仍在工作：账本记录了规则状态（states）", !!ledger.states && !!ledger.states.bell1, ledger.states);
+    check("触发历史已去掉：账本不再有 events 流水", ledger.events === undefined, { events: ledger.events });
   }
 
   // 6) 右键「设为预警」→ 弹层预填现价
@@ -1837,16 +1840,16 @@ if (txnMi) {
     }
   }
 
-  // 7) 触发历史渲染（直接读 Host 账本 → 有事件就应出现时间行）
+  // 7) 触发历史已按要求去掉：预警页**不再有**「触发历史」区块，
+  //    Host 的 /alerts 也不再返回 events（只返回 states）
   ovNode = ov.render({}); renderTree(ovNode);
   ovText = openAlertPanelForTest();
+  check("预警页不再显示「触发历史」标题", !/触发历史/.test(ovText), ovText.slice(0, 200));
+  check("预警页不再有历史空态文案", !/暂无触发记录/.test(ovText), ovText.slice(0, 200));
+  check("预警页不再渲染历史行容器", !findNode(ovNode, (n) => /sl-alert-hist|sl-alert-ev/.test(String((n.props && n.props.className) || ""))));
   const hist = await hostJson("/dsh-stock-leek/alerts");
-  if (Array.isArray(hist.events) && hist.events.length > 0) {
-    ovNode = ov.render({}); renderTree(ovNode);
-    check("账本有事件时历史区渲染时间戳", /\d{2}:\d{2}:\d{2}/.test(textOf(ovNode).join(" ")), textOf(ovNode).join(" ").slice(0, 200));
-  } else {
-    check("账本为空时显示空态文案", /暂无触发记录/.test(ovText), ovText.slice(0, 200));
-  }
+  check("/alerts 端点不再返回 events", hist.events === undefined, { keys: Object.keys(hist) });
+  check("/alerts 仍返回 states（评估依据）", !!hist.states && typeof hist.states === "object", hist.states);
 
   // 8) 删除规则
   ovNode = ov.render({}); renderTree(ovNode);
@@ -1920,6 +1923,20 @@ if (txnMi) {
 
 // ---------- 预警通知层：隐藏不断流 / 三级降级 / 权限申请时机 / 多标签去重 ----------
 {
+  /**
+   * 预警弹窗现在注册为**独立 slot**（dsh-stock-leek.alert-popup），不再挂在
+   * Overlay 内部——Overlay 有 `if (!s.open) return null`，挂里面会导致
+   * 「悬浮窗关着时收不到预警」（用户实测反馈）。
+   * 所以所有弹窗断言都必须从这个 slot 渲染，而不是 ov.render() 的树。
+   * 定义在本块顶层：3a/3c/3x 各段共用。
+   */
+  const popReg = findReg("shell.overlay", "dsh-stock-leek.alert-popup");
+  // 前置断言：弹窗 slot 必须真的注册了。
+  // 没有它，popReg 为 undefined 时 popNode() 内部抛错会被上层吞掉，
+  // 后续「查找节点」类断言全部返回 null → 失败信息误导，甚至掩盖"弹窗没注册"。
+  check("预警弹窗注册为独立 slot（不依赖悬浮窗开关）", !!popReg, (slots["shell.overlay"] || []).map((r) => r.id));
+  const popNode = () => { const n = popReg.render({}); renderTree(n); return n; };
+  const popupOf = (node) => findNode(node, (n) => String((n.props && n.props.className) || "").indexOf("sl-alert-pop") >= 0);
   const stubNotification = (permission) => {
     const calls = [];
     function Fake(title, opts) { calls.push({ title, opts }); }
@@ -1954,31 +1971,49 @@ if (txnMi) {
   // 3) 应用内弹窗：**可见与隐藏都必须弹**（用户明确要求；webview 里
   //    隐藏时标题看不见、系统通知未必可用，只靠那两条等于收不到）
   {
-    const popupOf = (node) => findNode(node, (n) => String((n.props && n.props.className) || "").indexOf("sl-alert-pop") >= 0);
     const c2 = stubNotification("granted");
     setHidden(false);
 
     // 3a) 可见时触发
     await globalThis.__sl_notify_test__({ ruleId: "p1", at: Date.now(), code: "sh600519", name: "贵州茅台", type: "price_above", value: 1, price: 1700, percent: 2 });
-    ovNode = ov.render({}); renderTree(ovNode);
-    const popVisible = popupOf(ovNode);
-    check("【可见】触发时弹出应用内预警弹窗", !!popVisible, textOf(ovNode).join(" ").slice(-160));
+    let pn = popNode();
+    const popVisible = popupOf(pn);
+    check("【可见】触发时弹出应用内预警弹窗", !!popVisible, textOf(pn).join(" ").slice(-160));
     check("弹窗含股票名与条件", !!popVisible && /贵州茅台/.test(textOf(popVisible).join(" ")) && /现价上穿/.test(textOf(popVisible).join(" ")), textOf(popVisible || {}).join(" ").slice(0, 120));
-    check("可见时也补一条 toast", /🔔/.test(String((globalThis.__sl_test_state__.toast || {}).text || "")), globalThis.__sl_test_state__.toast);
+
+    // 3a-2) **悬浮窗关闭时也必须弹**（用户实测报的 bug）。
+    //       原实现把 AlertPopup 挂在 Overlay 内部，而 Overlay 有
+    //       `if (!s.open) return null` → 悬浮窗关着时弹窗一起被吞掉。
+    //       判据：先关掉悬浮窗（open=false），再触发一次，弹窗仍要出现，
+    //       且此时 Overlay 自身渲染为空。
+    {
+      globalThis.__sl_test_state__.open = false;
+      const ovWhenClosed = ov.render({});
+      renderTree(ovWhenClosed);
+      check("前置：悬浮窗关闭时 Overlay 渲染为空", !textOf(ovWhenClosed).join(" ").trim(), textOf(ovWhenClosed).join(" ").slice(0, 80));
+      globalThis.__sl_test_state__.alertPopups = [];
+      await globalThis.__sl_notify_test__({ ruleId: "p1b", at: Date.now() + 3, code: "sh600519", name: "贵州茅台", type: "price_above", value: 1, price: 1700, percent: 2 });
+      const pnClosed = popNode();
+      check("【悬浮窗关闭】仍弹出预警弹窗", !!popupOf(pnClosed), textOf(pnClosed).join(" ").slice(-160));
+      globalThis.__sl_test_state__.open = true;
+    }
+
+    // 用户要求去掉预警 toast（弹窗已更醒目，顶部再飘一条属重复打扰）
+    check("不再补预警 toast（已按要求去掉）", !/🔔/.test(String((globalThis.__sl_test_state__.toast || {}).text || "")), globalThis.__sl_test_state__.toast);
     check("可见时同样发系统通知（不互斥）", c2.length >= 1, c2.length);
 
     // 3b) 隐藏时触发（同一条弹窗通道，不能被降级链吞掉）
     setHidden(true);
     await globalThis.__sl_notify_test__({ ruleId: "p2", at: Date.now() + 5, code: "sz300750", name: "宁德时代", type: "price_below", value: 300, price: 278.5, percent: -0.58 });
     setHidden(false);
-    ovNode = ov.render({}); renderTree(ovNode);
-    const popHidden = popupOf(ovNode);
-    check("【隐藏】触发时同样弹出应用内弹窗", !!popHidden, textOf(ovNode).join(" ").slice(-200));
-    const popText = textOf(ovNode).join(" ");
+    pn = popNode();
+    const popHidden = popupOf(pn);
+    check("【隐藏】触发时同样弹出应用内弹窗", !!popHidden, textOf(pn).join(" ").slice(-200));
+    const popText = textOf(pn).join(" ");
     check("隐藏时的事件也在弹窗里（宁德时代）", /宁德时代/.test(popText), popText.slice(-200));
 
     // 3c) 弹窗可手动关闭，同时也在倒计时（10s 后自动消失，见 3x 段）
-    const popNow = popupOf(ovNode);
+    const popNow = popupOf(popNode());
     check("弹窗有关闭按钮", !!findNode(popNow, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "✕"));
     const beforeState = (globalThis.__sl_test_state__.alertPopups || []).length;
     check("弹窗进入 state 队列（待确认）", beforeState >= 2, beforeState);
@@ -1986,7 +2021,7 @@ if (txnMi) {
     // 3c-2) 定位：弹窗**居中**（用户指定回到 29d4fcf 那版的观感：
     //       对话区顶部居中；探测不到对话区时视口居中）。
     //       注意取外层定位容器（fixed/z10005）——popupOf 命中的是内层卡片，无定位样式。
-    const popBox = findNode(ovNode, (n) => n.props && n.props.style && n.props.style.position === "fixed" && n.props.style.zIndex === 10005);
+    const popBox = findNode(popNode(), (n) => n.props && n.props.style && n.props.style.position === "fixed" && n.props.style.zIndex === 10005);
     const st2 = popBox && popBox.props && popBox.props.style;
     check("找到弹窗定位容器", !!st2, st2);
     check("弹窗不贴右上角（未用 right 定位）", !!st2 && st2.right === undefined, st2);
@@ -1998,7 +2033,7 @@ if (txnMi) {
       !!st2 && (st2.transform !== undefined || Math.abs((st2.left + st2.width / 2) - global.window.innerWidth / 2) < global.window.innerWidth * 0.4),
       { transform: st2 && st2.transform, left: st2 && st2.left, w: st2 && st2.width, vw: global.window.innerWidth });
     // 卡片撑满容器宽度（居中布局下卡片等宽更整齐）
-    const cardStyle = popupOf(ovNode) && popupOf(ovNode).props && popupOf(ovNode).props.style;
+    const cardStyle = popupOf(popNode()) && popupOf(popNode()).props && popupOf(popNode()).props.style;
     check("卡片宽度自适应占满（样式由 CSS 的 width:100% 控制）", !cardStyle || cardStyle.width === undefined, cardStyle);
 
     // 3c-3) 两种定位路径都要**居中**（29d4fcf 语义）：
@@ -2007,7 +2042,7 @@ if (txnMi) {
     // 注意：convRect 是 useState 缓存，跨用例会保留上次测量结果，
     // 因此不假设当前走哪条路径，而是**按实际形态**校验「居中」而非「贴左」。
     {
-      const popFallback = findNode(ovNode, (n) => n.props && n.props.style && n.props.style.position === "fixed" && n.props.style.zIndex === 10005);
+      const popFallback = findNode(popNode(), (n) => n.props && n.props.style && n.props.style.position === "fixed" && n.props.style.zIndex === 10005);
       const fs2 = popFallback && popFallback.props.style;
       const isViewportCentered = !!fs2 && fs2.transform === "translateX(-50%)" && fs2.left === "50%";
       check("弹窗水平居中（视口居中 或 对话区内居中，均非贴左）",
@@ -2032,24 +2067,25 @@ if (txnMi) {
       check("溢出的 2 条叠加到最早那条（+N=2）", overflowSum === 2, st3.map((x) => x.overflow));
       check("叠加记在最早那条上", Number(st3[0].overflow) === 2, st3[0]);
       // 界面上能看到 +N 徽标
-      ovNode = ov.render({}); renderTree(ovNode);
-      const more = findNode(ovNode, (n) => String((n.props && n.props.className) || "").indexOf("sl-alert-pop-more") >= 0);
+      const more = findNode(popNode(), (n) => String((n.props && n.props.className) || "").indexOf("sl-alert-pop-more") >= 0);
       check("卡片显示 +N 徽标", !!more && /\+\d/.test(String(more.children && more.children[0])), more && more.children);
       // 「全部关闭」计数应含叠加（3 卡片 + 2 叠加 = 5）
-      const closeAll2 = findNode(ovNode, (n) => n.type === "button" && /全部关闭/.test(String((n.children && n.children[0]) || "")));
+      const closeAll2 = findNode(popNode(), (n) => n.type === "button" && /全部关闭/.test(String((n.children && n.children[0]) || "")));
       check("「全部关闭（5）」含被叠加的条数", !!closeAll2 && /（5）/.test(String(closeAll2.children && closeAll2.children[0])), closeAll2 && closeAll2.children);
-      // 叠加不丢信息：预警历史仍能看全（账本不受展示上限影响）
-      globalThis.__sl_test_state__.alertPopups = [];
     }
 
-    // 3d) 多条时出现「全部关闭」
-    const closeAll = findNode(ovNode, (n) => n.type === "button" && /全部关闭/.test(String((n.children && n.children[0]) || "")));
-    check("多条弹窗时有「全部关闭」", !!closeAll, popText.slice(-160));
+    // 3d) 「全部关闭」能清空弹窗
+    //     先推两条（保证按钮存在：仅 1 条时不渲染该按钮），再点它
+    globalThis.__sl_test_state__.alertPopups = [];
+    await globalThis.__sl_notify_test__({ ruleId: "cl1", at: Date.now() + 50, code: "sh600519", name: "贵州茅台", type: "price_above", value: 1, price: 1700 });
+    await globalThis.__sl_notify_test__({ ruleId: "cl2", at: Date.now() + 51, code: "sh600519", name: "贵州茅台", type: "price_above", value: 1, price: 1700 });
+    const pnD = popNode();
+    const closeAll = findNode(pnD, (n) => n.type === "button" && /全部关闭/.test(String((n.children && n.children[0]) || "")));
+    check("多条弹窗时有「全部关闭」", !!closeAll, textOf(pnD).join(" ").slice(-160));
     if (closeAll) {
       click(closeAll);
-      ovNode = ov.render({}); renderTree(ovNode);
       check("全部关闭后弹窗清空", (globalThis.__sl_test_state__.alertPopups || []).length === 0, globalThis.__sl_test_state__.alertPopups);
-      check("关闭后界面无弹窗节点", !popupOf(ovNode));
+      check("关闭后界面无弹窗节点", !popupOf(popNode()));
     }
   }
 
@@ -2086,7 +2122,7 @@ if (txnMi) {
     // 3x-3) 自动消失：把 shownAt 回拨到 10s 前，触发计时 effect 后应被清掉
     st().alertPopups = (st().alertPopups || []).map((p) => Object.assign({}, p, { shownAt: Date.now() - 11000 }));
     st().visibleTick = (st().visibleTick || 0) + 1;
-    ovNode = ov.render({}); renderTree(ovNode);
+    popNode();
     await wait(60);
     check("超过 10 秒的弹窗被自动清掉", (st().alertPopups || []).length === 0, st().alertPopups);
 
@@ -2095,11 +2131,11 @@ if (txnMi) {
     setHidden(false);
     await globalThis.__sl_notify_test__({ ruleId: "d3", at: Date.now() + 20, code: "sh600519", name: "贵州茅台", type: "price_above", value: 1, price: 1700 });
     st().visibleTick = (st().visibleTick || 0) + 1;
-    ovNode = ov.render({}); renderTree(ovNode);
+    popNode();
     await wait(80);
     check("刚弹出的 10 秒内保留（对照）", (st().alertPopups || []).length === 1, st().alertPopups);
     // 进度条：可见的倒计时视觉
-    const bar = findNode(ovNode, (n) => String((n.props && n.props.className) || "").indexOf("sl-alert-pop-bar") >= 0);
+    const bar = findNode(popNode(), (n) => String((n.props && n.props.className) || "").indexOf("sl-alert-pop-bar") >= 0);
     check("弹窗带倒计时进度条", !!bar, textOf(ovNode).join(" ").slice(-120));
 
     // 3x-5) **窄窗口下仍在视口内**（用户实测：全屏可见、缩小窗口就消失）。
@@ -2120,8 +2156,8 @@ if (txnMi) {
     global.window.innerHeight = 900;
     global.__winDispatch("resize", {});
     await wait(60); // useConversationRect 需一轮测量
-    ovNode = ov.render({}); renderTree(ovNode);
-    const wide = popStyleOf(ovNode);
+    popNode();
+    const wide = popStyleOf(popNode());
     console.log("   宽窗口弹窗几何:", JSON.stringify({ left: wide && wide.left, top: wide && wide.top, w: wide && wide.width }));
     // 与「视口居中」对比：视口居中会是 (1400−560)/2 = 420，对话区居中因面板左偏而更小
     const viewportLeft = wide ? (1400 - wide.width) / 2 : null;
@@ -2134,8 +2170,8 @@ if (txnMi) {
     global.window.innerHeight = 300;
     global.__winDispatch("resize", {});
     await wait(60);
-    ovNode = ov.render({}); renderTree(ovNode);
-    const narrow = popStyleOf(ovNode);
+    popNode();
+    const narrow = popStyleOf(popNode());
     console.log("   窄窗口弹窗几何:", JSON.stringify({ left: narrow && narrow.left, top: narrow && narrow.top, w: narrow && narrow.width }));
     check("窄窗口(400×300)：弹窗仍有定位样式", !!narrow, narrow);
     check("窄窗口：left ≥ 0 且在视口内", !!narrow && narrow.left >= 0 && narrow.left < 400, narrow && narrow.left);
@@ -2155,8 +2191,8 @@ if (txnMi) {
     global.__forceSeat = false;
     global.__winDispatch("resize", {});
     await wait(60);
-    ovNode = ov.render({}); renderTree(ovNode);
-    check("恢复窗口尺寸后弹窗几何正常", !!popStyleOf(ovNode), popStyleOf(ovNode));
+    popNode();
+    check("恢复窗口尺寸后弹窗几何正常", !!popStyleOf(popNode()), popStyleOf(popNode()));
 
     // 3x-6) **回退路径也要居中**（探测不到 composer seat 时）。
     //        踩过的真 bug：改回居中时只改了主路径，回退值仍是 left:24（贴左），
@@ -2165,8 +2201,8 @@ if (txnMi) {
       global.__forceSeat = false;
       global.__winDispatch("resize", {});
       await wait(60);
-      ovNode = ov.render({}); renderTree(ovNode);
-      const fb = popStyleOf(ovNode);
+      popNode();
+      const fb = popStyleOf(popNode());
       const diag = globalThis.__sl_conv_rect__ || {};
       const expectFb = (global.window.innerWidth - fb.width) / 2;
       console.log("   回退路径几何:", JSON.stringify({ left: fb.left, w: fb.width, expectFb, fallback: diag.fallback }));

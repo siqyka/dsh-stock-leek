@@ -110,12 +110,7 @@ window.__ModuleLoader__.load({
 .sl-alert-nm{color:var(--sl-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:96px}
 .sl-alert-cond{color:var(--sl-dim);white-space:nowrap;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .sl-alert-fired{color:var(--sl-warn);font-size:10px;white-space:nowrap}
-.sl-alert-histhead{margin-top:6px;display:block}
-.sl-alert-hist{display:flex;flex-direction:column;gap:1px;max-height:180px;overflow-y:auto}
-.sl-alert-ev{display:flex;align-items:center;gap:6px;padding:2px 6px;border-radius:6px;font-size:11px}
-.sl-alert-ev:hover{background:var(--sl-hover)}
-.sl-alert-ev-t{color:var(--sl-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
-.sl-alert-ev-p{color:var(--sl-text);font-variant-numeric:tabular-nums;white-space:nowrap}
+
 /* 预警弹窗：显示在对话区左上角；触发时无条件弹出，10s 自动消失、可手动关闭 */
 .sl-alert-pop{width:100%;box-sizing:border-box;background:var(--sl-bg);border:1px solid var(--sl-warn);border-left:3px solid var(--sl-warn);border-radius:10px;padding:10px 14px;box-shadow:var(--sl-shadow);cursor:pointer;display:flex;flex-direction:column;gap:5px}
 .sl-alert-pop:hover{background:var(--sl-bg2)}
@@ -319,7 +314,6 @@ window.__ModuleLoader__.load({
     const LS_SIZE = "sl.overlay.size.v1";
     const LS_PLACEMENT = "sl.bar.placement.v1"; // dock | floating（纯 UI 偏好，存本地，不依赖 host）
     const LS_BAR_POS = "sl.bar.pos.v1"; // 悬浮指数栏手动位置 {x,y}（视口左上角坐标）；空=自动锚定
-    const LS_ALERT_SEEN = "sl.alert.seen.v1"; // 预警角标「已读」时间戳（设备级，不进 config——否则看一眼就要写配置搅 __rev）
 
     /**
      * 旧版本用 `lf.` 前缀存这些本地偏好（lf = 早期插件名首字母）。
@@ -625,9 +619,7 @@ window.__ModuleLoader__.load({
       barPos: null, // 悬浮栏手动位置 {x,y}；null=自动锚定（初始化时从 localStorage 读）
       barForce: null, // 指数栏展开的手动覆盖：null=按时段自动，true=强制展开，false=强制收起
       barForceDay: "", // 手动覆盖所属的行情日期；跨交易日自动失效（别让昨天的选择粘住今天）
-      alertEvents: [], // GET /alerts 的触发历史（Host 账本快照；重连/重开页面靠它补齐）
-      alertStates: {}, // ruleId → {phase, day}，展示每条规则的滞回/待命状态
-      alertSeenAt: 0, // 角标已读时间戳（localStorage 恢复；unread = events 中 at > 它的条数）
+      alertStates: {}, // ruleId → {phase, day}，展示每条规则的「已触发/待命」
       alertPanel: false, // 设置页里的预警二级页是否打开（预警不占 tab，从设置进入）
       alertLive: false, // 预警推送通道是否已连上（隐藏时也保持连接）
       alertPopups: [], // 待确认的预警弹窗队列 [{id, name, code, type, value, price, percent, at, shownAt}]
@@ -1030,8 +1022,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       // ① 应用内弹窗：唯一的**保证通道**，可见与否都弹
       pushAlertPopup(ev);
 
-      // ② toast 轻提示：仅可见时补一条（隐藏时没必要，弹窗已更醒目）
-      if (!hidden) toast("🔔 " + body, "#e6a23c");
+      // ② 不再补 toast：用户明确不要 —— 弹窗本身已足够醒目，
+      //    top 处再飘一条「⚠ 苹果 现价上穿…」属于重复打扰（截图反馈）。
+      //    去掉后预警只剩「弹窗」一种可见通道（+可选系统通知）。
 
       // ③ 系统通知：能力具备就发（用户点过「开启桌面通知」）；隐藏时去重防三连弹
       if (notifyPermission() === "granted") {
@@ -1041,7 +1034,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         }
         try {
           const n = new Notification("🔔 预警 · " + name, { body, tag: "sl-" + (ev.ruleId || "") + "-" + (ev.at || "") });
-          n.onclick = () => { try { window.focus(); } catch { /* ignore */ } markAlertsSeen(); openAlertPanel(); };
+          n.onclick = () => { try { window.focus(); } catch { /* ignore */ } openAlertPanel(); };
         } catch {
           flashTitle(body); // 构造失败（权限被收回等）→ 退回标题提示，弹窗仍在
         }
@@ -1121,9 +1114,8 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           return;
         }
         if (!payload || payload.type !== "alert" || !payload.event) return;
-        const e = payload.event;
-        setState({ alertEvents: (state.alertEvents || []).concat([e]).slice(-200) });
-        notifyAlert(e);
+        // 触发历史已去掉：事件不再入 state，直接交给弹窗通道
+        notifyAlert(payload.event);
       };
       alertEs.onerror = () => {
         // 与行情流不同：这里**不回落到轮询**，只标注断开并稍后重连——
@@ -1205,11 +1197,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         const raw = localStorage.getItem(LS_CONFIG);
         if (raw) cfg = JSON.parse(raw);
       } catch { /* ignore */ }
-      // 预警角标「已读时间」：设备级偏好，跨会话恢复（不进 config，避免搅 __rev）
-      try {
-        const seen = Number(localStorage.getItem(LS_ALERT_SEEN));
-        if (Number.isFinite(seen) && seen > 0) setState({ alertSeenAt: seen });
-      } catch { /* ignore */ }
+
       // 通知权限只**读**不申请（申请必须由用户手势触发，§7.2）
       setState({ notifyPerm: notifyPermission() });
       if (cfg && Array.isArray(cfg.indices)) setState({ config: cfg });
@@ -1236,7 +1224,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         }
       } catch { /* host 不可达：用本地缓存 */ }
       startPolling();
-      refreshAlerts(); // 首屏补一次触发历史/角标（不等 alert-stream 连上）
+      refreshAlerts(); // 首屏补一次规则状态（不等 alert-stream 连上）
       openAlertStream(); // 预警通道与行情通道独立：隐藏不断，重连先对账
     }
 
@@ -1452,7 +1440,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       });
     }
 
-    // ================================================================ 预警（规则 CRUD + 触发历史）
+    // ================================================================ 预警（规则 CRUD + 评估通道）
     /**
      * 规则 id：字符集必须满足 shared 的 sanitizeAlert（[A-Za-z0-9_-]{1,32}）——
      * 它是 .alerts 账本 states 的键，也是「多标签页认领」的标识。
@@ -1487,29 +1475,17 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       return v ? label + " " + v : label;
     }
     /**
-     * 拉取 Host 账本（触发历史 + 各规则状态）。
-     * 页面重开、标签页解冻、alert-stream 重连后都要调它补齐——不假设流不断（§7.1 修订）。
-     * 同时把 localStorage 里的「已读时间」恢复进 state（跨会话保持角标语义）。
+     * 拉取预警规则状态（用于规则列表显示「已触发/待命」）。
+     * 页面重开、标签页解冻、alert-stream 重连后都调它——不假设流不断（§7.1 修订）。
+     * 触发历史已按要求去掉：Host 不再落盘 events，这里也不再读。
      */
     async function refreshAlerts() {
       try {
         const r = await api("/alerts");
-        if (r && r.ok) {
-          setState({ alertEvents: Array.isArray(r.events) ? r.events : [], alertStates: r.states || {} });
-        }
-      } catch { /* Host 不可达：保留既有角标数据，不清零 */ }
+        if (r && r.ok) setState({ alertStates: r.states || {} });
+      } catch { /* Host 不可达：保留既有状态，不清零 */ }
     }
-    /** 未读数：账本里比「已读时间」新的事件条数 */
-    function alertUnread(s) {
-      const seen = Number(s && s.alertSeenAt) || 0;
-      return (s && s.alertEvents ? s.alertEvents : []).filter((e) => Number(e && e.at) > seen).length;
-    }
-    /** 标记已读（打开预警 tab / 点铃铛时调用）；只写 localStorage，不碰 config */
-    function markAlertsSeen() {
-      const now = Date.now();
-      try { localStorage.setItem(LS_ALERT_SEEN, String(now)); } catch { /* ignore */ }
-      setState({ alertSeenAt: now });
-    }
+
     /** 新增规则：本地先按 shared 同款清洗过一遍，非法直接挡在 UI（Host 侧还有一道） */
     function addAlert(item) {
       const rule = sanitizeAlert(Object.assign({ id: newAlertId(), enabled: true, createdAt: Date.now() }, item));
@@ -1716,9 +1692,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     function closeOverlay() {
       setState({ open: false, detail: null, menu: null, editPos: null, tip: null, alertPanel: false });
     }
-    /** 打开预警二级页（设置页入口与系统通知点击共用），并顺手标记已读 + 拉一次账本 */
+    /** 打开预警二级页（设置页入口与系统通知点击共用）。
+     *  注：原「已读/未读」逻辑随触发历史一起去掉——没有历史列表就没有未读概念。 */
     function openAlertPanel() {
-      markAlertsSeen();
       refreshAlerts();
       setState({ open: true, tab: "settings", detail: null, alertPanel: true });
     }
@@ -2859,9 +2835,13 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           h("span", { className: "sl-setlabel" }, "股票预警"),
           h("button", {
             className: "sl-btn",
-            "data-sltip": "规则管理 / 触发历史 / 桌面通知\n评估在 Host 独立循环：关掉页面也会照常记录",
+            "data-sltip": "规则管理 / 桌面通知\n评估在 Host 独立循环：关掉页面也会照常评估",
             onClick: () => openAlertPanel(),
-          }, (() => { const n = alertUnread(s); return n > 0 ? "🔔 预警（" + n + " 条未读）" : "🔔 预警"; })())),
+          }, (() => {
+            // 触发历史已去掉 → 没有「未读数」可算，改为显示启用中的规则数
+            const list = (cfg.alerts || []).filter((r) => r.enabled !== false);
+            return list.length ? "🔔 预警（" + list.length + " 条）" : "🔔 预警";
+          })())),
         h("div", { className: "sl-setrow" },
           h("button", {
             className: "sl-btn", disabled: probing,
@@ -2890,7 +2870,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       const [form, setForm] = useState({ code: "", type: "price_above", value: "" });
       if (!cfg) return h("div", { className: "sl-empty" }, "加载中…");
       const rules = Array.isArray(cfg.alerts) ? cfg.alerts : [];
-      const events = (s.alertEvents || []).slice().sort((a, b) => Number(b.at) - Number(a.at));
+      // 触发历史已按要求去掉（Host 不再落盘 events，界面也不再展示）
       const on = cfg.remind !== false; // 总开关
       // 可选代码：自选 + 持仓 + 指数候选（去重，保持用户熟悉的名字）
       const pool = [];
@@ -2993,20 +2973,6 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                     ? h("span", { className: "sl-alert-fired", "data-sltip": "今日已触发过；回落到滞回带外才会重新待命" }, "已触发")
                     : null,
                   h("button", { className: "sl-x", "data-sltip": "删除该规则", onClick: () => removeAlert(r.id) }, "✕"));
-              })),
-        // 触发历史（Host 账本；页面重开/流重连后仍能看到错过的事件）
-        h("div", { className: "sl-setlabel sl-alert-histhead" }, "触发历史"),
-        events.length === 0
-          ? h("div", { className: "sl-empty" }, "暂无触发记录。预警由 Host 独立评估，关掉页面也会照常记录。")
-          : h("div", { className: "sl-alert-hist" },
-              events.slice(0, 50).map((e, i) => {
-                const t = Number(e.at) || 0;
-                const hhmm = t ? new Date(t).toLocaleTimeString("zh-CN", { hour12: false }) : "—";
-                return h("div", { key: (e.ruleId || "") + t + i, className: "sl-alert-ev" },
-                  h("span", { className: "sl-alert-ev-t" }, hhmm),
-                  h("span", { className: "sl-alert-nm" }, e.name || displayCode(e.code)),
-                  h("span", { className: "sl-alert-cond" }, alertRuleText(e)),
-                  h("span", { className: "sl-alert-ev-p" }, fmtPrice(e.price)));
               })),
       );
     }
@@ -3234,8 +3200,8 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           key: ev.id,
           className: "sl-alert-pop",
           role: "alert",
-          "data-sltip": "点击查看预警历史（会标记为已读）；10 秒后自动消失，也可点 ✕ 立即关闭\n同一规则每个交易日只提示一次，次日符合条件时会再提示",
-          onClick: () => { markAlertsSeen(); openAlertPanel(); },
+          "data-sltip": "点击进入预警设置；10 秒后自动消失，也可点 ✕ 立即关闭\n同一规则每个交易日只提示一次，次日符合条件时会再提示",
+          onClick: () => { openAlertPanel(); },
         },
           h("div", { className: "sl-alert-pop-head" },
             h("span", { className: "sl-alert-pop-title" }, "🔔 预警 · " + ev.name),
@@ -3243,7 +3209,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             Number(ev.overflow) > 0
               ? h("span", {
                   className: "sl-alert-pop-more",
-                  "data-sltip": "另有 " + ev.overflow + " 条预警被合并到这条（同时最多展示 3 条）\n点开预警页可看完整触发历史",
+                  "data-sltip": "另有 " + ev.overflow + " 条预警被合并到这条（同时最多展示 3 条）",
                 }, "+" + ev.overflow)
               : null,
             h("button", {
@@ -3508,8 +3474,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         h(ContextMenu, { menu: s.menu }),
         h(EditPosDialog),
         h(AddAlertDialog),
-        // 预警弹窗挂在 overlay 顶层：与悬浮窗开关无关，窗口恢复时一定可见
-        h(AlertPopup),
+        // ⚠️ 预警弹窗**不在这里**：Overlay 开头有 `if (!s.open) return null`，
+        // 放在这里会导致「悬浮窗关着时预警弹窗也不显示」（用户实测反馈）。
+        // 它已改为独立 slot 注册（见 apply 里的 alert-popup），与悬浮窗开关解耦。
       );
     }
 
@@ -3984,6 +3951,11 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       ctx.effect(initTipLayer);
       ctx.slots.inject("conversation.composer.dock", () => ctx.slots.register({ name: "conversation.composer.dock", id: "dsh-stock-leek.bar" }, () => withBoundary(h(IndexBar))));
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek.tip-layer", order: 999 }, () => h(TipLayer)));
+      // 预警弹窗：**独立 slot**，与悬浮窗（Overlay）的 open 状态解耦。
+      // 曾经挂在 Overlay 内部 → 悬浮窗关着时 `if (!s.open) return null` 会连带
+      // 把弹窗一起吞掉，导致「不打开悬浮窗就收不到预警」（用户实测反馈）。
+      // order 取 1000：排在提示层（999）之后，保证预警在最上层。
+      ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek.alert-popup", order: 1000 }, () => withBoundary(h(AlertPopup))));
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek.floating-bar", order: -10 }, () => withBoundary(h(FloatingIndexBar))));
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek" }, (props) => withBoundary(h(Overlay, props))));
     }

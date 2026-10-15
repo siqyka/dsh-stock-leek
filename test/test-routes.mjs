@@ -331,10 +331,12 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
   const cfgPath = getConfigPathForTest();
   check("alerts 路径派生自 configPath（继承 pid 隔离）", alertsPath === cfgPath + ".alerts" && !alertsPath.endsWith("alerts.json"), { alertsPath, cfgPath });
 
-  // /alerts GET 回读：结构与已写入事件一致
+  // /alerts GET：**不再返回 events**（触发历史已按要求去掉），但仍返回 states
+  // ——states 是「每交易日只提示一次」的依据，必须保留
   const hist = await get("/dsh-stock-leek/alerts");
-  check("/alerts 返回 events 数组", hist.status === 200 && Array.isArray(hist.json.events), hist.json && hist.json.events);
-  check("/alerts 记录了已触发事件", hist.json.events.some((e) => e.type === "price_above"), hist.json.events && hist.json.events.slice(-1));
+  check("/alerts 200 且不再返回 events", hist.status === 200 && hist.json.events === undefined, { keys: Object.keys(hist.json || {}) });
+  check("/alerts 返回 states（评估依据）", !!hist.json.states && typeof hist.json.states === "object", hist.json.states);
+  check("states 记录了已评估规则（证明评估仍在工作）", !!hist.json.states && Object.keys(hist.json.states).length > 0, hist.json.states);
 
   // 验收 #5：未启用规则 → 评估循环完全休眠，**零上游请求**。
   // 观测点：循环确实在跑（ticks 增长），但 fetches 一步不动。
