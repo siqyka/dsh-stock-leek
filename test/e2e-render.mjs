@@ -1749,13 +1749,20 @@ if (txnMi) {
     check("收起态仍留设置按钮", barTxt.indexOf("⚙") >= 0, barTxt.slice(0, 120));
     globalThis.__sl_now__ = prevNow;
 
-    // 账本仍照常写入：提醒图标没了，但「Host 独立评估 + 账本」这条链不受影响
+    // 账本仍照常写入：提醒图标没了，但「Host 独立评估 + 账本」这条链不受影响。
+    // 行情日期用**真实当日**（市场本地日）：applyAlertTick 有交易日判据，
+    // 写死过去某天会被判成"该市场今天没开"而跳过，断言就空转了。
+    const todayBJ = (() => {
+      const p = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" })
+        .format(new Date()).replace(/-/g, "");
+      return p;
+    })();
     const c1 = cfgNow();
     await hostPost("/dsh-stock-leek/config", {
       config: Object.assign({}, c1, { remind: true, alerts: [{ id: "bell1", code: "sh600519", type: "price_above", value: 1, enabled: true }] }),
     });
     __alertTickForTest({ remind: true, positions: [], alerts: [{ id: "bell1", code: "sh600519", type: "price_above", value: 1, enabled: true }] },
-      [{ code: "sh600519", name: "贵州茅台", price: 1700, percent: 2, time: "20261015100000" }], {});
+      [{ code: "sh600519", name: "贵州茅台", price: 1700, percent: 2, time: todayBJ + "100000" }], {});
     const ledger = await hostJson("/dsh-stock-leek/alerts");
     check("无提醒图标但账本照常记录（评估与 UI 解耦）", Array.isArray(ledger.events) && ledger.events.length > 0, ledger.events && ledger.events.length);
   }

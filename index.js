@@ -423,6 +423,28 @@ function activeAlertCodes(cfg) {
 }
 
 /**
+ * 某市场时区的「当日」YYYYMMDD（交易日判据用，§4.3）。
+ * 与 shared 的 quoteDayFor 配对：报价日 === 市场本地当日 才允许触发判定。
+ * 用 Intl 取市场时区日期——绝不 new Date(str)，也绝不用主机本地日
+ * （凌晨跑 A 股规则时，主机本地日已是新的一天，而市场还没开盘）。
+ */
+function marketTodayFor(code, now) {
+  const c = String(code || "").toLowerCase();
+  const tz = /^(sh|sz|bj)/.test(c) ? "Asia/Shanghai"
+    : /^hk/.test(c) ? "Asia/Hong_Kong"
+      : /^(us|gb_)/.test(c) ? "America/New_York" : null;
+  try {
+    const s = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz || "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(now); // en-CA → YYYY-MM-DD
+    return s.replace(/-/g, "");
+  } catch {
+    const p2 = (n) => String(n).padStart(2, "0");
+    return now.getFullYear() + p2(now.getMonth() + 1) + p2(now.getDate());
+  }
+}
+
+/**
  * 单拍评估（纯编排，Host 循环与 __alertTickWith 测试通道共用同一条路径）。
  * @param {object} cfg 已 sanitize 的配置
  * @param {Map} quotes code → 行情行
@@ -445,6 +467,10 @@ function applyAlertTick(cfg, quotes, data, now) {
     if (!q) { skipped.push(rule.id); continue; } // 停牌/未订阅：状态不动
     const day = quoteDayFor(q);
     if (!day) { skipped.push(rule.id); continue; } // 无日界：宁可不报，不可乱报（§10.7）
+    // 交易日判据（§4.3）：报价日必须等于**该市场本地当日**。
+    // 报价停在上一交易日 = 该市场今天没开（节假日/未开市/停牌），
+    // 此时价格恒定不变，条件可能恒真 → 必须跳过，否则每逢节假日误报一次。
+    if (day !== marketTodayFor(rule.code, now)) { skipped.push(rule.id); continue; }
     const r = stepAlert(rule, q, data.states[rule.id], { day, cost: costBy.get(rule.code) });
     data.states[rule.id] = r.state; // 滞回状态跨拍保持；跨日重置同样落账
     if (r.skipped) skipped.push(rule.id); // no-day / no-data（悬空成本、全 -1 哨兵等）
@@ -501,7 +527,11 @@ function startAlertLoop(ctx) {
       }
       // 与行情广播同款护栏：对齐上游批量上限，规则膨胀不放大 URL
       alertStats.fetches++;
-      const map = await fetchQuotes(codes.slice(0, 200));
+      // 按 code 逐个门控：混合市场时（如 A股 + 美股规则并存），美股盘中不能
+      // 顺带把休市的 A 股也评估了——报价停在昨收，条件可能恒真而误报。
+      // 只对「该市场此刻在交易时段」的 code 取行情与判定。
+      const openCodes = codes.filter((c) => isMarketOpen(c, now));
+      const map = await fetchQuotes(openCodes.slice(0, 200));
       const data = readAlerts();
       const before = JSON.stringify(data.states);
       const { fired } = applyAlertTick(cfg, map, data, now);

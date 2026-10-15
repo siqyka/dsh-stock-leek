@@ -452,12 +452,29 @@ for (const [name, samples] of FORMATTERS) {
   check("sanitizeAlerts 与 shared.js 一致", String(JSON.stringify(arrA)) === String(JSON.stringify(arrB)));
   check("sanitizeAlerts 上限 50", arrB.length === 50, arrB.length);
   check("sanitizeAlerts 去重 id", shared.sanitizeAlerts([many[0], { ...many[0], code: "sz300750" }]).length === 1);
-  // quoteDayFor：14 位取前 8；脏值返回 null（绝不 new Date(str)）
+  // quoteDayFor：三个市场的时间戳格式**各不相同**，必须都能解析。
+  // 早先只认 14 位 → 美股/港股一律返回 null → 规则被判 no-day 永不触发（实测发现）。
   const cd = extractFn("quoteDayFor");
-  check("quoteDayFor 两端一致", String(cd && cd({ time: "20261014161401" })) === String(shared.quoteDayFor({ time: "20261014161401" }))
-    && String(cd && cd({ time: "bad" })) === String(shared.quoteDayFor({ time: "bad" })));
-  check("quoteDayFor 取市场本地日", shared.quoteDayFor({ time: "20261014161401" }) === "20261014");
-  check("quoteDayFor 脏值返回 null", shared.quoteDayFor({ time: "2026" }) === null && shared.quoteDayFor(null) === null);
+  const DAY_CASES = [
+    ["20261014161401", "20261014", "A股 14 位数字"],
+    ["2026-10-15 12:14:40", "20261015", "美股 横杠+空格"],
+    ["2026/10/15 16:08:42", "20261015", "港股 斜杠+空格"],
+    ["2026-10-15", "20261015", "仅日期（无时刻）"],
+    ["bad", null, "脏值"],
+    ["2026", null, "过短"],
+    ["", null, "空串"],
+  ];
+  {
+    const diffs = [];
+    for (const [t, expect, label] of DAY_CASES) {
+      const a = cd ? cd({ time: t }) : null;
+      const b = shared.quoteDayFor({ time: t });
+      if (String(a) !== String(b)) diffs.push({ t, client: a, shared: b });
+      if (String(b) !== String(expect)) diffs.push({ t, label, expect, actual: b });
+    }
+    check("quoteDayFor 两端一致且覆盖三市场格式", diffs.length === 0, diffs.slice(0, 4));
+    check("quoteDayFor 脏值返回 null", shared.quoteDayFor({ time: "2026" }) === null && shared.quoteDayFor(null) === null);
+  }
 }
 
 // stepAlert 状态机（仅 shared 有；Host 评估用，client 不评估）：滞回 + 跨日 + 悬空成本

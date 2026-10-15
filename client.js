@@ -504,10 +504,17 @@ window.__ModuleLoader__.load({
       }
       return out;
     }
-    // ==== 行情时间戳 → 市场本地交易日（跨日语义；与 lib/shared.js 一致）====
+    // ==== 行情时间戳 → 市场本地交易日（与 lib/shared.js 一致）====
+    // 三市场格式不同：A股 14 位数字 / 美股 "Y-M-D H:M:S" / 港股 "Y/M/D H:M:S"。
+    // 只认 14 位会让美股、港股规则永远 no-day 不触发（实测踩过）。
     function quoteDayFor(q) {
-      const t = String((q && q.time) || "");
-      return /^\d{14}$/.test(t) ? t.slice(0, 8) : null;
+      const t = String((q && q.time) || "").trim();
+      if (/^\d{14}$/.test(t)) return t.slice(0, 8);
+      const digits = t.replace(/[^\d]/g, "");
+      if (digits.length >= 8 && /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/.test(t)) {
+        return digits.slice(0, 8);
+      }
+      return null;
     }
     /**
      * 指数栏此刻该不该展开（**不含手动覆盖**，只回答"按时段该不该"）。

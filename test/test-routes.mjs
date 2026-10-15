@@ -236,9 +236,16 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
 // 6.5 预警：清洗 + 状态机 + 落盘隔离 + 总开关（docs/alerts-plan.md §3/§4/§6）
 {
   const DAY = "20261015";
-  const q = (price, extra) => Object.assign({ code: "sh600519", name: "贵州茅台", price, percent: 1, time: DAY + "100000" }, extra || {});
+  const q = (price, extra) => Object.assign({ code: "sh600519", name: "贵州茅台", price, percent: 1, time: DAY + "100000" }, extra || { now: NOW });
   const cfgFor = (alerts, remind) => ({ watchlist: [], positions: [], alerts, remind: remind === undefined ? true : remind });
   let seq = 0; // 每段独立 ruleId：.alerts 跨用例持久，避免滞回状态互相污染
+  /**
+   * 评估时刻必须与行情日期一致：`applyAlertTick` 有交易日判据（报价日必须
+   * 等于市场本地当日），否则一律跳过。测试传固定行情 `time=DAY+...`，
+   * 就得同时传一个「上海时区当日 == DAY」的 now，否则触发断言全空转。
+   * DAY=20261015 → 用该日北京 10:00（= UTC 02:00）。
+   */
+  const NOW = new Date(Date.UTC(2026, 9, 15, 2, 0, 0));
 
   // POST 含合法+脏规则：合法保留、脏拒绝（id 字符集 / 类型 / 港美股 limit_near）
   const badPost = await post("/dsh-stock-leek/config", {
@@ -259,45 +266,65 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
   // 状态机：上穿触发一次，停阈值上方不重复，回落过滞回带重置（写进隔离 .alerts）
   const mId = "m" + seq;
   const base = cfgFor([{ id: mId, code: "sh600519", type: "price_above", value: 10, enabled: true }]);
-  let t = __alertTickForTest(base, [q(11)], {});
+  let t = __alertTickForTest(base, [q(11)], { now: NOW });
   check("上穿触发 fired", t.fired.length === 1 && t.fired[0].ruleId === mId && t.fired[0].price === 11, t.fired);
 
-  t = __alertTickForTest(base, [q(12)], {});
+  t = __alertTickForTest(base, [q(12)], { now: NOW });
   check("停阈值上方不重复报（滞回）", t.fired.length === 0, t.fired);
 
   // 滞回带=10×(1−0.5%)=9.95：9.96 落在带内**不**重置（先钉住这个语义），
   // 9.94 越带才回 armed——若实现把带宽写错（如 1%），第一条会先变红
-  t = __alertTickForTest(base, [q(9.96)], {});
+  t = __alertTickForTest(base, [q(9.96)], { now: NOW });
   check("回落未越滞回带：保持 fired", t.fired.length === 0 && t.data.states[mId].phase === "fired", t.data.states[mId]);
 
-  t = __alertTickForTest(base, [q(9.94)], {}); // 9.94 ≤ 9.95 → 回 armed
+  t = __alertTickForTest(base, [q(9.94)], { now: NOW }); // 9.94 ≤ 9.95 → 回 armed
   check("回落越滞回带宽重新 armed", t.fired.length === 0 && t.data.states[mId].phase === "armed", t.data.states[mId]);
 
-  t = __alertTickForTest(base, [q(11)], {}); // 重新触发
+  t = __alertTickForTest(base, [q(11)], { now: NOW }); // 重新触发
   check("重置后可再次触发", t.fired.length === 1, t.fired);
 
   // 跨日重置：先在 D15 建立 fired 态，再到 D16 用同一规则——
   // 只有「昨日 fired + 今日仍在上穿」同时成立才说明跨日真的重置了（非空洞）
   const dId = "d" + seq;
   const dayCfg = cfgFor([{ id: dId, code: "sh600519", type: "price_above", value: 10, enabled: true }]);
-  __alertTickForTest(dayCfg, [{ code: "sh600519", price: 11, percent: 1, time: "20261015100000" }], {});
-  const dd = __alertTickForTest(dayCfg, [{ code: "sh600519", price: 11, percent: 1, time: "20261016100000" }], {});
+  __alertTickForTest(dayCfg, [{ code: "sh600519", price: 11, percent: 1, time: "20261015100000" }], { now: NOW });
+  // 次日：now 必须同步到次日——交易日判据要求「报价日 == 市场本地当日」，
+  // 用 D15 的 now 会被判据挡掉，跨日断言就变成空转。
+  const NOW2 = new Date(Date.UTC(2026, 9, 16, 2, 0, 0)); // 20261016 北京 10:00
+  const dd = __alertTickForTest(dayCfg, [{ code: "sh600519", price: 11, percent: 1, time: "20261016100000" }], { now: NOW2 });
   check("跨日强制重置并重新触发", dd.fired.some((e) => e.ruleId === dId), dd.fired);
 
+  // 交易日判据本身：报价日 != 市场本地当日（节假日/未开市）→ 跳过不触发。
+  // 没有这条，节假日里「价格恒定满足条件」会误报一次。
+  const holId = "h" + seq;
+  const hol = __alertTickForTest(
+    cfgFor([{ id: holId, code: "sh600519", type: "price_above", value: 10, enabled: true }]),
+    [{ code: "sh600519", price: 99, percent: 1, time: "20261015100000" }], // 报价停在 D15
+    { now: NOW2 }); // 而市场本地已是 D16 → 该市场今天没开
+  check("报价日落后于市场当日 → 跳过不触发（节假日防误报）", hol.fired.length === 0 && hol.skipped.includes(holId), hol);
+
+  // 反向对照：同一报价，若 now 也停在 D15（当天）→ 必须触发。
+  // 两条一起才证明跳过是「日期不匹配」造成的，而不是规则本身不工作。
+  const hol2 = __alertTickForTest(
+    cfgFor([{ id: "h2" + seq, code: "sh600519", type: "price_above", value: 10, enabled: true }]),
+    [{ code: "sh600519", price: 99, percent: 1, time: "20261015100000" }],
+    { now: NOW });
+  check("同报价在当日则正常触发（对照，防假绿）", hol2.fired.length === 1, hol2.fired);
+
   // 总开关：remind=false → 一律不评估（即使上穿）
-  const off = __alertTickForTest(cfgFor([{ id: "o" + seq, code: "sh600519", type: "price_above", value: 10, enabled: true }], false), [q(11)], {});
+  const off = __alertTickForTest(cfgFor([{ id: "o" + seq, code: "sh600519", type: "price_above", value: 10, enabled: true }], false), [q(11)], { now: NOW });
   check("总开关 remind=false 不触发", off.fired.length === 0, off.fired);
 
   // 悬空成本：cost_above 找不到持仓成本 → 跳过不误触
-  const orphan = __alertTickForTest(cfgFor([{ id: "c1", code: "sh600519", type: "cost_above", value: 0, enabled: true }]), [q(50)], {});
+  const orphan = __alertTickForTest(cfgFor([{ id: "c1", code: "sh600519", type: "cost_above", value: 0, enabled: true }]), [q(50)], { now: NOW });
   check("cost_above 无成本价跳过", orphan.fired.length === 0 && orphan.skipped.includes("c1"), { fired: orphan.fired, skipped: orphan.skipped });
   const withCost = __alertTickForTest(
     { watchlist: [], positions: [{ code: "sh600519", cost: 9, qty: 100 }], alerts: [{ id: "c2", code: "sh600519", type: "cost_above", value: 0, enabled: true }], remind: true },
-    [q(11)], {});
+    [q(11)], { now: NOW });
   check("cost_above 成本有效时触发", withCost.fired.some((e) => e.ruleId === "c2"), withCost.fired);
 
   // 无行情日界（time 脏）：跳过触发，宁可不报不乱报
-  const noDay = __alertTickForTest(cfgFor([{ id: "n1", code: "sh600519", type: "price_above", value: 10, enabled: true }]), [{ code: "sh600519", price: 11, percent: 1, time: "" }], {});
+  const noDay = __alertTickForTest(cfgFor([{ id: "n1", code: "sh600519", type: "price_above", value: 10, enabled: true }]), [{ code: "sh600519", price: 11, percent: 1, time: "" }], { now: NOW });
   check("无行情日界跳过触发", noDay.fired.length === 0 && noDay.skipped.includes("n1"), noDay);
 
   // 落盘隔离：账本落在隔离临时路径派生的 .alerts，且 events 已持久化
