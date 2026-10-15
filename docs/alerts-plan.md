@@ -1,7 +1,7 @@
 # 股票预警功能 · 实施计划
 
-> 状态：**计划已确认，尚未动工**。本文档是唯一的实施依据，动代码前先看这份。
-> 确认于 2026-10-15。范围：Phase 1 + 2 一次做完；配置落点复用 `cfg.remind` 作总开关 + 新增 `cfg.alerts`；评估范围仅「已启用规则」涉及的股票；评估节奏 `clamp(pollMs, 2s, 15s)`；`armed/fired` 状态随历史一起落盘。
+> 状态：**实施中**。本文档是唯一的实施依据。
+> 确认于 2026-10-15；同日完成代码事实评估并修订 8 处（交易日判据、日界时区、limit_near 市场限制、alerts 上限、marketNow 上提、Host 时间注入、未读语义、cost 悬空、重连补齐）。范围：Phase 1 + 2 一次做完；配置落点复用 `cfg.remind` 作总开关 + 新增 `cfg.alerts`；评估范围仅「已启用规则」涉及的股票；评估节奏 `clamp(pollMs, 2s, 15s)`；`armed/fired` 状态随历史一起落盘。
 
 ---
 
@@ -91,6 +91,14 @@ Host 独立评估循环（ctx.effect 管生命周期，与 sseClients 无关）
 | `limit_near` | 距涨/跌停 < N% | `limitUp` / `limitDown` |
 | `speed_up` | 涨速 ≥ N%（急拉） | `speed` |
 
+⚠️ 修订（`limit_near` 市场限制）：只有 A 股/北交所行情有有效涨跌停价，**港股、美股以及指数字段返回 `-1` 哨兵**（实测 sh000001 即 `limitUp:-1`）。若对它建 `limit_near`，阈值会算成 ≈ `-1×(1−N%)` 的负数，armed 立刻穿越、必然误触发。防护两道：**UI 侧仅 sh/sz/bj 前缀的 code 提供该类型选项；Host sanitize 对非 A 股 code 拒收**（与 `price_below` 不同，这里是"市场不存在该概念"而非"参数非法"）。
+
+⚠️ 修订（`cost_above`/`cost_below` 悬空语义）：持仓会在「上一交易日清仓」后被自动移除（`purgeStaleClosedPositions`），届时规则的成本价不复存在。行为定义为：**规则保留、Host 找不到持仓或持仓无成本价时跳过该规则，不触发也不删除**（删用户的东西不是我们的权力）；UI 上该行给一个「成本已失效」灰标。
+
+### 规则上限
+
+⚠️ 修订：`cfg.alerts` 数组 **≤ 50 条**，单条规则字段长度对齐现有白名单清洗。列表类字段在安全清洗里已有 `≤300` 先例，预警是高频评估路径，必须更严：没有上限，规则膨胀后评估循环的批量 fetch 会失控（现有广播循环有 `slice(0, 200)` 护栏，新循环对齐同样的上限并注释说明原因）。
+
 行情字段见 [index.js:486-508](../index.js#L486-L508)：`price / yestclose / percent / high / low / limitUp / limitDown / amplitude / turnover`，涨速由 `attachSpeed` 补。
 
 **后续再考虑**（首发不做，避免规则类型膨胀）：放量（需引入 5 日均量基线）、止损/止盈线联动持仓、大盘跳水联动、跌破 N 日均线。
@@ -111,13 +119,26 @@ Host 独立评估循环（ctx.effect 管生命周期，与 sseClients 无关）
 
 滞回带宽 `HYSTERESIS = 0.5%`（可配）。下穿型规则镜像处理。
 
-### 4.2 每日重置
+### 4.2 每日重置（日界=市场本地交易日，不是本地墙上时钟）
 
-预警是**当日事件**。昨天触发过，今天必须重新生效。`stepAlert` 接收 `dateStr`，跨日强制回 `armed`。
+预警是**当日事件**。昨天触发过，今天必须重新生效。
 
-### 4.3 休市不评估
+⚠️ 修订：**不能用浏览器/主机本地日期当 `dateStr`**。美股 21:30–04:00（北京时间）正在盘中，本地 00:00 一到就强制回 `armed`，已 fired 的规则当晚能再报一次，滞回与跨日语义全部失真。
 
-收盘后现价恒定不变，会立刻满足某个「跌破」条件并疯狂补报。靠时段判断门控（见 §5）。
+正确做法：`stepAlert` 接收的 `dateStr` 由**行情自带时间戳**（`quote.time`，如 `20261014161401`）取 `YYYYMMDD` 推导——它是报价源所在市场的交易日，美股报价时间戳天然按美东走。§6.3 的 `states` 按规则存 `day`，判据是 `state.day !== quoteDay` 才重置。
+
+### 4.3 交易日判定（修订：时段判断挡不住节假日）
+
+收盘后现价恒定不变，会立刻满足某个「跌破」条件并疯狂补报。必须门控。
+
+⚠️ 修订：**`isMarketOpen` 只有「周末 + 分钟窗口」，没有交易日历**。工作日撞上国庆/春节，窗口照样命中 → 节假日每 2~15s 打一次上游（违反验收 #4），且现价恒定于旧收盘，若恰满足某条 armed 规则会**误触发一次**（滞回挡不住"从未越过"的初始态）。
+
+双判据缺一不可：
+
+1. **时段门控**（省 token）：所有规则 code 的市场都 `isMarketOpen=false` → 退避 60s，不打接口。
+2. **交易日判据**（防误报，主判据）：取 `quote.time` 的市场本地日；**若该 code 全部规则的 codeDay 都等于当日、且报价时间戳落在收盘后区间，跳过触发**——实施上以 `quoteDay !== state.day` 为"新交易日"唯一信号，报价陈旧时 `quoteDay` 不变，规则停留在原 phase，既不误报也不重复推。
+
+验收 #4 相应改为：**休市/节假日 → 零上游请求（时段门控）、零误报（交易日判据）**。
 
 ---
 
@@ -128,6 +149,7 @@ Host 独立评估循环（ctx.effect 管生命周期，与 sseClients 无关）
 ```
 client.js:403  function marketWindows(code)      ← 唯一的一份
 client.js:411  function marketMinutes(code, now)
+client.js:430  function marketNow()              ← 读 globalThis.__sl_now__
 client.js:436  function isMarketOpen(code, now)
 client.js:452  function shouldExpandBar(code, now)
 ```
@@ -136,6 +158,12 @@ Host 侧评估要用时段判断，只有两条路：
 
 - **提到 `lib/shared.js`**（推荐）：`marketWindows` / `marketMinutes` / `isMarketOpen` 三个纯函数进 shared，client.js 保留内联副本，纳入 `shared-drift` 对拍清单。
 - Host 自己再写一份：两份时段表必然漂移，且没有测试会报警。**不要选这条**。
+
+⚠️ 修订（`marketNow` 与注入点边界）：`isMarketOpen` 的默认参数走 `marketNow()`，而它读的是**浏览器全局** `globalThis.__sl_now__`。上提时：
+
+1. **shared.js 版把 `now` 改成必填**（Host 侧调用方自己传 `new Date()`），内联副本保留 `marketNow()` 默认。否则 Host 的 Node 进程里 `__sl_now__` 永远不存在，测试无法稳定构造「节假日/盘中」时刻。
+2. **`marketMinutes` 依赖 `Intl.DateTimeFormat` 的 timeZone**，Node 18+ 带完整 ICU 没问题，但要写进对拍输入（同一时刻、A股/港/美三个时区各一组），验证浏览器与 Node 结果一致。
+3. **`marketNow()` 不上提**——它是客户端测试钩子，Host 用自己的 `Date.now()`，两者混进同一份共享代码反而让对拍失真。`isMarketOpen` 上提版不引用它。
 
 `shouldExpandBar` 是纯 UI 逻辑（指数栏展开时机），**不要**搬到 shared.js，留在 client.js。
 
@@ -182,18 +210,18 @@ Host 侧评估要用时段判断，只有两条路：
 ```json
 {
   "version": 1,
-  "day": "2026-10-15",
   "events": [
     { "at": 1760000000000, "ruleId": "a1", "code": "sh600519", "name": "贵州茅台",
       "type": "price_above", "value": 1500, "price": 1501.2, "percent": 2.31 }
   ],
-  "states": { "a1": { "phase": "fired", "day": "2026-10-15" } }
+  "states": { "a1": { "phase": "fired", "day": "20261014" } }
 }
 ```
 
 - 环形缓冲：`events` 保留最近 200 条
-- 跨日：`day` 与今天不符时清空 `events`、`states` 全部回 `armed`（对应 §4.2）
+- 跨日：`states[id].day !== quoteDay` 强制回 `armed`（对应 §4.2，日 key 来自行情时间戳的市场本地日，**不是本地墙上时钟**）。⚠️ 修订：不再用全局单一 `day` 字段——多市场并存时（A 股已收盘、美股正盘中）一个"今天"无法同时表达两个市场的交易日，per-rule `day` 才是正确粒度。
 - `states` 落盘 = 已确认的「Host 重启不会把报过的再报一遍」
+- ⚠️ 修订（ruleId 安全）：`states` 以 ruleId 为键。id 虽由 Host 自己写，但**源自客户端提交**，sanitize 必须把 `id` 限为 `[A-Za-z0-9_-]{1,32}`——配置 POST 已有 `__proto__`/`constructor` 守卫，这里是同一威胁面进入第二个文件的通道，别复用"那是 config 的事"的假设。
 - 客户端**永不 POST** 这个文件，只有 Host 写
 
 ---
@@ -207,6 +235,8 @@ Host 侧评估要用时段判断，只有两条路：
 > 这条流只在**触发时**才有数据（一天几条），不产生任何上游请求，与断流策略原本要对齐的「连接数」目标不冲突。行情流照旧隐藏即断。
 
 Host 侧：`/alert-stream` 用**独立的订阅集合**，不参与 `sseTick` 的 `size === 0` 判断（那是行情广播的开关）。
+
+⚠️ 修订（重连补齐）：保留这条流挡不住 Chrome **标签页冻结（freeze）**——冻结时 EventSource 一样断。兜底策略：客户端每次（重）连 `/alert-stream` 成功后，**先 `GET /alerts` 拉一次全量历史做对账**（按 `at` 时间戳补角标未读数），再进入增量推送。不假设流不断，只假设历史文件完整。
 
 ### 7.2 通知权限绝不在加载时申请
 
@@ -239,6 +269,11 @@ DSH 宿主可能是 webview，`Notification` 未必存在——**降级链必须
 
 tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](../client.js#L2667)。
 
+⚠️ 修订（未读语义）：「未读角标」的计数与已读状态定义如下，不另发明：
+- 未读数 = `events` 中 `at > lastSeenAt` 的条数（客户端算）
+- `lastSeenAt` 存 **localStorage**（`sl.alertSeen.<pid或默认>`），打开预警 tab 即更新为当前时间
+- **不进 config**：否则"看一眼"也要 POST 配置、搅动 `__rev` 乐观锁——§6.1 论证过的边界别在 UI 层自己破坏。它是设备偏好（每台设备各看各的），不是持仓数据。
+
 > 角标在指数栏**收起状态下也要显示**。你 20:00 回来时栏是收着的（见 `shouldExpandBar`），而那恰恰是你最想知道「错过了什么」的时刻。
 
 ---
@@ -268,9 +303,11 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 
 4. **浏览器里没有 `process`**。给 client.js 加测试开关要用 `globalThis.__SL_*__`，写 `process.env` 会抛 `ReferenceError` 并被 `try/catch` 吞掉，表现为「开关生效了但分支根本没跑到」。见 [docs/development.md](development.md)。
 
-5. **时段相关的测试要留时间注入点**。指数栏那轮已经建了 `globalThis.__sl_now__` 机制，预警的「休市不评估」「跨日重置」用例必须复用它，否则断言只在作者写代码的那几分钟成立。
+5. **时段相关的测试要留时间注入点**。指数栏那轮已经建了 `globalThis.__sl_now__` 机制，预警的「交易日判定」「跨日重置」用例必须复用它，否则断言只在作者写代码的那几分钟成立。⚠️ 修订：`__sl_now__` 是**浏览器全局**，test-routes（Node 进程）里不存在——Host 侧函数的时间必须做成**参数注入**（`stepAlert(rule, quote, now)`、评估循环可注入 `readConfig`/`fetchQuotes` 替身），测试直接传固定时刻。两条注入路径别混用。
 
 6. **Host 重启后状态机是冷的**——已通过 §6.3 的 `states` 落盘解决。
+
+7. ⚠️ 修订（新增）：**行情 `time` 字段是字符串 `YYYYMMDDHHMMSS`，不是 epoch**。从它推 `quoteDay` 用 `String(q.time).slice(0, 8)`，**不要 `new Date(q.time)`**（会按本地时区误解析且部分市场时间戳格式可能不一致）。缺字段/脏值时跳过该 code 的触发判定（宁可不报，不可乱报），并在评估循环日志里计数，方便发现上游字段漂移。
 
 ---
 
@@ -291,8 +328,11 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 
 1. 关掉所有标签页（隐藏），触发一条预警 → 回来能看到历史与角标；开了通知则系统通知已弹
 2. 价格停在阈值上方 10 分钟 → **只报 1 次**（滞回）
-3. 次日同样条件 → 重新生效（跨日重置）
-4. 休市期间 → 零上游请求、零误报
+3. 次日同样条件 → 重新生效（跨日重置；日界按 §4.2 的行情时间戳日，美股规则在北京时间 00:00 **不得**重置）
+4. 休市/节假日 → 零上游请求（时段门控）、零误报（交易日判据，§4.3）
 5. 未启用任何规则 → 评估循环完全休眠，不打接口
 6. 老版本 Host 进程下新建规则并重载 → 规则不丢（回填保护）
-7. `npm test` 全绿，且新增断言逐条通过非空洞验证
+7. `limit_near` 规则：港股/美股 code 被 UI 禁选、Host sanitize 拒收；A 股 code 正常生效
+8. 持仓清仓移除后，其 `cost_*` 规则保留、评估时静默跳过，不触发、不删除
+9. 重开 `/alert-stream`（含重连）先 `GET /alerts` 对账，冻结期间的事件能补进角标
+10. `npm test` 全绿，且新增断言逐条通过非空洞验证

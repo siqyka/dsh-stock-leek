@@ -441,6 +441,51 @@ window.__ModuleLoader__.load({
       const t = marketMinutes(c, now);
       return marketWindows(c).some(([a, b]) => t >= a && t <= b);
     }
+    // ==== 预警：规则清洗（与 lib/shared.js 同名副本，shared-drift 对拍锁定）====
+    // UI 建规则时本地先用它校验/钳制，Host 侧 sanitizeConfig 是最终防线。
+    const ALERT_TYPES = [
+      "price_above", "price_below", "cost_above", "cost_below",
+      "pct_up", "pct_down", "limit_near", "speed_up",
+    ];
+    const ALERT_HYSTERESIS = 0.5;
+    function sanitizeAlert(raw) {
+      if (!raw || typeof raw !== "object") return null;
+      if (typeof raw.id !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(raw.id)) return null;
+      const code = typeof raw.code === "string" ? raw.code.trim() : "";
+      if (!/^[A-Za-z0-9_.$-]{1,16}$/.test(code)) return null;
+      if (!ALERT_TYPES.includes(raw.type)) return null;
+      if (raw.type === "limit_near" && !/^(sh|sz|bj)/i.test(code)) return null;
+      const value = Number(raw.value);
+      if (!Number.isFinite(value) || value < 0) return null;
+      const out = {
+        id: raw.id,
+        code,
+        type: raw.type,
+        value: Math.min(1e8, Math.round(value * 10000) / 10000),
+        enabled: raw.enabled !== false,
+      };
+      if (typeof raw.name === "string" && raw.name.trim()) out.name = raw.name.trim().slice(0, 40);
+      if (Number.isFinite(Number(raw.createdAt))) out.createdAt = Math.round(Number(raw.createdAt));
+      return out;
+    }
+    function sanitizeAlerts(raw) {
+      if (!Array.isArray(raw)) return [];
+      const seen = new Set();
+      const out = [];
+      for (const r of raw) {
+        const v = sanitizeAlert(r);
+        if (!v || seen.has(v.id)) continue;
+        seen.add(v.id);
+        out.push(v);
+        if (out.length >= 50) break;
+      }
+      return out;
+    }
+    // ==== 行情时间戳 → 市场本地交易日（跨日语义；与 lib/shared.js 一致）====
+    function quoteDayFor(q) {
+      const t = String((q && q.time) || "");
+      return /^\d{14}$/.test(t) ? t.slice(0, 8) : null;
+    }
     /**
      * 指数栏此刻该不该展开（**不含手动覆盖**，只回答"按时段该不该"）。
      *

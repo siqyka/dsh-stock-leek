@@ -380,5 +380,134 @@ for (const [name, samples] of FORMATTERS) {
   check("无行情的持仓不计入汇总", noQuote.today === 0 && noQuote.pnl === 0, { today: noQuote.today, pnl: noQuote.pnl });
 }
 
+// isMarketOpen 时段函数的三市场语义：两端一致 + 关键边界（同一 now 显式传入，
+// client 副本的 marketNow 兜底不参与——测试不依赖浏览器全局 __sl_now__）。
+{
+  const cw = extractFn("marketWindows");
+  const cm = extractFn("marketMinutes");
+  const ci = extractFn("isMarketOpen", { marketWindows: cw, marketMinutes: cm });
+  check("marketWindows 在 client.js 中可提取", !!cw);
+  check("isMarketOpen 在 client.js 中可提取", !!ci);
+  const codes = ["sh600519", "sz300750", "bj430047", "hk00700", "usAAPL", "gb_IXIC", "", null];
+  const diffs = [];
+  for (const c of codes) {
+    if (String(cw && cw(c)) !== String(shared.marketWindows(c))) diffs.push({ c, kind: "windows" });
+  }
+  // 固定时刻：A股盘中 10:00 / 午休 12:00 / 美股盘中 10:00（美东）/ 周末
+  const NOWS = [
+    new Date(Date.UTC(2026, 9, 15, 2, 0, 0)), // 北京 10:00（周四）
+    new Date(Date.UTC(2026, 9, 15, 4, 0, 0)), // 北京 12:00 午休
+    new Date(Date.UTC(2026, 9, 14, 14, 30, 0)), // 美东 10:30（美股盘中）
+    new Date(Date.UTC(2026, 9, 17, 2, 0, 0)), // 周六
+  ];
+  for (const c of ["sh600519", "hk00700", "usAAPL"]) {
+    for (const n of NOWS) {
+      const a = ci ? ci(c, n) : null;
+      const b = shared.isMarketOpen(c, n);
+      if (String(a) !== String(b)) diffs.push({ c, n: n.toISOString(), client: a, shared: b });
+      const am = cm ? cm(c, n) : null;
+      const bm = shared.marketMinutes(c, n);
+      if (String(am) !== String(bm)) diffs.push({ c, n: n.toISOString(), kind: "minutes" });
+    }
+  }
+  check("时段函数与 shared.js 行为一致", diffs.length === 0, diffs.slice(0, 4));
+  // 语义边界：午休 A 股算休市（12:00 落在两窗口之间），周末全休
+  check("A股午休不在交易时段", shared.isMarketOpen("sh600519", NOWS[1]) === false);
+  check("A股 10:00 在交易时段", shared.isMarketOpen("sh600519", NOWS[0]) === true);
+  check("周六全市场休", codes.every((c) => !shared.isMarketOpen(c, NOWS[3])));
+}
+
+// 预警清洗：sanitizeAlert / sanitizeAlerts 两端一致 + 关键拒绝路径
+{
+  const ca = extractFn("sanitizeAlert", { ALERT_TYPES: shared.ALERT_TYPES, ALERT_HYSTERESIS: shared.ALERT_HYSTERESIS });
+  const cs = extractFn("sanitizeAlerts", { sanitizeAlert: ca });
+  check("sanitizeAlert 在 client.js 中可提取", !!ca);
+  check("sanitizeAlerts 在 client.js 中可提取", !!cs);
+  const CASES = [
+    [{ id: "a1", code: "sh600519", type: "price_above", value: 1500 }, true],
+    [{ id: "a2", code: "hk00700", type: "limit_near", value: 2 }, false], // 港股无涨跌停
+    [{ id: "bad id!", code: "sh600519", type: "price_above", value: 1 }, false], // id 字符集
+    [{ id: "a3", code: "sh600519", type: "unknown_type", value: 1 }, false],
+    [{ id: "a4", code: "sh600519", type: "pct_up", value: NaN }, false],
+    [{ id: "a5", code: "sh600519", type: "pct_up", value: -1 }, false],
+    [{ id: "a6", code: "sh600519", type: "cost_above", value: 10 }, true],
+    [{ id: "a7", code: "__proto__", type: "pct_up", value: 3 }, true], // code 是合法字符集，id 不是（这里 id 合法）
+    [{ id: "constructor", code: "sh600519", type: "pct_up", value: 3 }, true], // id 字符集允许
+    [null, false],
+    ["x", false],
+  ];
+  const diffs = [];
+  for (const [c, ok] of CASES) {
+    const a = ca ? ca(c) : null;
+    const b = shared.sanitizeAlert(c);
+    if (String(JSON.stringify(a)) !== String(JSON.stringify(b))) diffs.push({ c, client: a, shared: b });
+    if (ok && !b) diffs.push({ expect: "accept", c });
+    if (!ok && b) diffs.push({ expect: "reject", c });
+  }
+  check("sanitizeAlert 与 shared.js 行为一致", diffs.length === 0, diffs.slice(0, 4));
+  // 上限 50：给 60 条只收 50
+  const many = []; for (let i = 0; i < 60; i++) many.push({ id: "r" + i, code: "sh600519", type: "pct_up", value: 3 });
+  const arrA = cs ? cs(many) : null;
+  const arrB = shared.sanitizeAlerts(many);
+  check("sanitizeAlerts 与 shared.js 一致", String(JSON.stringify(arrA)) === String(JSON.stringify(arrB)));
+  check("sanitizeAlerts 上限 50", arrB.length === 50, arrB.length);
+  check("sanitizeAlerts 去重 id", shared.sanitizeAlerts([many[0], { ...many[0], code: "sz300750" }]).length === 1);
+  // quoteDayFor：14 位取前 8；脏值返回 null（绝不 new Date(str)）
+  const cd = extractFn("quoteDayFor");
+  check("quoteDayFor 两端一致", String(cd && cd({ time: "20261014161401" })) === String(shared.quoteDayFor({ time: "20261014161401" }))
+    && String(cd && cd({ time: "bad" })) === String(shared.quoteDayFor({ time: "bad" })));
+  check("quoteDayFor 取市场本地日", shared.quoteDayFor({ time: "20261014161401" }) === "20261014");
+  check("quoteDayFor 脏值返回 null", shared.quoteDayFor({ time: "2026" }) === null && shared.quoteDayFor(null) === null);
+}
+
+// stepAlert 状态机（仅 shared 有；Host 评估用，client 不评估）：滞回 + 跨日 + 悬空成本
+{
+  const rule = (t, v) => ({ id: "x1", code: "sh600519", type: t, value: v, enabled: true });
+  const D = "20261015";
+  const st = shared.stepAlert;
+  // 上穿：armed → fired 报一次
+  let r = st(rule("price_above", 1500), { price: 1501, time: D + "100000" }, null, { day: D });
+  check("price_above 上穿触发 fired", r.fired === true && r.state.phase === "fired", r);
+  // 停在阈值上方：不重复报（滞回的核心目的）
+  r = st(rule("price_above", 1500), { price: 1502, time: D + "100001" }, { phase: "fired", day: D }, { day: D });
+  check("price_above 停阈值上方不重复报", r.fired === false && r.state.phase === "fired", r);
+  // 回落不足滞回带宽：仍 fired
+  r = st(rule("price_above", 1500), { price: 1495, time: D + "100002" }, { phase: "fired", day: D }, { day: D }); // 1495 > 1500*0.995=1492.5
+  check("回落不足滞回带宽不重置", r.state.phase === "fired", r);
+  // 回落超过带宽：重新 armed
+  r = st(rule("price_above", 1500), { price: 1490, time: D + "100003" }, { phase: "fired", day: D }, { day: D });
+  check("回落过滞回带宽重置 armed", r.state.phase === "armed" && r.fired === false, r);
+  // 下穿镜像
+  r = st(rule("price_below", 1400), { price: 1399, time: D + "100000" }, null, { day: D });
+  check("price_below 下穿触发", r.fired === true, r);
+  r = st(rule("price_below", 1400), { price: 1399.5, time: D + "100000" }, { phase: "fired", day: D }, { day: D });
+  check("price_below 停在下方不重复报", r.fired === false, r);
+  r = st(rule("price_below", 1400), { price: 1401, time: D + "100000" }, { phase: "fired", day: D }, { day: D }); // 1401 < 1400*1.005=1407
+  check("price_below 反弹不足带宽不重置", r.state.phase === "fired", r);
+  r = st(rule("price_below", 1400), { price: 1410, time: D + "100000" }, { phase: "fired", day: D }, { day: D });
+  check("price_below 反弹过带宽重置", r.state.phase === "armed", r);
+  // 跨日重置：昨天 fired，今天同条件重新报
+  r = st(rule("price_above", 1500), { price: 1501, time: "20261016100000" }, { phase: "fired", day: "20261015" }, { day: "20261016" });
+  check("跨日 fired 回 armed 并当日重新可触发", r.state.phase === "fired" && r.fired === true && r.state.day === "20261016", r);
+  // pct_down 语义：value 为正 N%，判 pct ≤ -N
+  r = st(rule("pct_down", 3), { percent: -3.5, time: D + "100000" }, null, { day: D });
+  check("pct_down 跌幅达阈触发", r.fired === true, r);
+  r = st(rule("pct_down", 3), { percent: -2.9, time: D + "100000" }, null, { day: D });
+  check("pct_down 跌幅不足不触发", r.fired === false, r);
+  // 悬空成本：cost_above 无 cost 时跳过不误触发
+  r = st(rule("cost_above", 0), { price: 10, time: D + "100000" }, null, { day: D, cost: undefined });
+  check("cost_above 无成本价跳过不触发", r.fired === false && r.skipped === "no-data", r);
+  r = st(rule("cost_above", 0), { price: 10, time: D + "100000" }, null, { day: D, cost: 9 });
+  check("cost_above 成本有效时触发", r.fired === true, r);
+  // limit_near：-1 哨兵不得算成触发
+  r = st(rule("limit_near", 2), { price: 100, limitUp: -1, limitDown: -1, time: D + "100000" }, null, { day: D });
+  check("limit_near 哨兵 -1 跳过不误触", r.fired === false && r.skipped === "no-data", r);
+  r = st(rule("limit_near", 2), { price: 100, limitUp: 101, limitDown: 99, time: D + "100000" }, null, { day: D });
+  check("limit_near 逼近涨停触发", r.fired === true, r);
+  // 行情缺日界（陈旧/脏 time）：no-day，绝不触发
+  r = st(rule("price_above", 1), { price: 5, time: "" }, null, { day: "" });
+  check("无行情日界跳过触发（宁可不报）", r.fired === false && r.skipped === "no-day", r);
+}
+
 console.log(fails === 0 ? "\nALL PASS" : `\n${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);
