@@ -3161,11 +3161,29 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       if (!list.length) return null;
       // 定位到**对话区左上角**（用户指定：对话列表下方、贴左侧）。
       // 左对齐而非居中——与消息列表的阅读起点对齐，视线不用横向跳。
+      //
+      // ⚠️ 坐标必须钳进视口：窗口缩小时对话区几何会变（甚至测不到），
+      // 直接采用会算出屏幕外的 left/top 或过窄的宽度 → 弹窗「全屏可见、
+      // 缩小窗口就消失」（用户实测反馈）。与悬浮指数栏同一套钳制思路。
+      const vw = (typeof window !== "undefined" && window.innerWidth) || 1024;
+      const vh = (typeof window !== "undefined" && window.innerHeight) || 768;
       const conv = convRect;
-      const boxW = conv ? Math.min(520, Math.max(240, conv.width - 48)) : 360;
-      const style = conv
-        ? { position: "fixed", left: Math.round(conv.left + 16), top: Math.round(conv.top + 12), width: boxW, zIndex: 10005, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8, pointerEvents: "auto", maxHeight: Math.max(120, conv.height - 32), overflowY: "auto" }
-        : { position: "fixed", left: 24, top: 72, width: 360, zIndex: 10005, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8, pointerEvents: "auto" };
+      // 宽度：优先贴合对话区，但永远不超出视口、也不小于可读下限
+      const wantW = conv ? Math.min(520, conv.width - 48) : 360;
+      const boxW = Math.round(Math.max(200, Math.min(wantW, vw - 32)));
+      // 左边距：贴对话区左侧；对话区不可用或太靠右时退回视口左侧
+      const wantLeft = conv ? conv.left + 16 : 24;
+      const left = Math.round(Math.max(8, Math.min(wantLeft, vw - boxW - 8)));
+      // 顶部：贴对话区顶部；同样钳进视口，避免窄/矮窗口下跑到屏幕外
+      const wantTop = conv ? conv.top + 12 : 72;
+      const top = Math.round(Math.max(8, Math.min(wantTop, Math.max(8, vh - 120))));
+      // 高度上限：至少留 120px 可见，且不超过视口
+      const maxH = conv ? Math.max(120, conv.height - 32) : Math.max(160, vh - top - 24);
+      const style = {
+        position: "fixed", left, top, width: boxW, zIndex: 10005,
+        display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8,
+        pointerEvents: "auto", maxHeight: Math.round(Math.min(maxH, vh - top - 16)), overflowY: "auto",
+      };
       return h("div", {
         className: "sl-root sl-theme-" + s.theme + (s.theme === "light" ? " sl-light" : ""),
         style,

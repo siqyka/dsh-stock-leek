@@ -104,8 +104,24 @@ global.document = {
   removeEventListener: (t, f) => { if (DOC_L[t]) DOC_L[t] = DOC_L[t].filter((x) => x !== f); },
   hidden: false,
   querySelector: (sel) => {
-    if (process.env.LF_TEST_SEAT === "1") {
-      return { getBoundingClientRect: () => ({ left: 240, top: 620, right: 1160, bottom: 760, width: 920, height: 140 }) };
+    // LF_TEST_SEAT=1 走「能测到 composer seat」的真实探测分支；
+    // global.__forceSeat 供单个用例临时打开（默认不开，避免影响其它断言）
+    if (process.env.LF_TEST_SEAT === "1" || global.__forceSeat) {
+      // 模拟 composer seat：预警弹窗的定位要沿 parentElement 往上爬几层
+      // 才拿得到"对话面板"几何（useConversationRect 的实现），所以这里必须
+      // 造出父链——否则探测分支永远走不到，只剩回退路径，
+      // 「窄窗口下钳制」这类断言会完全空转（踩过）。
+      const mkBox = (r) => ({
+        getBoundingClientRect: () => r,
+        parentElement: null,
+      });
+      // 三层父链：seat(920×140 @240,620) → 面板(1000×700 @120,80)
+      const panel = mkBox({ left: 120, top: 80, right: 1120, bottom: 780, width: 1000, height: 700 });
+      const mid = mkBox({ left: 160, top: 560, right: 1080, bottom: 780, width: 920, height: 220 });
+      mid.parentElement = panel;
+      const seat = mkBox({ left: 240, top: 620, right: 1160, bottom: 760, width: 920, height: 140 });
+      seat.parentElement = mid;
+      return seat;
     }
     return null; // 默认：找不到 composer seat → 回退视口左下角
   },
@@ -2043,6 +2059,48 @@ if (txnMi) {
     // 进度条：可见的倒计时视觉
     const bar = findNode(ovNode, (n) => String((n.props && n.props.className) || "").indexOf("sl-alert-pop-bar") >= 0);
     check("弹窗带倒计时进度条", !!bar, textOf(ovNode).join(" ").slice(-120));
+
+    // 3x-5) **窄窗口下仍在视口内**（用户实测：全屏可见、缩小窗口就消失）。
+    //        必须让探测分支真的跑起来（__forceSeat）——否则走的是硬编码回退值，
+    //        钳制与否都一样，断言会空转（踩过：去掉钳制仍全绿）。
+    const popStyleOf = (node) => {
+      const n = findNode(node, (x) => x.props && x.props.style && x.props.style.position === "fixed" && x.props.style.zIndex === 10005);
+      return n && n.props.style;
+    };
+    const savedW = global.window.innerWidth;
+    const savedH = global.window.innerHeight;
+    // 先确认探测分支生效：宽窗口下应贴对话区（left ≈ 120+16=136，而非回退的 24）
+    global.__forceSeat = true;
+    global.window.innerWidth = 1400;
+    global.window.innerHeight = 900;
+    global.__winDispatch("resize", {});
+    await wait(60); // useConversationRect 需一轮测量
+    ovNode = ov.render({}); renderTree(ovNode);
+    const wide = popStyleOf(ovNode);
+    console.log("   宽窗口弹窗几何:", JSON.stringify({ left: wide && wide.left, top: wide && wide.top, w: wide && wide.width }));
+    check("探测到对话区：弹窗贴合对话区左侧（非回退值 24）", !!wide && wide.left > 24, wide && wide.left);
+
+    // 缩到很窄：模拟对话区被挤压，绝对坐标会越界——必须被钳回视口
+    global.window.innerWidth = 400;
+    global.window.innerHeight = 300;
+    global.__winDispatch("resize", {});
+    await wait(60);
+    ovNode = ov.render({}); renderTree(ovNode);
+    const narrow = popStyleOf(ovNode);
+    console.log("   窄窗口弹窗几何:", JSON.stringify({ left: narrow && narrow.left, top: narrow && narrow.top, w: narrow && narrow.width }));
+    check("窄窗口(400×300)：弹窗仍有定位样式", !!narrow, narrow);
+    check("窄窗口：left ≥ 0 且在视口内", !!narrow && narrow.left >= 0 && narrow.left < 400, narrow && narrow.left);
+    check("窄窗口：top ≥ 0 且在视口内", !!narrow && narrow.top >= 0 && narrow.top < 300, narrow && narrow.top);
+    check("窄窗口：宽度不超视口", !!narrow && narrow.width > 0 && narrow.width <= 400 - 16, narrow && narrow.width);
+    check("窄窗口：右边不越界（left+width ≤ 视口宽）", !!narrow && narrow.left + narrow.width <= 400, { left: narrow && narrow.left, w: narrow && narrow.width });
+    // 放大回原尺寸 → 恢复正常几何
+    global.window.innerWidth = savedW;
+    global.window.innerHeight = savedH;
+    global.__forceSeat = false;
+    global.__winDispatch("resize", {});
+    await wait(60);
+    ovNode = ov.render({}); renderTree(ovNode);
+    check("恢复窗口尺寸后弹窗几何正常", !!popStyleOf(ovNode), popStyleOf(ovNode));
     st().alertPopups = [];
   }
 
