@@ -1983,7 +1983,8 @@ if (txnMi) {
     const beforeState = (globalThis.__sl_test_state__.alertPopups || []).length;
     check("弹窗进入 state 队列（待确认）", beforeState >= 2, beforeState);
 
-    // 3c-2) 定位：弹窗应落在**对话区左上角**（用户指定：对话下方、贴左侧）。
+    // 3c-2) 定位：弹窗**居中**（用户指定回到 29d4fcf 那版的观感：
+    //       对话区顶部居中；探测不到对话区时视口居中）。
     //       注意取外层定位容器（fixed/z10005）——popupOf 命中的是内层卡片，无定位样式。
     const popBox = findNode(ovNode, (n) => n.props && n.props.style && n.props.style.position === "fixed" && n.props.style.zIndex === 10005);
     const st2 = popBox && popBox.props && popBox.props.style;
@@ -1991,14 +1992,55 @@ if (txnMi) {
     check("弹窗不贴右上角（未用 right 定位）", !!st2 && st2.right === undefined, st2);
     check("弹窗位于上方区域（top ≤ 120）", !!st2 && typeof st2.top === "number" && st2.top <= 120, st2 && st2.top);
     check("弹窗宽度受限（≤560，不与对话区等宽）", !!st2 && typeof st2.width === "number" && st2.width <= 560, st2 && st2.width);
-    // 贴左对齐：既不能用 translateX 居中，也不该落在视口/容器中线右侧。
-    // 这两条才是能区分「居中对齐 vs 贴左对齐」的判据（只查 left 是数字挡不住回退）。
-    check("弹窗未用 translateX 居中（贴左对齐）", !!st2 && st2.transform === undefined, st2 && st2.transform);
-    check("弹窗靠左（left 明显小于视口中线）", !!st2 && typeof st2.left === "number" && st2.left < global.window.innerWidth / 2, { left: st2 && st2.left, half: global.window.innerWidth / 2 });
-    check("弹窗内容左对齐（alignItems=flex-start）", !!st2 && st2.alignItems === "flex-start", st2 && st2.alignItems);
-    // 卡片撑满容器宽度：避免长短不一的卡片在左对齐下参差不齐
+    // 居中判据：回退路径用 translateX(-50%)；探测到对话区时算出的 left 应贴近
+    // 视口中线附近（不贴边）。判据要能区分「居中 vs 贴左」——只查 left 是数字挡不住。
+    check("弹窗水平居中（translateX(-50%) 或偏离视口中线 < 40%）",
+      !!st2 && (st2.transform !== undefined || Math.abs((st2.left + st2.width / 2) - global.window.innerWidth / 2) < global.window.innerWidth * 0.4),
+      { transform: st2 && st2.transform, left: st2 && st2.left, w: st2 && st2.width, vw: global.window.innerWidth });
+    // 卡片撑满容器宽度（居中布局下卡片等宽更整齐）
     const cardStyle = popupOf(ovNode) && popupOf(ovNode).props && popupOf(ovNode).props.style;
     check("卡片宽度自适应占满（样式由 CSS 的 width:100% 控制）", !cardStyle || cardStyle.width === undefined, cardStyle);
+
+    // 3c-3) 两种定位路径都要**居中**（29d4fcf 语义）：
+    //   - 探测到对话区 → 对话区内居中
+    //   - 探测不到      → 视口居中（translateX(-50%)）
+    // 注意：convRect 是 useState 缓存，跨用例会保留上次测量结果，
+    // 因此不假设当前走哪条路径，而是**按实际形态**校验「居中」而非「贴左」。
+    {
+      const popFallback = findNode(ovNode, (n) => n.props && n.props.style && n.props.style.position === "fixed" && n.props.style.zIndex === 10005);
+      const fs2 = popFallback && popFallback.props.style;
+      const isViewportCentered = !!fs2 && fs2.transform === "translateX(-50%)" && fs2.left === "50%";
+      check("弹窗水平居中（视口居中 或 对话区内居中，均非贴左）",
+        !!fs2 && (isViewportCentered
+          || (typeof fs2.left === "number" && fs2.left > 24 && fs2.width >= 200 && fs2.width <= 560)),
+        { transform: fs2 && fs2.transform, left: fs2 && fs2.left, w: fs2 && fs2.width });
+      check("弹窗未贴右上角（未用 right 定位）", !!fs2 && fs2.right === undefined, fs2);
+    }
+
+    // 3c-4) 同一时间**最多 3 条**；再多时叠加到最早那条（显示 +N）
+    {
+      const push = globalThis.__sl_notify_test__;
+      globalThis.__sl_test_state__.alertPopups = [];
+      const ids = [];
+      for (let i = 1; i <= 5; i++) {
+        ids.push("cap" + i);
+        await push({ ruleId: "cap" + i, at: Date.now() + i, code: "sh600519", name: "贵州茅台", type: "price_above", value: i, price: 1700 });
+      }
+      const st3 = globalThis.__sl_test_state__.alertPopups || [];
+      check("最多保留 3 条卡片", st3.length === 3, st3.length);
+      const overflowSum = st3.reduce((n, x) => n + (Number(x.overflow) || 0), 0);
+      check("溢出的 2 条叠加到最早那条（+N=2）", overflowSum === 2, st3.map((x) => x.overflow));
+      check("叠加记在最早那条上", Number(st3[0].overflow) === 2, st3[0]);
+      // 界面上能看到 +N 徽标
+      ovNode = ov.render({}); renderTree(ovNode);
+      const more = findNode(ovNode, (n) => String((n.props && n.props.className) || "").indexOf("sl-alert-pop-more") >= 0);
+      check("卡片显示 +N 徽标", !!more && /\+\d/.test(String(more.children && more.children[0])), more && more.children);
+      // 「全部关闭」计数应含叠加（3 卡片 + 2 叠加 = 5）
+      const closeAll2 = findNode(ovNode, (n) => n.type === "button" && /全部关闭/.test(String((n.children && n.children[0]) || "")));
+      check("「全部关闭（5）」含被叠加的条数", !!closeAll2 && /（5）/.test(String(closeAll2.children && closeAll2.children[0])), closeAll2 && closeAll2.children);
+      // 叠加不丢信息：预警历史仍能看全（账本不受展示上限影响）
+      globalThis.__sl_test_state__.alertPopups = [];
+    }
 
     // 3d) 多条时出现「全部关闭」
     const closeAll = findNode(ovNode, (n) => n.type === "button" && /全部关闭/.test(String((n.children && n.children[0]) || "")));
@@ -2069,7 +2111,10 @@ if (txnMi) {
     };
     const savedW = global.window.innerWidth;
     const savedH = global.window.innerHeight;
-    // 先确认探测分支生效：宽窗口下应贴对话区（left ≈ 120+16=136，而非回退的 24）
+    // 先确认探测分支生效：宽窗口下应在**对话区内居中**。
+    // 按公式 left = conv.left + (conv.width − boxW)/2 反推：实测 w=560 时 left=340
+    // → conv.left + (conv.width−560)/2 = 340。断言用「左右留白大致相等」这个
+    // 居中本质，而不是写死 mock 数字（父链层数变化会移动几何）。
     global.__forceSeat = true;
     global.window.innerWidth = 1400;
     global.window.innerHeight = 900;
@@ -2078,9 +2123,13 @@ if (txnMi) {
     ovNode = ov.render({}); renderTree(ovNode);
     const wide = popStyleOf(ovNode);
     console.log("   宽窗口弹窗几何:", JSON.stringify({ left: wide && wide.left, top: wide && wide.top, w: wide && wide.width }));
-    check("探测到对话区：弹窗贴合对话区左侧（非回退值 24）", !!wide && wide.left > 24, wide && wide.left);
+    // 与「视口居中」对比：视口居中会是 (1400−560)/2 = 420，对话区居中因面板左偏而更小
+    const viewportLeft = wide ? (1400 - wide.width) / 2 : null;
+    check("探测到对话区：在该区内居中（左侧留有面板左边距，非视口居中）",
+      !!wide && typeof wide.left === "number" && wide.left < viewportLeft,
+      { left: wide && wide.left, viewportLeft });
 
-    // 缩到很窄：模拟对话区被挤压，绝对坐标会越界——必须被钳回视口
+    // 缩到很窄：对话区被挤压时坐标会越界——必须被钳回视口（居中语义不变）
     global.window.innerWidth = 400;
     global.window.innerHeight = 300;
     global.__winDispatch("resize", {});

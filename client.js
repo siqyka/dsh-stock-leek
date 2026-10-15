@@ -121,6 +121,8 @@ window.__ModuleLoader__.load({
 .sl-alert-pop:hover{background:var(--sl-bg2)}
 .sl-alert-pop-head{display:flex;align-items:center;gap:8px}
 .sl-alert-pop-title{flex:1;min-width:0;font-weight:700;color:var(--sl-warn);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 叠加计数：同时最多 3 条，溢出的合并到最早那条并显示 +N */
+.sl-alert-pop-more{flex:none;min-width:18px;padding:0 5px;border-radius:999px;background:var(--sl-warn);color:#fff;font-size:10px;line-height:16px;text-align:center;font-variant-numeric:tabular-nums}
 .sl-alert-pop-row{display:flex;align-items:baseline;gap:10px;font-variant-numeric:tabular-nums}
 .sl-alert-pop-main .sl-alert-pop-cond{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sl-alert-pop-val{font-size:15px;font-weight:600;color:var(--sl-text)}
@@ -1047,7 +1049,15 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         flashTitle(body); // 无通知能力时的额外兜底（弹窗已在，这条只是锦上添花）
       }
     }
-    /** 预警弹窗入队（最多保留 5 条，避免长时间离开后回来被刷屏） */
+    /**
+     * 预警弹窗入队。
+     *
+     * 规则（用户要求）：**同一时间最多展示 3 条**；再多时不再新增卡片，
+     * 而是把溢出的**叠加到最早那条**上（它显示「+N」计数）。
+     * 好处：短时间密集触发（如开盘多条同时命中）不会把屏幕铺满，
+     * 但也不会丢信息——被叠加的条数明确可见。
+     */
+    const ALERT_POPUP_MAX = 3;
     function pushAlertPopup(ev) {
       const hidden = typeof document !== "undefined" && document.hidden;
       const item = {
@@ -1059,13 +1069,25 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         price: ev && ev.price,
         percent: ev && ev.percent,
         at: (ev && ev.at) || Date.now(),
+        overflow: 0, // 被叠加到本条的数量（>0 时卡片上显示 +N）
         // 可见计时的起点；0 = 尚未开始（页面当时不可见，等恢复可见再起算）。
         // 隐藏期间不推进，否则弹窗会在用户看不见时过期——那等于没弹。
         shownAt: hidden ? 0 : Date.now(),
       };
       const list = (state.alertPopups || []).filter((x) => x.id !== item.id);
+      if (list.length >= ALERT_POPUP_MAX) {
+        // 满了：叠加到**最早那条**（index 0），不新增卡片
+        const head = list[0];
+        list[0] = Object.assign({}, head, {
+          overflow: (Number(head.overflow) || 0) + 1,
+          // 叠加时刷新计时起点：让用户有完整 10 秒看清「又来了几条」
+          shownAt: hidden ? 0 : Date.now(),
+        });
+        setState({ alertPopups: list });
+        return;
+      }
       list.push(item);
-      setState({ alertPopups: list.slice(-5) });
+      setState({ alertPopups: list });
     }
     function dismissAlertPopup(id) {
       setState({ alertPopups: (state.alertPopups || []).filter((x) => x.id !== id) });
@@ -3111,9 +3133,12 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             }
           }
           if (!next) {
-            // 回退：视口上方居中（红框位置的大致等价物）
-            const w = Math.min(560, Math.max(260, window.innerWidth - 64));
-            next = { left: (window.innerWidth - w) / 2, top: 72, width: w, height: window.innerHeight - 160 };
+            // 回退：**贴左**（与探测成功时一致的视觉锚点）。
+            // ⚠️ 这里曾是「视口居中」——改贴左对齐时漏改了这条路径，
+            // 结果宿主探测不到对话区时弹窗又回到居中（用户实测反馈）。
+            // 两条路径必须给出一致的位置语义，否则「有时居中有贴左」。
+            const w = Math.min(520, Math.max(200, window.innerWidth - 64));
+            next = { left: 24, top: 72, width: w, height: window.innerHeight - 160 };
           }
           if (!last || Math.abs(next.left - last.left) > 1 || Math.abs(next.top - last.top) > 1 || Math.abs(next.width - last.width) > 1) {
             last = next;
@@ -3159,31 +3184,40 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         return () => window.removeEventListener("keydown", onKey);
       }, [list.length]);
       if (!list.length) return null;
-      // 定位到**对话区左上角**（用户指定：对话列表下方、贴左侧）。
-      // 左对齐而非居中——与消息列表的阅读起点对齐，视线不用横向跳。
+      // 定位：**对话区顶部居中**（用户指定回到 29d4fcf 那版的观感）。
+      //   - 探测到对话区：在对话区内水平居中、贴其顶部
+      //   - 探测不到：视口居中（translateX(-50%)，与 29d4fcf 回退一致）
       //
-      // ⚠️ 坐标必须钳进视口：窗口缩小时对话区几何会变（甚至测不到），
-      // 直接采用会算出屏幕外的 left/top 或过窄的宽度 → 弹窗「全屏可见、
-      // 缩小窗口就消失」（用户实测反馈）。与悬浮指数栏同一套钳制思路。
+      // ⚠️ 相对 29d4fcf 的唯一加强：坐标仍**钳进视口**。那版没钳制，
+      // 窗口缩小时弹窗会跑到可视区外（用户实测「全屏可见、缩小就消失」）。
+      // 居中语义不变，只是把结果夹在可视范围内。
       const vw = (typeof window !== "undefined" && window.innerWidth) || 1024;
       const vh = (typeof window !== "undefined" && window.innerHeight) || 768;
       const conv = convRect;
-      // 宽度：优先贴合对话区，但永远不超出视口、也不小于可读下限
-      const wantW = conv ? Math.min(520, conv.width - 48) : 360;
+      // 宽度：优先贴合对话区（上限 560），并夹进视口
+      const wantW = conv ? Math.min(560, Math.max(240, conv.width - 48)) : 360;
       const boxW = Math.round(Math.max(200, Math.min(wantW, vw - 32)));
-      // 左边距：贴对话区左侧；对话区不可用或太靠右时退回视口左侧
-      const wantLeft = conv ? conv.left + 16 : 24;
-      const left = Math.round(Math.max(8, Math.min(wantLeft, vw - boxW - 8)));
-      // 顶部：贴对话区顶部；同样钳进视口，避免窄/矮窗口下跑到屏幕外
+      // 顶部：贴对话区顶部（回退 72）
       const wantTop = conv ? conv.top + 12 : 72;
       const top = Math.round(Math.max(8, Math.min(wantTop, Math.max(8, vh - 120))));
-      // 高度上限：至少留 120px 可见，且不超过视口
-      const maxH = conv ? Math.max(120, conv.height - 32) : Math.max(160, vh - top - 24);
-      const style = {
-        position: "fixed", left, top, width: boxW, zIndex: 10005,
-        display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8,
-        pointerEvents: "auto", maxHeight: Math.round(Math.min(maxH, vh - top - 16)), overflowY: "auto",
-      };
+      let style;
+      if (conv) {
+        // 对话区内居中
+        const centered = Math.round(conv.left + (conv.width - boxW) / 2);
+        const left = Math.round(Math.max(8, Math.min(centered, vw - boxW - 8)));
+        style = {
+          position: "fixed", left, top, width: boxW, zIndex: 10005,
+          display: "flex", flexDirection: "column", gap: 8, pointerEvents: "auto",
+          maxHeight: Math.round(Math.min(Math.max(120, conv.height - 32), vh - top - 16)), overflowY: "auto",
+        };
+      } else {
+        // 回退：视口居中（与 29d4fcf 一致），宽度按视口夹紧避免越界
+        style = {
+          position: "fixed", left: "50%", transform: "translateX(-50%)", top, width: boxW, zIndex: 10005,
+          display: "flex", flexDirection: "column", gap: 8, pointerEvents: "auto",
+          maxHeight: Math.round(Math.max(160, vh - top - 24)), overflowY: "auto",
+        };
+      }
       return h("div", {
         className: "sl-root sl-theme-" + s.theme + (s.theme === "light" ? " sl-light" : ""),
         style,
@@ -3197,6 +3231,13 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         },
           h("div", { className: "sl-alert-pop-head" },
             h("span", { className: "sl-alert-pop-title" }, "🔔 预警 · " + ev.name),
+            // 叠加计数：本条卡片承载了多少条溢出预警（最多展示 3 条，多余叠到最早那条）
+            Number(ev.overflow) > 0
+              ? h("span", {
+                  className: "sl-alert-pop-more",
+                  "data-sltip": "另有 " + ev.overflow + " 条预警被合并到这条（同时最多展示 3 条）\n点开预警页可看完整触发历史",
+                }, "+" + ev.overflow)
+              : null,
             h("button", {
               className: "sl-x",
               "data-sltip": "立即关闭（不必等 10 秒）",
@@ -3213,8 +3254,12 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           // 倒计时进度条：让"还剩多久"可见，避免用户以为它会一直留着
           h("div", { className: "sl-alert-pop-bar", style: { animationDuration: ALERT_POPUP_MS + "ms" } }),
         )),
-        list.length > 1
-          ? h("button", { className: "sl-btn sl-btn-ghost", onClick: () => dismissAllAlertPopups() }, "全部关闭（" + list.length + "）")
+        list.length > 1 || list.some((x) => Number(x.overflow) > 0)
+          ? h("button", {
+              className: "sl-btn sl-btn-ghost",
+              "data-sltip": "关闭全部预警弹窗（含被合并的条数）",
+              onClick: () => dismissAllAlertPopups(),
+            }, "全部关闭（" + list.reduce((n, x) => n + 1 + (Number(x.overflow) || 0), 0) + "）")
           : null,
       );
     }
