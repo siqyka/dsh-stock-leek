@@ -2142,6 +2142,13 @@ if (txnMi) {
     check("窄窗口：top ≥ 0 且在视口内", !!narrow && narrow.top >= 0 && narrow.top < 300, narrow && narrow.top);
     check("窄窗口：宽度不超视口", !!narrow && narrow.width > 0 && narrow.width <= 400 - 16, narrow && narrow.width);
     check("窄窗口：右边不越界（left+width ≤ 视口宽）", !!narrow && narrow.left + narrow.width <= 400, { left: narrow && narrow.left, w: narrow && narrow.width });
+    // **居中语义在窄窗口下也要成立**：left 应约等于 (视口宽 − 弹窗宽)/2。
+    // 这条能区分「居中」与「贴左」（贴左时 left≈24，居中时≈56）。
+    {
+      const expectCenter = (400 - narrow.width) / 2;
+      check("窄窗口仍居中（非贴左）", Math.abs(narrow.left - expectCenter) <= 4,
+        { left: narrow.left, expectCenter, diff: Math.abs(narrow.left - expectCenter) });
+    }
     // 放大回原尺寸 → 恢复正常几何
     global.window.innerWidth = savedW;
     global.window.innerHeight = savedH;
@@ -2150,6 +2157,23 @@ if (txnMi) {
     await wait(60);
     ovNode = ov.render({}); renderTree(ovNode);
     check("恢复窗口尺寸后弹窗几何正常", !!popStyleOf(ovNode), popStyleOf(ovNode));
+
+    // 3x-6) **回退路径也要居中**（探测不到 composer seat 时）。
+    //        踩过的真 bug：改回居中时只改了主路径，回退值仍是 left:24（贴左），
+    //        宿主探测不到 seat 就跑到屏幕左边 → 用户实测「中间的没有看到」。
+    {
+      global.__forceSeat = false;
+      global.__winDispatch("resize", {});
+      await wait(60);
+      ovNode = ov.render({}); renderTree(ovNode);
+      const fb = popStyleOf(ovNode);
+      const diag = globalThis.__sl_conv_rect__ || {};
+      const expectFb = (global.window.innerWidth - fb.width) / 2;
+      console.log("   回退路径几何:", JSON.stringify({ left: fb.left, w: fb.width, expectFb, fallback: diag.fallback }));
+      check("回退路径标记为 fallback", diag.fallback === true, diag);
+      check("回退路径居中（left ≈ (视口宽−弹窗宽)/2，非贴左 24）",
+        Math.abs(fb.left - expectFb) <= 6, { left: fb.left, expectFb });
+    }
     st().alertPopups = [];
   }
 

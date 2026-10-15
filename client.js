@@ -3124,22 +3124,30 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           const seat = document.querySelector("[data-composer-seat]")
             || document.querySelector('[data-conversation-region="composer"]');
           if (seat) {
-            // composer 往上找 2~3 层通常就是对话面板容器
+            // composer 往上找 1~2 层即对话面板容器。
+            // ⚠️ 曾爬 3 层：容易越过对话面板爬到侧边栏/应用根容器，
+            // 那样"对话区内居中"的基准就偏了，弹窗看着不在中间（实测反馈）。
+            // 这里取更保守的 2 层，并对几何做合理性检查（宽度应显著小于视口）。
             let box = seat;
-            for (let i = 0; i < 3 && box && box.parentElement; i++) box = box.parentElement;
+            for (let i = 0; i < 2 && box && box.parentElement; i++) box = box.parentElement;
             const r = box.getBoundingClientRect();
-            if (r.width > 200 && r.height > 120) {
+            if (r.width > 200 && r.height > 120 && r.width <= window.innerWidth) {
               next = { left: r.left, top: r.top, width: r.width, height: r.height };
             }
           }
           if (!next) {
-            // 回退：**贴左**（与探测成功时一致的视觉锚点）。
-            // ⚠️ 这里曾是「视口居中」——改贴左对齐时漏改了这条路径，
-            // 结果宿主探测不到对话区时弹窗又回到居中（用户实测反馈）。
-            // 两条路径必须给出一致的位置语义，否则「有时居中有贴左」。
+            // 回退：**视口居中**（与主路径的居中语义一致）。
+            // ⚠️ 这里曾遗留「贴左」（left: 24）——它是"贴左对齐"那版的产物，
+            // 用户改回居中后仍留着，导致探测不到 composer seat 时弹窗跑偏到
+            // 屏幕左边、看着完全不在中间（实测反馈「中间的没有看到」）。
+            // 两条路径必须给出一致的视觉位置。
             const w = Math.min(520, Math.max(200, window.innerWidth - 64));
-            next = { left: 24, top: 72, width: w, height: window.innerHeight - 160 };
+            next = { left: Math.round((window.innerWidth - w) / 2), top: 72, width: w, height: window.innerHeight - 160 };
           }
+          // 诊断钩子：浏览器控制台可查「弹窗实际用的几何 + 是否走了回退」。
+          // 排查「弹窗不在中间」这类问题时，比猜宿主 DOM 结构快得多：
+          //   __sl_conv_rect__   → { left, top, width, height, fallback }
+          globalThis.__sl_conv_rect__ = Object.assign({}, next, { fallback: !seat, vw: window.innerWidth, vh: window.innerHeight });
           if (!last || Math.abs(next.left - last.left) > 1 || Math.abs(next.top - last.top) > 1 || Math.abs(next.width - last.width) > 1) {
             last = next;
             setRect(next);
