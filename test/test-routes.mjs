@@ -263,25 +263,24 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
   const kept = badPost.json.config?.alerts || [];
   check("alerts 清洗只留合法规则", kept.length === 1 && kept[0].id === "good1", kept);
 
-  // 状态机：上穿触发一次，停阈值上方不重复，回落过滞回带重置（写进隔离 .alerts）
+  // 状态机：**每个交易日只提示一次**（用户要求），下次符合条件须等次日
   const mId = "m" + seq;
   const base = cfgFor([{ id: mId, code: "sh600519", type: "price_above", value: 10, enabled: true }]);
   let t = __alertTickForTest(base, [q(11)], { now: NOW });
   check("上穿触发 fired", t.fired.length === 1 && t.fired[0].ruleId === mId && t.fired[0].price === 11, t.fired);
 
   t = __alertTickForTest(base, [q(12)], { now: NOW });
-  check("停阈值上方不重复报（滞回）", t.fired.length === 0, t.fired);
+  check("停阈值上方不重复报", t.fired.length === 0, t.fired);
 
-  // 滞回带=10×(1−0.5%)=9.95：9.96 落在带内**不**重置（先钉住这个语义），
-  // 9.94 越带才回 armed——若实现把带宽写错（如 1%），第一条会先变红
+  // 核心：当日回落到阈值下方（含跌穿滞回带）**不再**重置，也不重复报
   t = __alertTickForTest(base, [q(9.96)], { now: NOW });
-  check("回落未越滞回带：保持 fired", t.fired.length === 0 && t.data.states[mId].phase === "fired", t.data.states[mId]);
+  check("当日小幅回落：保持 fired 不报", t.fired.length === 0 && t.data.states[mId].phase === "fired", t.data.states[mId]);
 
-  t = __alertTickForTest(base, [q(9.94)], { now: NOW }); // 9.94 ≤ 9.95 → 回 armed
-  check("回落越滞回带宽重新 armed", t.fired.length === 0 && t.data.states[mId].phase === "armed", t.data.states[mId]);
+  t = __alertTickForTest(base, [q(9)], { now: NOW }); // 深度回落，旧版会回 armed
+  check("当日深度回落也不重置（每日仅一次）", t.fired.length === 0 && t.data.states[mId].phase === "fired", t.data.states[mId]);
 
-  t = __alertTickForTest(base, [q(11)], { now: NOW }); // 重新触发
-  check("重置后可再次触发", t.fired.length === 1, t.fired);
+  t = __alertTickForTest(base, [q(11)], { now: NOW }); // 当日重新上穿
+  check("当日重新上穿仍不报（同一天只提示一次）", t.fired.length === 0, t.fired);
 
   // 跨日重置：先在 D15 建立 fired 态，再到 D16 用同一规则——
   // 只有「昨日 fired + 今日仍在上穿」同时成立才说明跨日真的重置了（非空洞）

@@ -477,7 +477,8 @@ for (const [name, samples] of FORMATTERS) {
   }
 }
 
-// stepAlert 状态机（仅 shared 有；Host 评估用，client 不评估）：滞回 + 跨日 + 悬空成本
+// stepAlert 状态机（仅 shared 有；Host 评估用，client 不评估）：
+// **每交易日只报一次** + 跨日重置 + 悬空成本跳过
 {
   const rule = (t, v) => ({ id: "x1", code: "sh600519", type: t, value: v, enabled: true });
   const D = "20261015";
@@ -485,27 +486,31 @@ for (const [name, samples] of FORMATTERS) {
   // 上穿：armed → fired 报一次
   let r = st(rule("price_above", 1500), { price: 1501, time: D + "100000" }, null, { day: D });
   check("price_above 上穿触发 fired", r.fired === true && r.state.phase === "fired", r);
-  // 停在阈值上方：不重复报（滞回的核心目的）
+  // 停在阈值上方：不重复报
   r = st(rule("price_above", 1500), { price: 1502, time: D + "100001" }, { phase: "fired", day: D }, { day: D });
   check("price_above 停阈值上方不重复报", r.fired === false && r.state.phase === "fired", r);
-  // 回落不足滞回带宽：仍 fired
-  r = st(rule("price_above", 1500), { price: 1495, time: D + "100002" }, { phase: "fired", day: D }, { day: D }); // 1495 > 1500*0.995=1492.5
-  check("回落不足滞回带宽不重置", r.state.phase === "fired", r);
-  // 回落超过带宽：重新 armed
-  r = st(rule("price_above", 1500), { price: 1490, time: D + "100003" }, { phase: "fired", day: D }, { day: D });
-  check("回落过滞回带宽重置 armed", r.state.phase === "armed" && r.fired === false, r);
+  // 核心新语义：**当日**回落到阈值下方（甚至跌穿滞回带）也不重置、不再报。
+  // 旧版这里是「回落过带宽 → 回 armed」，用户要求改成每日一次。
+  r = st(rule("price_above", 1500), { price: 1495, time: D + "100002" }, { phase: "fired", day: D }, { day: D });
+  check("当日回落（未越滞回带）不重置", r.state.phase === "fired" && r.fired === false, r);
+  r = st(rule("price_above", 1500), { price: 1400, time: D + "100003" }, { phase: "fired", day: D }, { day: D });
+  check("当日深度回落也不重置（每日仅一次的关键）", r.state.phase === "fired" && r.fired === false, r);
+  // 再涨回阈值上方：当日**仍然**不报
+  r = st(rule("price_above", 1500), { price: 1600, time: D + "100004" }, { phase: "fired", day: D }, { day: D });
+  check("当日重新上穿仍不报（同一天只提示一次）", r.fired === false, r);
   // 下穿镜像
   r = st(rule("price_below", 1400), { price: 1399, time: D + "100000" }, null, { day: D });
   check("price_below 下穿触发", r.fired === true, r);
   r = st(rule("price_below", 1400), { price: 1399.5, time: D + "100000" }, { phase: "fired", day: D }, { day: D });
   check("price_below 停在下方不重复报", r.fired === false, r);
-  r = st(rule("price_below", 1400), { price: 1401, time: D + "100000" }, { phase: "fired", day: D }, { day: D }); // 1401 < 1400*1.005=1407
-  check("price_below 反弹不足带宽不重置", r.state.phase === "fired", r);
-  r = st(rule("price_below", 1400), { price: 1410, time: D + "100000" }, { phase: "fired", day: D }, { day: D });
-  check("price_below 反弹过带宽重置", r.state.phase === "armed", r);
-  // 跨日重置：昨天 fired，今天同条件重新报
+  r = st(rule("price_below", 1400), { price: 1500, time: D + "100000" }, { phase: "fired", day: D }, { day: D });
+  check("price_below 当日大幅反弹也不重置", r.state.phase === "fired" && r.fired === false, r);
+  // 跨日重置：昨天 fired，今天同条件重新报（用户要求「下次符合条件时再提示」）
   r = st(rule("price_above", 1500), { price: 1501, time: "20261016100000" }, { phase: "fired", day: "20261015" }, { day: "20261016" });
   check("跨日 fired 回 armed 并当日重新可触发", r.state.phase === "fired" && r.fired === true && r.state.day === "20261016", r);
+  // 跨日后若条件**不**成立：回 armed 但不报（等下次符合）
+  r = st(rule("price_above", 1500), { price: 1400, time: "20261016100000" }, { phase: "fired", day: "20261015" }, { day: "20261016" });
+  check("跨日后条件不成立则待命不报", r.state.phase === "armed" && r.fired === false && r.state.day === "20261016", r);
   // pct_down 语义：value 为正 N%，判 pct ≤ -N
   r = st(rule("pct_down", 3), { percent: -3.5, time: D + "100000" }, null, { day: D });
   check("pct_down 跌幅达阈触发", r.fired === true, r);

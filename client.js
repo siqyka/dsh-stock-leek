@@ -116,14 +116,15 @@ window.__ModuleLoader__.load({
 .sl-alert-ev:hover{background:var(--sl-hover)}
 .sl-alert-ev-t{color:var(--sl-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .sl-alert-ev-p{color:var(--sl-text);font-variant-numeric:tabular-nums;white-space:nowrap}
-/* 预警弹窗：触发时无条件弹出，需手动确认（区别于 2.6s 自散的 toast） */
-.sl-alert-pop{background:var(--sl-bg);border:1px solid var(--sl-warn);border-left:3px solid var(--sl-warn);border-radius:10px;padding:10px 12px;box-shadow:var(--sl-shadow);cursor:pointer;display:flex;flex-direction:column;gap:4px}
+/* 预警弹窗：显示在对话区顶部居中，触发时无条件弹出，10s 自动消失、可手动关闭 */
+.sl-alert-pop{background:var(--sl-bg);border:1px solid var(--sl-warn);border-left:3px solid var(--sl-warn);border-radius:10px;padding:10px 14px;box-shadow:var(--sl-shadow);cursor:pointer;display:flex;flex-direction:column;gap:5px}
 .sl-alert-pop:hover{background:var(--sl-bg2)}
 .sl-alert-pop-head{display:flex;align-items:center;gap:8px}
 .sl-alert-pop-title{flex:1;min-width:0;font-weight:700;color:var(--sl-warn);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sl-alert-pop-cond{color:var(--sl-dim);font-size:11px}
-.sl-alert-pop-row{display:flex;align-items:center;gap:8px;font-variant-numeric:tabular-nums}
-.sl-alert-pop-time{margin-left:auto;color:var(--sl-muted);font-size:10px}
+.sl-alert-pop-row{display:flex;align-items:baseline;gap:10px;font-variant-numeric:tabular-nums}
+.sl-alert-pop-main .sl-alert-pop-cond{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sl-alert-pop-val{font-size:15px;font-weight:600;color:var(--sl-text)}
+.sl-alert-pop-time{margin-left:auto;color:var(--sl-muted);font-size:10px;white-space:nowrap}
 /* 倒计时进度条：10s 内从满到空（时长由内联 animationDuration 给出） */
 .sl-alert-pop-bar{height:2px;border-radius:2px;background:var(--sl-warn);transform-origin:left center;animation:slAlertBar linear forwards;margin-top:2px}
 @keyframes slAlertBar{from{transform:scaleX(1)}to{transform:scaleX(0)}}
@@ -3081,10 +3082,62 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
      * ⚠️ 倒计时**只在页面可见时走**：隐藏时暂停。否则弹窗会在你看不见的时候
      * 悄悄过期——那正好违背「隐藏也要能收到预警」这条要求。重新可见后给满 10 秒。
      */
+    /**
+     * 探测对话区几何：预警弹窗要显示在「对话消息区」里（用户指定位置），
+     * 而不是屏幕右上角。用宿主已稳定的 composer 槽位反推：
+     *   - composer seat 的父容器即对话面板（消息区 + 输入区）
+     *   - 弹窗落在该容器顶部居中，宽度取容器宽度的一部分
+     * 找不到时回退视口上方居中（保证任何宿主版本下都能显示）。
+     * 与 useComposerAnchor 同款做法：轮询 + resize，容忍宿主改版。
+     */
+    function useConversationRect(active) {
+      const [rect, setRect] = useState(null);
+      useEffect(() => {
+        if (!active) return undefined;
+        let alive = true;
+        let last = null;
+        const measure = () => {
+          if (!alive) return;
+          let next = null;
+          const seat = document.querySelector("[data-composer-seat]")
+            || document.querySelector('[data-conversation-region="composer"]');
+          if (seat) {
+            // composer 往上找 2~3 层通常就是对话面板容器
+            let box = seat;
+            for (let i = 0; i < 3 && box && box.parentElement; i++) box = box.parentElement;
+            const r = box.getBoundingClientRect();
+            if (r.width > 200 && r.height > 120) {
+              next = { left: r.left, top: r.top, width: r.width, height: r.height };
+            }
+          }
+          if (!next) {
+            // 回退：视口上方居中（红框位置的大致等价物）
+            const w = Math.min(560, Math.max(260, window.innerWidth - 64));
+            next = { left: (window.innerWidth - w) / 2, top: 72, width: w, height: window.innerHeight - 160 };
+          }
+          if (!last || Math.abs(next.left - last.left) > 1 || Math.abs(next.top - last.top) > 1 || Math.abs(next.width - last.width) > 1) {
+            last = next;
+            setRect(next);
+          }
+        };
+        measure();
+        const iv = setInterval(measure, 500);
+        window.addEventListener("resize", measure);
+        return () => {
+          alive = false;
+          clearInterval(iv);
+          window.removeEventListener("resize", measure);
+        };
+      }, [active]);
+      return rect;
+    }
+
     const ALERT_POPUP_MS = 10000;
     function AlertPopup() {
       const s = useStore();
       const list = s.alertPopups || [];
+      // hook 必须无条件在顶层调用（有弹窗时才需要测量 → 用 active 参数控制内部行为）
+      const convRect = useConversationRect(list.length > 0);
       // 已到期的自动关闭：只在可见时推进（隐藏时把剩余时间冻结）
       useEffect(() => {
         if (!list.length) return undefined;
@@ -3106,15 +3159,21 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         return () => window.removeEventListener("keydown", onKey);
       }, [list.length]);
       if (!list.length) return null;
+      // 定位到**对话区顶部居中**（用户指定：显示在对话消息区里，不是屏幕角落）
+      const conv = convRect;
+      const boxW = conv ? Math.min(560, Math.max(240, conv.width - 48)) : 360;
+      const style = conv
+        ? { position: "fixed", left: Math.round(conv.left + (conv.width - boxW) / 2), top: Math.round(conv.top + 12), width: boxW, zIndex: 10005, display: "flex", flexDirection: "column", gap: 8, pointerEvents: "auto", maxHeight: Math.max(120, conv.height - 32), overflowY: "auto" }
+        : { position: "fixed", left: "50%", transform: "translateX(-50%)", top: 72, width: 360, zIndex: 10005, display: "flex", flexDirection: "column", gap: 8, pointerEvents: "auto" };
       return h("div", {
         className: "sl-root sl-theme-" + s.theme + (s.theme === "light" ? " sl-light" : ""),
-        style: { position: "fixed", right: 16, top: 16, zIndex: 10005, display: "flex", flexDirection: "column", gap: 8, pointerEvents: "auto", maxWidth: 340 },
+        style,
       },
         list.map((ev) => h("div", {
           key: ev.id,
           className: "sl-alert-pop",
           role: "alert",
-          "data-sltip": "点击查看预警历史（会标记为已读）；10 秒后自动消失，也可点 ✕ 立即关闭",
+          "data-sltip": "点击查看预警历史（会标记为已读）；10 秒后自动消失，也可点 ✕ 立即关闭\n同一规则每个交易日只提示一次，次日符合条件时会再提示",
           onClick: () => { markAlertsSeen(); openAlertPanel(); },
         },
           h("div", { className: "sl-alert-pop-head" },
@@ -3124,9 +3183,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               "data-sltip": "立即关闭（不必等 10 秒）",
               onClick: (e) => { e.stopPropagation(); dismissAlertPopup(ev.id); },
             }, "✕")),
-          h("div", { className: "sl-alert-pop-cond" }, alertRuleText(ev)),
-          h("div", { className: "sl-alert-pop-row" },
-            h("span", null, fmtPrice(ev.price)),
+          h("div", { className: "sl-alert-pop-row sl-alert-pop-main" },
+            h("span", { className: "sl-alert-pop-cond" }, alertRuleText(ev)),
+            h("span", { className: "sl-alert-pop-val" }, fmtPrice(ev.price)),
             Number.isFinite(Number(ev.percent))
               ? h("span", { className: Number(ev.percent) > 0 ? "sl-up" : Number(ev.percent) < 0 ? "sl-down" : "sl-flat" }, fmtPct(ev.percent))
               : null,
