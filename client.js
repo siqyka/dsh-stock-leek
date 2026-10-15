@@ -116,8 +116,8 @@ window.__ModuleLoader__.load({
 .sl-alert-ev:hover{background:var(--sl-hover)}
 .sl-alert-ev-t{color:var(--sl-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .sl-alert-ev-p{color:var(--sl-text);font-variant-numeric:tabular-nums;white-space:nowrap}
-/* 预警弹窗：显示在对话区顶部居中，触发时无条件弹出，10s 自动消失、可手动关闭 */
-.sl-alert-pop{background:var(--sl-bg);border:1px solid var(--sl-warn);border-left:3px solid var(--sl-warn);border-radius:10px;padding:10px 14px;box-shadow:var(--sl-shadow);cursor:pointer;display:flex;flex-direction:column;gap:5px}
+/* 预警弹窗：显示在对话区左上角；触发时无条件弹出，10s 自动消失、可手动关闭 */
+.sl-alert-pop{width:100%;box-sizing:border-box;background:var(--sl-bg);border:1px solid var(--sl-warn);border-left:3px solid var(--sl-warn);border-radius:10px;padding:10px 14px;box-shadow:var(--sl-shadow);cursor:pointer;display:flex;flex-direction:column;gap:5px}
 .sl-alert-pop:hover{background:var(--sl-bg2)}
 .sl-alert-pop-head{display:flex;align-items:center;gap:8px}
 .sl-alert-pop-title{flex:1;min-width:0;font-weight:700;color:var(--sl-warn);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -3159,12 +3159,13 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         return () => window.removeEventListener("keydown", onKey);
       }, [list.length]);
       if (!list.length) return null;
-      // 定位到**对话区顶部居中**（用户指定：显示在对话消息区里，不是屏幕角落）
+      // 定位到**对话区左上角**（用户指定：对话列表下方、贴左侧）。
+      // 左对齐而非居中——与消息列表的阅读起点对齐，视线不用横向跳。
       const conv = convRect;
-      const boxW = conv ? Math.min(560, Math.max(240, conv.width - 48)) : 360;
+      const boxW = conv ? Math.min(520, Math.max(240, conv.width - 48)) : 360;
       const style = conv
-        ? { position: "fixed", left: Math.round(conv.left + (conv.width - boxW) / 2), top: Math.round(conv.top + 12), width: boxW, zIndex: 10005, display: "flex", flexDirection: "column", gap: 8, pointerEvents: "auto", maxHeight: Math.max(120, conv.height - 32), overflowY: "auto" }
-        : { position: "fixed", left: "50%", transform: "translateX(-50%)", top: 72, width: 360, zIndex: 10005, display: "flex", flexDirection: "column", gap: 8, pointerEvents: "auto" };
+        ? { position: "fixed", left: Math.round(conv.left + 16), top: Math.round(conv.top + 12), width: boxW, zIndex: 10005, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8, pointerEvents: "auto", maxHeight: Math.max(120, conv.height - 32), overflowY: "auto" }
+        : { position: "fixed", left: 24, top: 72, width: 360, zIndex: 10005, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8, pointerEvents: "auto" };
       return h("div", {
         className: "sl-root sl-theme-" + s.theme + (s.theme === "light" ? " sl-light" : ""),
         style,

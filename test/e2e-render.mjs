@@ -1967,15 +1967,22 @@ if (txnMi) {
     const beforeState = (globalThis.__sl_test_state__.alertPopups || []).length;
     check("弹窗进入 state 队列（待确认）", beforeState >= 2, beforeState);
 
-    // 3c-2) 定位：弹窗容器应落在**对话区顶部居中**，不是屏幕右上角。
+    // 3c-2) 定位：弹窗应落在**对话区左上角**（用户指定：对话下方、贴左侧）。
     //       注意取外层定位容器（fixed/z10005）——popupOf 命中的是内层卡片，无定位样式。
     const popBox = findNode(ovNode, (n) => n.props && n.props.style && n.props.style.position === "fixed" && n.props.style.zIndex === 10005);
     const st2 = popBox && popBox.props && popBox.props.style;
     check("找到弹窗定位容器", !!st2, st2);
     check("弹窗不贴右上角（未用 right 定位）", !!st2 && st2.right === undefined, st2);
-    check("弹窗横向居中（给了 left 数值）", !!st2 && typeof st2.left === "number", st2 && st2.left);
     check("弹窗位于上方区域（top ≤ 120）", !!st2 && typeof st2.top === "number" && st2.top <= 120, st2 && st2.top);
     check("弹窗宽度受限（≤560，不与对话区等宽）", !!st2 && typeof st2.width === "number" && st2.width <= 560, st2 && st2.width);
+    // 贴左对齐：既不能用 translateX 居中，也不该落在视口/容器中线右侧。
+    // 这两条才是能区分「居中对齐 vs 贴左对齐」的判据（只查 left 是数字挡不住回退）。
+    check("弹窗未用 translateX 居中（贴左对齐）", !!st2 && st2.transform === undefined, st2 && st2.transform);
+    check("弹窗靠左（left 明显小于视口中线）", !!st2 && typeof st2.left === "number" && st2.left < global.window.innerWidth / 2, { left: st2 && st2.left, half: global.window.innerWidth / 2 });
+    check("弹窗内容左对齐（alignItems=flex-start）", !!st2 && st2.alignItems === "flex-start", st2 && st2.alignItems);
+    // 卡片撑满容器宽度：避免长短不一的卡片在左对齐下参差不齐
+    const cardStyle = popupOf(ovNode) && popupOf(ovNode).props && popupOf(ovNode).props.style;
+    check("卡片宽度自适应占满（样式由 CSS 的 width:100% 控制）", !cardStyle || cardStyle.width === undefined, cardStyle);
 
     // 3d) 多条时出现「全部关闭」
     const closeAll = findNode(ovNode, (n) => n.type === "button" && /全部关闭/.test(String((n.children && n.children[0]) || "")));
