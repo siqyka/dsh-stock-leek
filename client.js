@@ -991,7 +991,8 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     /** 收到一条预警事件：按可见性走降级链 */
     async function notifyAlert(ev) {
       const name = (ev && ev.name) || displayCode(ev && ev.code);
-      const body = name + " " + ((ALERT_TYPE_LABEL[ev.type] || ev.type) + " " + alertValueText(ev)) + "，现价 " + fmtPrice(ev.price);
+      const cond = alertRuleText(ev); // 成本类不带「成本价」后缀（类型标签已含），与列表口径一致
+      const body = name + " " + cond + "，现价 " + fmtPrice(ev.price);
       const hidden = typeof document !== "undefined" && document.hidden;
       const granted = notifyPermission() === "granted";
       if (hidden && granted) {
@@ -1381,13 +1382,17 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     }
     function alertValueText(rule) {
       if (!rule) return "";
-      if (rule.type === "cost_above" || rule.type === "cost_below") return "成本价";
+      // 成本类的阈值就是成本价本身，类型标签已含「成本」→ 不再重复后缀
+      // （否则规则读作「突破成本 成本价」）
+      if (rule.type === "cost_above" || rule.type === "cost_below") return "";
       const n = Number(rule.value);
       return (Number.isFinite(n) ? (Math.round(n * 10000) / 10000) : "--") + alertUnit(rule.type);
     }
     function alertRuleText(rule) {
       if (!rule) return "";
-      return (ALERT_TYPE_LABEL[rule.type] || rule.type) + " " + alertValueText(rule);
+      const v = alertValueText(rule);
+      const label = ALERT_TYPE_LABEL[rule.type] || rule.type;
+      return v ? label + " " + v : label;
     }
     /**
      * 拉取 Host 账本（触发历史 + 各规则状态）。
@@ -2908,8 +2913,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                 return h("div", { key: (e.ruleId || "") + t + i, className: "sl-alert-ev" },
                   h("span", { className: "sl-alert-ev-t" }, hhmm),
                   h("span", { className: "sl-alert-nm" }, e.name || displayCode(e.code)),
-                  h("span", { className: "sl-alert-cond" },
-                    (ALERT_TYPE_LABEL[e.type] || e.type) + " " + (e.type === "cost_above" || e.type === "cost_below" ? "成本价" : alertValueText(e))),
+                  h("span", { className: "sl-alert-cond" }, alertRuleText(e)),
                   h("span", { className: "sl-alert-ev-p" }, fmtPrice(e.price)));
               })),
       );

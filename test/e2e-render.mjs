@@ -1688,6 +1688,7 @@ if (txnMi) {
   ovText = openAlertPanelForTest();
 
   // 2) 表单新增规则：走真实输入 onchange（harness 模式）
+  const rcForm = (cfgNow().alerts || []).length; // 添加前的基数（段首已清空，此处为 0）
   const codeInput = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "代码/选择");
   const valInput = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "阈值");
   check("预警页有代码/阈值输入框", !!codeInput && !!valInput);
@@ -1703,7 +1704,7 @@ if (txnMi) {
   ovText = textOf(ovNode).join(" ");
   check("新增规则后出现在列表", /现价上穿/.test(ovText) && /1500/.test(ovText), ovText.slice(0, 200));
   const ruleCount = () => (cfgNow().alerts || []).length;
-  check("规则已写入配置（Host 可见）", ruleCount() === 1, ruleCount());
+  check("规则已写入配置（Host 可见）", ruleCount() === rcForm + 1, { before: rcForm, after: ruleCount() });
 
   // 3) 非法阈值被挡在 UI（不写配置）
   const valInput3 = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "阈值");
@@ -1714,7 +1715,7 @@ if (txnMi) {
   ovNode = ov.render({}); renderTree(ovNode);
   click(findNode(ovNode, (n) => n.type === "button" && /添加/.test(String((n.children && n.children[0]) || ""))));
   ovNode = ov.render({}); renderTree(ovNode);
-  check("阈值 0 被拒（规则数不变）", ruleCount() === 1, ruleCount());
+  check("阈值 0 被拒（规则数不变）", ruleCount() === rcForm + 1, ruleCount());
 
   // 4) 启停：点击 ● 后 enabled=false（Host 评估范围随之缩小）
   const toggleBtn = findNode(ovNode, (n) => n.type === "button" && /●|○/.test(String((n.children && n.children[0]) || "")));
@@ -1779,9 +1780,37 @@ if (txnMi) {
       check("对话框预填现价（>0）", !!dlgVal, dlgVal && dlgVal.props.value);
       const okBtn = findNode(ovNode, (n) => n.type === "button" && /添加规则/.test(String((n.children && n.children[0]) || "")));
       check("对话框有添加按钮", !!okBtn);
+      const rc0 = ruleCount(); // 用例内所有规则数断言都基于相对值，避免顺序耦合
       click(okBtn);
       ovNode = ov.render({}); renderTree(ovNode);
-      check("对话框添加后规则 +1", ruleCount() === 2, ruleCount());
+      check("对话框添加后规则 +1", ruleCount() === rc0 + 1, { before: rc0, after: ruleCount() });
+
+      // 成本类：阈值输入应消失（阈值就是成本价），且文案不得重复成「突破成本 成本价」
+      const watchRow2 = findNode(ovNode, (n) => typeof n.props.onCtx === "function");
+      if (watchRow2) {
+        watchRow2.props.onCtx({ clientX: 120, clientY: 140, preventDefault() {}, stopPropagation() {} });
+        ovNode = ov.render({}); renderTree(ovNode);
+        const item2 = findNode(ovNode, (n) => n.type === "button" && /设为预警/.test(textOf(n).join("")));
+        click(item2);
+        ovNode = ov.render({}); renderTree(ovNode);
+        const sel = findNode(ovNode, (n) => n.type === "select");
+        check("对话框有条件下拉", !!sel);
+        if (sel) {
+          const opts = (sel.children || []).map((o) => String(o.children && o.children[0]));
+          check("下拉含 8 种条件", opts.length === 8, opts);
+          sel.props.onChange({ target: { value: "cost_below" } });
+          ovNode = ov.render({}); renderTree(ovNode);
+          const costText = textOf(ovNode).join(" ");
+          check("成本类隐藏阈值输入（阈值即成本价）", !findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "阈值"), costText.slice(-180));
+          check("成本类有说明文案", /成本价/.test(costText), costText.slice(-180));
+          const cbtn = findNode(ovNode, (n) => n.type === "button" && /添加规则/.test(String((n.children && n.children[0]) || "")));
+          click(cbtn);
+          ovNode = ov.render({}); renderTree(ovNode);
+          const afterText = textOf(ovNode).join(" ");
+          check("成本类规则文案不重复（无「成本 成本价」）", !/成本\s*成本价/.test(afterText), afterText.slice(0, 240));
+          check("成本类规则已添加", ruleCount() === rc0 + 2, ruleCount());
+        }
+      }
     }
   }
 
@@ -1801,9 +1830,11 @@ if (txnMi) {
   const delBtn = findNode(ovNode, (n) => n.type === "button" && String((n.props && n.props.className) || "") === "sl-x");
   check("规则行有删除按钮", !!delBtn);
   if (delBtn) {
+    const before = ruleCount();
     click(delBtn);
     ovNode = ov.render({}); renderTree(ovNode);
-    check("删除后规则数 -1", ruleCount() === 1, ruleCount());
+    // 用相对值而非写死基数：用例增删规则时不会连带失败
+    check("删除后规则数 -1", ruleCount() === before - 1, { before, after: ruleCount() });
   }
 
   // 9) 老 Host 吃掉 alerts 字段 → 本地回填保护（与 ma 同一个坑）
