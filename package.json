@@ -57,5 +57,9 @@
   "bugs": {
     "url": "https://github.com/siqyka/dsh-stock-leek/issues"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
 }
