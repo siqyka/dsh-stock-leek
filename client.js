@@ -309,8 +309,11 @@ window.__ModuleLoader__.load({
 .sl-toast{position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:10000;background:var(--sl-bg);border:1px solid var(--sl-border);border-radius:8px;padding:6px 14px;box-shadow:var(--sl-shadow);pointer-events:none;white-space:nowrap;color:var(--sl-text)}
 /* 右键菜单 */
 .sl-menu{position:fixed;z-index:10001;min-width:168px;max-width:240px;padding:4px;display:flex;flex-direction:column;gap:1px;background:var(--sl-bg);border:1px solid var(--sl-border);border-radius:8px;box-shadow:var(--sl-shadow);pointer-events:auto}
-.sl-menu-item{background:transparent;border:none;color:var(--sl-text);padding:5px 10px;border-radius:6px;cursor:pointer;font:inherit;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sl-menu-item{display:flex;align-items:center;gap:8px;background:transparent;border:none;color:var(--sl-text);padding:5px 10px;border-radius:6px;cursor:pointer;font:inherit;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sl-menu-item:hover{background:var(--sl-hover)}
+/* 单色线性图标：随文字变色（危险项跟着变红），比彩色 emoji 视觉统一 */
+.sl-menu-ico{flex:none;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;opacity:.75}
+.sl-menu-item:hover .sl-menu-ico{opacity:1}
 .sl-menu-danger{color:#ff5570}
 .sl-menu-danger:hover{background:rgba(255,85,112,.12)}
 .sl-menu-sep{height:1px;background:var(--sl-border-soft);margin:3px 6px}
@@ -2285,6 +2288,38 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     }
 
     // ================================================================ 右键菜单 / 持仓编辑对话框
+    /**
+     * 菜单图标（16px 单色线性 SVG，stroke=currentColor）。
+     * 用户要求：要图标但**不要 emoji**——彩色 emoji 与暗色面板风格冲突，
+     * 线性图标随主题变色、危险项随文字变红，视觉统一且简洁。
+     *
+     * ⚠️ 实现说明：每个图标是 `h("svg", …, h("path", …))` 的**真实元素树**，
+     * 不用 `dangerouslySetInnerHTML` —— mini-React 测试 harness 只认
+     * createElement 出来的结构（踩过：用 innerHTML 会让 e2e 大面积崩）。
+     * 图标名由调用点以 `icon` 字段给出（字符串，调用点保持一行）。
+     */
+    const menuSvg = (children) =>
+      h("svg", {
+        className: "sl-menu-ico",
+        viewBox: "0 0 18 18",
+        width: 14, height: 14, "aria-hidden": true,
+      }, children);
+    const menuPath = (d) => h("path", { d, fill: "none" });
+    const menuCircle = (cx, cy, r) => h("circle", { cx, cy, r, fill: "none" });
+    const MENU_ICONS = {
+      pin: menuSvg([menuPath("M9 2l5 5-2.2 2.2.8 3.2-1.8 1.8-3.2-.8L5.4 15.6 3.4 13.6 5.2 11.8 4.4 8.6 6.6 6.4 9.8 7.2z")]),
+      plus: menuSvg([menuPath("M9 4v10"), menuPath("M4 9h10")]),
+      minus: menuSvg([menuPath("M4 9h10")]),
+      bell: menuSvg([menuPath("M12.5 12H5.5c.8-1 .8-2.2.8-3.5C6.3 6 7.4 4.5 9 4.5s2.7 1.5 2.7 4c0 1.3 0 2.5.8 3.5z"), menuPath("M8 14a1.2 1.2 0 002 0")]),
+      pencil: menuSvg([menuPath("M3.5 14.5l.8-3 7.2-7.2 2.2 2.2-7.2 7.2z"), menuPath("M10.5 5.3l2.2 2.2")]),
+      list: menuSvg([menuPath("M5 5.5h8"), menuPath("M5 9h8"), menuPath("M5 12.5h8")]),
+      trash: menuSvg([menuPath("M3.5 5h11"), menuPath("M7 5V3.5h4V5"), menuPath("M5 5l.7 9.5h6.6L13 5"), menuPath("M7.5 7.5v4.5"), menuPath("M10.5 7.5v4.5")]),
+      gear: menuSvg([menuCircle(9, 9, 2.2), menuPath("M9 3.2v1.9"), menuPath("M9 12.9v1.9"), menuPath("M3.2 9h1.9"), menuPath("M12.9 9h1.9"), menuPath("M4.9 4.9l1.3 1.3"), menuPath("M11.8 11.8l1.3 1.3"), menuPath("M13.1 4.9l-1.3 1.3"), menuPath("M6.2 11.8l-1.3 1.3")]),
+    };
+    /** 单个线性图标（按名字取预构建的元素树） */
+    function MenuIcon(props) {
+      return MENU_ICONS[props.name] || null;
+    }
     function ContextMenu(props) {
       const menu = props.menu;
       useEffect(() => {
@@ -2311,7 +2346,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                   key: i,
                   className: "sl-menu-item" + (it.danger ? " sl-menu-danger" : ""),
                   onClick: () => { closeMenu(); try { it.onClick(); } catch { /* ignore */ } },
-                }, it.label),
+                }, it.icon ? h(MenuIcon, { name: it.icon }) : null, h("span", null, it.label)),
           ),
         ),
       );
@@ -2493,10 +2528,10 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                   className: "sl-row sl-sortable-row" + (isDragging ? " sl-row-dragging" : ""),
                   onClick: () => { if (justDragged()) return; openDetail(idx.code, idx.name); },
                   onContextMenu: (e) => openMenu(e, [
-                    { label: "📌 置顶", onClick: () => pinTop("indices", idx.code) },
-                    { label: inBar ? "✂ 从指数栏移除" : "📎 添加到左下角指数栏", onClick: () => toggleBarIndex(idx.code) },
+                    { label: "置顶", icon: "pin", onClick: () => pinTop("indices", idx.code) },
+                    { label: inBar ? "从指数栏移除" : "添加到左下角指数栏", icon: inBar ? "minus" : "plus", onClick: () => toggleBarIndex(idx.code) },
                     { sep: true },
-                    { label: "🗑 删除指数", danger: true, onClick: () => { removeIndex(idx.code); toast("已删除 " + (idx.name || idx.code)); } },
+                    { label: "删除指数", icon: "trash", danger: true, onClick: () => { removeIndex(idx.code); toast("已删除 " + (idx.name || idx.code)); } },
                   ], (idx.name || displayCode(idx.code))),
                 },
                 h("span", {
@@ -2570,10 +2605,10 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                   onClick: () => { if (justDragged()) return; openDetail(w.code, w.name); },
                   onDelete: () => { removeWatch(w.code); toast("已删除自选 " + (w.name || w.code)); },
                   onCtx: (e) => openMenu(e, [
-                    { label: "📌 置顶", onClick: () => pinTop("watchlist", w.code) },
-                    { label: "🔔 设为预警", onClick: () => openAddAlert(w.code, (q && q.name) || w.name, { type: "price_above", value: q && q.price }) },
+                    { label: "置顶", icon: "pin", onClick: () => pinTop("watchlist", w.code) },
+                    { label: "设为预警", icon: "bell", onClick: () => openAddAlert(w.code, (q && q.name) || w.name, { type: "price_above", value: q && q.price }) },
                     { sep: true },
-                    { label: "🗑 删除自选", danger: true, onClick: () => { removeWatch(w.code); toast("已删除自选 " + (w.name || w.code)); } },
+                    { label: "删除自选", icon: "trash", danger: true, onClick: () => { removeWatch(w.code); toast("已删除自选 " + (w.name || w.code)); } },
                   ], ((q && q.name) || w.name || displayCode(w.code)) + "（" + displayCode(w.code) + "）"),
                 },
               ),
@@ -2782,13 +2817,13 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                   "data-sl-idx": i,
                   className: "sl-pos" + (txnCount ? " sl-pos-has-txn" : "") + (drag && drag.from === i ? " sl-row-dragging" : ""),
                   onContextMenu: (e) => openMenu(e, [
-                    { label: "📌 置顶", onClick: () => pinTop("positions", p.code) },
-                    { label: "✎ 编辑成本 / 股数", onClick: () => openEditPos(p) },
-                    { label: expanded ? "⇅ 收起交易" : "⇅ 记一笔交易", onClick: () => { setOpenCode(expanded ? null : p.code); resetForm(); } },
-                    { label: txnCount ? "📒 交易记录（" + txnCount + " 笔）" : "📒 查看交易记录", onClick: () => openTxnPanel(p.code, (q && q.name) || p.name) },
-                    { label: "🔔 设为预警", onClick: () => openAddAlert(p.code, (q && q.name) || p.name, p.cost > 0 ? { type: "cost_below", value: p.cost } : { type: "price_above", value: q && q.price }) },
+                    { label: "置顶", icon: "pin", onClick: () => pinTop("positions", p.code) },
+                    { label: "编辑成本 / 股数", icon: "pencil", onClick: () => openEditPos(p) },
+                    { label: expanded ? "收起交易" : "记一笔交易", icon: "list", onClick: () => { setOpenCode(expanded ? null : p.code); resetForm(); } },
+                    { label: txnCount ? "交易记录（" + txnCount + " 笔）" : "查看交易记录", icon: "list", onClick: () => openTxnPanel(p.code, (q && q.name) || p.name) },
+                    { label: "设为预警", icon: "bell", onClick: () => openAddAlert(p.code, (q && q.name) || p.name, p.cost > 0 ? { type: "cost_below", value: p.cost } : { type: "price_above", value: q && q.price }) },
                     { sep: true },
-                    { label: "🗑 删除持仓", danger: true, onClick: () => { removePosition(p.code); toast("已删除持仓 " + (p.name || p.code)); } },
+                    { label: "删除持仓", icon: "trash", danger: true, onClick: () => { removePosition(p.code); toast("已删除持仓 " + (p.name || p.code)); } },
                   ], ((q && q.name) || p.name || displayCode(p.code)) + "（" + displayCode(p.code) + "）"),
                 },
                 h("span", {
@@ -2900,7 +2935,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             h("button", { className: "sl-back", onClick: () => setState({ txnPanel: null }) }, "← 返回"),
             h("span", { className: "sl-dname" }, "📒 交易记录：" + (panel.name || displayCode(panel.code)) + "（" + displayCode(panel.code) + "）"))),
         txns.length === 0
-          ? h("div", { className: "sl-empty" }, "还没有交易记录。右键持仓行「⇅ 记一笔交易」补录。")
+          ? h("div", { className: "sl-empty" }, "还没有交易记录。右键持仓行「记一笔交易」补录。")
           : h(
               react.Fragment,
               null,

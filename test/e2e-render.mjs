@@ -374,9 +374,11 @@ function contextMenu(node) {
 }
 /** 在已渲染树里找右键菜单项按钮（className 含 sl-menu-item，按标签子串匹配） */
 function findMenuItem(root, labelSub) {
+  // 菜单项现在带线性 SVG 图标（children[0] 是 svg，文字在后面的 span 里），
+  // 不能只看 children[0] —— 用 textOf 聚合整项文字再匹配。
   return findNode(root, (n) => n.type === "button"
     && String((n.props && n.props.className) || "").indexOf("sl-menu-item") >= 0
-    && String(n.children && n.children[0]).indexOf(labelSub) >= 0);
+    && textOf(n).join("").indexOf(labelSub) >= 0);
 }
 /** 关闭右键菜单（ContextMenu 的 Escape useEffect 监听 window keydown） */
 function dismissMenu() { global.__winDispatch("keydown", { key: "Escape" }); }
@@ -1011,9 +1013,9 @@ const prow = posRow(ovNode);
 contextMenu(prow);
 ovNode = ov.render({}); renderTree(ovNode);
 const txnMi = findMenuItem(ovNode, "记一笔交易") || findMenuItem(ovNode, "收起交易");
-check("右键菜单含「⇅ 记一笔交易」入口", !!txnMi, textOf(ovNode).join(" ").slice(0, 160));
+check("右键菜单含「记一笔交易」入口", !!txnMi, textOf(ovNode).join(" ").slice(0, 160));
 const recMi = findMenuItem(ovNode, "交易记录");
-check("右键菜单含「📒 交易记录」入口", !!recMi, textOf(ovNode).join(" ").slice(0, 160));
+check("右键菜单含「交易记录」入口", !!recMi, textOf(ovNode).join(" ").slice(0, 160));
 if (txnMi) {
   click(txnMi); // setOpenCode → 展开 TxnPanel
   dismissMenu();
