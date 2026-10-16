@@ -2945,7 +2945,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           h("span", { className: "sl-setlabel" }, "股票预警"),
           h("button", {
             className: "sl-btn",
-            "data-sltip": "规则管理 / 桌面通知\n评估在 Host 独立循环：关掉页面也会照常评估",
+            "data-sltip": "规则管理 / 桌面通知",
             onClick: () => openAlertPanel(),
           }, (() => {
             // 触发历史已去掉 → 没有「未读数」可算，改为显示规则条数。
@@ -3026,7 +3026,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           h("span", { className: "sl-seg" },
             h("button", {
               className: on ? "on" : "",
-              "data-sltip": on ? "评估中：Host 独立循环按刷新间隔检查全部启用规则" : "已关闭：规则保留但不评估，零上游请求",
+              "data-sltip": on ? "已开启：有规则就会评估" : "已关闭：规则保留但不评估",
               onClick: () => updateConfig((c) => { c.remind = !on; return c; }),
             }, on ? "已开启" : "已关闭"))),
         // 桌面通知：权限只在这里申请（用户手势），绝不在加载时弹框（§7.2）
@@ -3860,14 +3860,25 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       }, [ms]);
     }
 
-    /** 放置模式 dock：嵌入 conversation.composer.dock（仅已有对话生效，平台限制）。 */
+    /**
+     * 放置模式 dock：嵌入 conversation.composer.dock（仅已有对话生效，平台限制）。
+     *
+     * 位置：宿主把该槽位与「上下文占用（52%）」并排放在同一个 flex 行里，且**槽位在前**：
+     *   <div class="..._dock">  ← display:flex; justify-content:center; gap:12px
+     *     {dock 槽位}            ← 我们
+     *     <ContextMeter/>        ← 52%
+     *   </div>
+     * 需求是排在 52% **之后**，所以给自己 `order:1`（ContextMeter 保持默认 order:0）。
+     * 用 order 而不是去改宿主 DOM：容器类名是哈希的（如 RlGAzG_dock），跨版本会变，
+     * 而 order 只作用在自己身上，宿主改版也不会失效。
+     */
     function IndexBar() {
       const s = useStore();
       useEffect(() => { initStore(); }, []);
       useClockTick(30000);
       const cfg = s.config;
       if (!cfg || !cfg.barVisible || s.barPlacement !== "dock") return null;
-      return h("div", rootProps(s, cfg), renderBarContent(s, cfg));
+      return h("div", rootProps(s, cfg, { order: 1 }), renderBarContent(s, cfg));
     }
 
     /**

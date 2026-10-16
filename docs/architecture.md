@@ -4,7 +4,7 @@
 
 ```
 浏览器（client.js）
-  ├─ conversation.composer.dock → 左下角指数栏（IndexBar）
+  ├─ conversation.composer.dock → 指数栏（IndexBar；dock 放置模式，排「上下文占用」之后）
   ├─ shell.overlay              → 悬浮窗（大盘/自选/持仓/设置/详情）
   ├─ 共享 store：配置 + 行情快照 + SSE/轮询双通道（页面隐藏自动暂停）
   └─ 自绘 SVG 分时 / K线 / 盈亏曲线（零 CDN 依赖）
@@ -34,6 +34,26 @@ lib/shared.js（纯函数，Host 与测试共用）
 | `docs/` | 本目录：架构、配置、行情通道等细节文档 |
 
 **两个入口文件刻意留在根目录**：`package.json` 的 `exports` 与 `dsh.client` 声明按路径引用它们，DSH 打包时也依赖这个约定。
+
+## dock 槽位在宿主体内的位置
+
+`conversation.composer.dock` 不是独占一行，宿主把它与**上下文占用指示**（那个 `52%`）并排放在同一个 flex 行里，且**槽位在前**：
+
+```jsx
+<div className={InputBar.dock}            /* display:flex; justify-content:center; gap:12px */
+  children={[
+    variant === "composer" && … ? renderSlot("conversation.composer.dock", {}) : null,
+    activity ? null : <ContextMeter />,    /* ← 52% */
+  ]}
+/>
+```
+
+需求是让指数栏排在 `52%` **之后**，做法是给自己 `order:1`（`ContextMeter` 保持默认 `order:0`）：
+
+- **不能改宿主 DOM**，也**不能按容器的类名选中它**——那是 CSS Module 的哈希名（如 `RlGAzG_dock`），换版本就变。
+- `order` 只作用在自己的节点上，宿主改版也不会失效。前提是确认过容器确实 `display:flex`（已在宿主源码里核对）。
+
+这条依赖的是宿主内部布局，**宿主升级后要重新确认**：在浏览器里看该行是否仍是 flex、`ContextMeter` 是否仍与槽位同级。若不成立，退路是改回默认顺序（与本插件其它功能无关，不会连带损坏）。
 
 ## 标识符命名
 

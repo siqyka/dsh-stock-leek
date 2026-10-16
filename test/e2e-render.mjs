@@ -671,6 +671,17 @@ check("dock 模式下 floating 栏不渲染", textOf(floatNode2).join("").trim()
 const dockNode2 = dockReg.render({});
 renderTree(dockNode2);
 check("dock 模式下 IndexBar 渲染出上证", /上证/.test(textOf(dockNode2).join(" ")), textOf(dockNode2).join(" ").slice(0, 120));
+// 位置：宿主把 dock 槽位与「上下文占用(52%)」并排放在同一个 flex 行里，槽位默认在前。
+// 需求是排在 52% 之后 → 靠给自己 order:1 实现（宿主容器类名是哈希的，不能去改它）。
+{
+  const dbgRoot = findNode(dockNode2, (n) => n.type === "div" && String((n.props && n.props.className) || "").indexOf("sl-root") >= 0);
+  // dockNode2 是**组件节点**，props.style 是 undefined；真正的样式在它渲染出的
+  // sl-root div 上（与 textOf 必须跟 __rendered 是同一个道理，踩过一次）。
+  const st = (dbgRoot && dbgRoot.props && dbgRoot.props.style) || {};
+  check("dock 模式下自带 order:1（排在上下文占用之后）", String(st.order) === "1", { order: st.order, style: st });
+  check("同时保留主题色变量（extraStyle 没把原样式覆盖掉）",
+    !!st["--sl-up"] && !!st["--sl-down"], Object.keys(st));
+}
 // 切回 floating
 const floatBtn = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "悬浮锚定");
 click(floatBtn);
