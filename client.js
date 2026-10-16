@@ -110,6 +110,16 @@ window.__ModuleLoader__.load({
 .sl-alert-nm{color:var(--sl-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:96px}
 .sl-alert-cond{color:var(--sl-dim);white-space:nowrap;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .sl-alert-fired{color:var(--sl-warn);font-size:10px;white-space:nowrap}
+/* 预警按代码分组的抽屉：组头常驻可见（收起时也能看到哪只响过），展开才列规则 */
+.sl-alert-group{border:1px solid var(--sl-border-soft);border-radius:8px;background:var(--sl-bg2);overflow:hidden}
+.sl-alert-ghead{display:flex;align-items:center;gap:6px;padding:5px 8px;font-size:11px;cursor:pointer}
+.sl-alert-ghead:hover{background:var(--sl-hover)}
+.sl-alert-gnm{color:var(--sl-text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px}
+.sl-alert-gcode{color:var(--sl-muted);font-size:10px;flex:none;font-variant-numeric:tabular-nums}
+.sl-alert-gcnt{color:var(--sl-muted);font-size:10px;white-space:nowrap;flex:none}
+.sl-alert-garw{color:var(--sl-muted);font-size:9px;flex:none;width:10px;text-align:center}
+.sl-alert-gbody{border-top:1px solid var(--sl-border-soft);padding:2px 4px 4px;display:flex;flex-direction:column;gap:2px}
+.sl-alert-gbody .sl-alert-row{padding-left:10px}
 
 /* 预警弹窗：显示在对话区左上角；触发时无条件弹出，10s 自动消失、可手动关闭 */
 .sl-alert-pop{width:100%;box-sizing:border-box;background:var(--sl-bg);border:1px solid var(--sl-warn);border-left:3px solid var(--sl-warn);border-radius:10px;padding:10px 14px;box-shadow:var(--sl-shadow);cursor:pointer;display:flex;flex-direction:column;gap:5px}
@@ -249,6 +259,21 @@ window.__ModuleLoader__.load({
 .sl-txn-date-input{width:118px;flex:none;color-scheme:dark}
 .sl-root.sl-light .sl-txn-date-input{color-scheme:light}
 .sl-txn-add{font-size:10px;padding:2px 8px;flex:none}
+/* 抽屉只剩记一笔表单，明细挪到二级页 → 留一行指路 */
+.sl-txn-hint{color:var(--sl-muted);font-size:9px;opacity:.8}
+/* 交易记录二级页：列宽与 .sl-txn-row 内的 side/date/num/amt 一一对齐 */
+.sl-txnrec{display:flex;flex-direction:column;gap:6px}
+.sl-txnrec-sum{display:flex;align-items:center;gap:10px;padding:5px 8px;border:1px solid var(--sl-border-soft);border-radius:8px;background:var(--sl-bg2);font-size:11px;color:var(--sl-dim)}
+.sl-txnrec-sum b{font-variant-numeric:tabular-nums}
+.sl-txnrec-cnt{color:var(--sl-muted);font-size:10px;white-space:nowrap}
+.sl-txnrec-head{display:flex;align-items:center;gap:6px;padding:2px 4px;color:var(--sl-muted);font-size:10px}
+.sl-txnrec-head span:nth-child(1){width:16px;flex:none}
+.sl-txnrec-head span:nth-child(2){width:74px;flex:none}
+.sl-txnrec-head span:nth-child(3){width:64px;flex:none;text-align:right}
+.sl-txnrec-head span:nth-child(4){width:64px;flex:none;text-align:right}
+.sl-txnrec-head span:nth-child(5){flex:1;text-align:right}
+.sl-txnrec-list{display:flex;flex-direction:column;gap:2px;max-height:none;overflow-y:auto}
+.sl-txnrec-list .sl-txn-row{padding:3px 4px;border:1px solid var(--sl-border-soft);border-radius:6px;background:var(--sl-bg2)}
 .sl-hrow{display:flex;gap:8px;align-items:center;padding:2px 6px;color:var(--sl-muted);font-size:10px}
 .sl-hrow .sl-h-name{flex:1 1 auto;min-width:70px}
 .sl-hrow .sl-h-grip{width:14px;flex:none}
@@ -626,6 +651,8 @@ window.__ModuleLoader__.load({
       visibleTick: 0, // 可见性变化计数：让预警弹窗的 10s 计时在恢复可见后重跑
       notifyPerm: "default", // 桌面通知权限：granted | denied | default | unsupported
       addAlert: null, // 右键「设为预警」弹出的规则对话框 {code, name, preset}
+      alertOpen: null, // 预警页按代码分组的抽屉：当前展开的 code（单值手风琴，同持仓页 openCode）
+      txnPanel: null, // 交易记录二级页 {code, name}；null=未打开。只显示被右键那只股票的成交
     };
     function setState(patch) {
       state = Object.assign({}, state, patch);
@@ -1475,6 +1502,28 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       return v ? label + " " + v : label;
     }
     /**
+     * 把扁平的规则数组按 code 归组（**纯派生视图**，不改存储）。
+     *
+     * 组顺序 = 各 code 首次出现的顺序。因为 addAlert 只 push、没有重排入口，
+     * 首次出现即组内最早一条规则的 createdAt，于是顺序稳定——
+     * 不按「最近触发」排，否则触发一次列表就跳位，用户找不着东西。
+     */
+    function groupAlerts(rules) {
+      const groups = [];
+      const byCode = new Map();
+      for (const r of rules || []) {
+        let g = byCode.get(r.code);
+        if (!g) {
+          g = { code: r.code, name: r.name || displayCode(r.code), rules: [], onCount: 0 };
+          byCode.set(r.code, g);
+          groups.push(g);
+        }
+        g.rules.push(r);
+        if (r.enabled !== false) g.onCount += 1;
+      }
+      return groups;
+    }
+    /**
      * 拉取预警规则状态（用于规则列表显示「已触发/待命」）。
      * 页面重开、标签页解冻、alert-stream 重连后都调它——不假设流不断（§7.1 修订）。
      * 触发历史已按要求去掉：Host 不再落盘 events，这里也不再读。
@@ -1505,7 +1554,11 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         added = rule;
         return cfg;
       });
-      if (added) toast("已添加预警：" + alertRuleText(added));
+      if (added) {
+        // 新规则塞进**收起的组**里，用户会以为没生效 → 自动展开该组
+        setState({ alertOpen: added.code });
+        toast("已添加预警：" + alertRuleText(added));
+      }
       return added;
     }
     function removeAlert(id) {
@@ -1685,12 +1738,17 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     }
     /** 进入个股详情：若该股不在自选/持仓里，追加订阅，保证详情页有行情 */
     function openDetail(code, name) {
-      state = Object.assign({}, state, { detail: { code, name }, alertPanel: false }); // 先落 state，供 syncStreamCodes 读到
+      // 详情页整体替换 body，两个二级页都得退出，否则返回时"回"到一个被遮住的面板
+      state = Object.assign({}, state, { detail: { code, name }, alertPanel: false, txnPanel: null }); // 先落 state，供 syncStreamCodes 读到
       for (const l of listeners) l();
       syncStreamCodes(); // 订阅集合变了 → 重连流
     }
     function closeOverlay() {
-      setState({ open: false, detail: null, menu: null, editPos: null, tip: null, alertPanel: false });
+      setState({ open: false, detail: null, menu: null, editPos: null, tip: null, alertPanel: false, txnPanel: null });
+    }
+    /** 打开交易记录二级页（只显示这只股票的成交）。从持仓行右键进入。 */
+    function openTxnPanel(code, name) {
+      setState({ open: true, tab: "position", detail: null, alertPanel: false, txnPanel: { code, name: name || displayCode(code) } });
     }
     /** 打开预警二级页（设置页入口与系统通知点击共用）。
      *  注：原「已读/未读」逻辑随触发历史一起去掉——没有历史列表就没有未读概念。 */
@@ -2698,7 +2756,8 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                   onContextMenu: (e) => openMenu(e, [
                     { label: "📌 置顶", onClick: () => pinTop("positions", p.code) },
                     { label: "✎ 编辑成本 / 股数", onClick: () => openEditPos(p) },
-                    { label: txnCount ? "⇅ 变动记录（" + txnCount + " 笔）" : "⇅ 添加买卖变动", onClick: () => { setOpenCode(expanded ? null : p.code); resetForm(); } },
+                    { label: expanded ? "⇅ 收起交易" : "⇅ 记一笔交易", onClick: () => { setOpenCode(expanded ? null : p.code); resetForm(); } },
+                    { label: txnCount ? "📒 交易记录（" + txnCount + " 笔）" : "📒 查看交易记录", onClick: () => openTxnPanel(p.code, (q && q.name) || p.name) },
                     { label: "🔔 设为预警", onClick: () => openAddAlert(p.code, (q && q.name) || p.name, p.cost > 0 ? { type: "cost_below", value: p.cost } : { type: "price_above", value: q && q.price }) },
                     { sep: true },
                     { label: "🗑 删除持仓", danger: true, onClick: () => { removePosition(p.code); toast("已删除持仓 " + (p.name || p.code)); } },
@@ -2739,7 +2798,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                   h("span", { className: "sl-l2 " + (todayPct !== null ? sign(todayPct) : "sl-flat") }, todayPct !== null ? fmtPct(todayPct) : "—")),
               ),
               expanded
-                ? h(TxnPanel, { p, q, form, setForm, resetForm, submitTxn, removeTxn, quoteDate, todayDate: quoteDate(q) })
+                ? h(TxnPanel, { p, form, setForm, submitTxn, todayDate: quoteDate(q) })
                 : null,
             );
           }),
@@ -2749,33 +2808,17 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       );
     }
 
-    /** 持仓变动面板：列出历史买卖 + 新增买入/卖出表单（卖出记为负股数，可多条） */
+    /**
+     * 持仓行的交易抽屉：**只剩记一笔表单**。
+     * 成交列表已移到「交易记录」二级页（右键 📒 进入，那里空间更大、能放删除与汇总）。
+     * 抽屉留着是为了「顺手补一笔」不用跳页。
+     */
     function TxnPanel(props) {
-      const { p, q, form, setForm, submitTxn, removeTxn, todayDate } = props;
-      const txns = (p.txns || []).slice().reverse(); // 最新在前
+      const { p, form, setForm, submitTxn, todayDate } = props;
       const set = (k, v) => setForm((f) => Object.assign({}, f, { [k]: v }));
       return h(
         "div",
         { className: "sl-txn-panel" },
-        txns.length === 0
-          ? h("div", { className: "sl-txn-empty" }, "暂无变动记录。今日收益按当日变动计算。")
-          : h(
-              "div",
-              { className: "sl-txn-list" },
-              txns.map((t) =>
-                h(
-                  "div",
-                  { key: t.id, className: "sl-txn-row" },
-                  h("span", { className: "sl-txn-side " + (t.qty > 0 ? "sl-up" : "sl-down") }, t.qty > 0 ? "买" : "卖"),
-                  h("span", { className: "sl-txn-date" }, t.date || "-"),
-                  h("span", { className: "sl-txn-num" }, "@" + fmtPrice(t.price)),
-                  h("span", { className: "sl-txn-num" }, Math.abs(t.qty) + "股"),
-                  h("span", { className: "sl-txn-amt" }, fmtMoney(Math.abs(t.price * t.qty), "")),
-                  t.date === todayDate ? h("span", { className: "sl-txn-today" }, "今") : null,
-                  h("button", { className: "sl-x", "data-sltip": "删除该变动", onClick: () => removeTxn(p.code, t.id) }, "✕"),
-                ),
-              ),
-            ),
         h(
           "div",
           { className: "sl-txn-form" },
@@ -2784,9 +2827,83 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               h("button", { key: v, className: form.side === v ? "on" : "", onClick: () => set("side", v) }, t))),
           h("input", { className: "sl-mini sl-txn-price", type: "number", step: "0.001", min: "0", placeholder: "价格", value: form.price, onChange: (e) => set("price", e.target.value) }),
           h("input", { className: "sl-mini sl-txn-qty", type: "number", step: "100", min: "0", placeholder: "股数", value: form.qty, onChange: (e) => set("qty", e.target.value) }),
-          h("input", { className: "sl-mini sl-txn-date-input", type: "date", value: form.date || todayDate || "", onChange: (e) => set("date", e.target.value), "data-sltip": "变动日期（默认今日）" }),
+          h("input", { className: "sl-mini sl-txn-date-input", type: "date", value: form.date || todayDate || "", onChange: (e) => set("date", e.target.value), "data-sltip": "成交日期（默认今日）" }),
           h("button", { className: "sl-btn sl-txn-add", onClick: () => submitTxn(p) }, "＋记一笔"),
         ),
+        h("div", { className: "sl-txn-hint" }, "成交明细见右键「📒 交易记录」"),
+      );
+    }
+
+    /**
+     * 交易记录二级页：只显示**被右键那只股票**的成交（最新在前）。
+     * 挂在持仓 tab 下（与预警挂在设置下同一套路），「← 返回」回持仓列表。
+     */
+    function TxnRecordsView(props) {
+      const s = useStore();
+      const cfg = s.config;
+      const panel = props.panel;
+      const listRef = useRef(null);
+      // 成交明细按 MAX_VISIBLE_ROWS 封顶（与大盘/自选/持仓同一套 10 行上限）。
+      // Hooks 不能放在 early return 之后，所以行数在这里用 cfg 安全取值。
+      const rowCount = (() => {
+        if (!cfg || !panel) return 0;
+        const pp = cfgFind(cfg.positions, panel.code);
+        return ((pp && pp.txns) || []).length;
+      })();
+      const rowCap = useListCap(listRef, rowCount);
+      if (!cfg || !panel) return h("div", { className: "sl-empty" }, "加载中…");
+      const p = cfgFind(cfg.positions, panel.code);
+      const q = s.quotes[panel.code];
+      const txns = ((p && p.txns) || []).slice().reverse(); // 最新在前
+      const today = quoteDate(q);
+      // 汇总：买入额 / 卖出额 / 净股数（净=0 说明已清仓）
+      let buyAmt = 0, sellAmt = 0, net = 0;
+      for (const t of txns) {
+        net += t.qty;
+        if (t.qty > 0) buyAmt += t.price * t.qty;
+        else sellAmt += t.price * -t.qty;
+      }
+      const todayTxns = txns.filter((t) => t.date === today);
+      return h(
+        "div",
+        { className: "sl-txnrec" },
+        h("div", { className: "sl-dhead" },
+          h("div", { className: "sl-dtop" },
+            h("button", { className: "sl-back", onClick: () => setState({ txnPanel: null }) }, "← 返回"),
+            h("span", { className: "sl-dname" }, "📒 交易记录：" + (panel.name || displayCode(panel.code)) + "（" + displayCode(panel.code) + "）"))),
+        txns.length === 0
+          ? h("div", { className: "sl-empty" }, "还没有交易记录。右键持仓行「⇅ 记一笔交易」补录。")
+          : h(
+              react.Fragment,
+              null,
+              // 汇总条：买入/卖出成交额 + 净股数（清仓时净=0）
+              // 用 fmtSigned0 而非 fmtMoney：后者对 0 返回 "-"，汇总里"买 -"读不通
+              h("div", { className: "sl-txnrec-sum" },
+                h("span", { "data-sltip": "全部买入成交合计 " + fmtExact(buyAmt) + " 元" }, "买 ", h("b", { className: "sl-up" }, fmtSigned0(buyAmt))),
+                h("span", { "data-sltip": "全部卖出成交合计 " + fmtExact(sellAmt) + " 元" }, "卖 ", h("b", { className: "sl-down" }, fmtSigned0(sellAmt))),
+                h("span", { "data-sltip": "累计净买入股数（0 = 已清仓）" }, "净 ", h("b", null, net + " 股")),
+                h("span", { style: { flex: 1 } }),
+                h("span", { className: "sl-txnrec-cnt" }, txns.length + " 笔" + (todayTxns.length ? " · 今日 " + todayTxns.length + " 笔" : ""))),
+              h("div", { className: "sl-txnrec-head" },
+                h("span", null, "方向"), h("span", null, "日期"), h("span", null, "价格"), h("span", null, "股数"), h("span", null, "金额"), h("span", null, "")),
+              h("div", {
+                className: "sl-txnrec-list" + (rowCap ? " sl-sortable-cap" : ""),
+                ref: listRef,
+                style: rowCap ? { maxHeight: rowCap + "px" } : null,
+              },
+                txns.map((t, ti) =>
+                  h(
+                    "div",
+                    { key: t.id, "data-sl-idx": ti, className: "sl-txn-row" },
+                    h("span", { className: "sl-txn-side " + (t.qty > 0 ? "sl-up" : "sl-down") }, t.qty > 0 ? "买" : "卖"),
+                    h("span", { className: "sl-txn-date" }, t.date || "-"),
+                    h("span", { className: "sl-txn-num" }, "@" + fmtPrice(t.price)),
+                    h("span", { className: "sl-txn-num" }, Math.abs(t.qty) + "股"),
+                    h("span", { className: "sl-txn-amt" }, fmtMoney(Math.abs(t.price * t.qty), "")),
+                    t.date === today ? h("span", { className: "sl-txn-today" }, "今") : null,
+                    h("button", { className: "sl-x", "data-sltip": "删除该笔成交", onClick: () => removeTxn(panel.code, t.id) }, "✕"),
+                  ),
+                ))),
       );
     }
 
@@ -2868,6 +2985,11 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       const s = useStore();
       const cfg = s.config;
       const [form, setForm] = useState({ code: "", type: "price_above", value: "" });
+      const groupRef = useRef(null);
+      // 规则按**组**封顶（一组=一只股票），与大盘/自选/持仓同一套 10 行上限。
+      // 必须在 early return 之前调用（Hooks 规则），所以 count 用 cfg 安全取值。
+      const alertGroups = groupAlerts(cfg && Array.isArray(cfg.alerts) ? cfg.alerts : []);
+      const groupCap = useListCap(groupRef, alertGroups.length);
       if (!cfg) return h("div", { className: "sl-empty" }, "加载中…");
       const rules = Array.isArray(cfg.alerts) ? cfg.alerts : [];
       // 触发历史已按要求去掉（Host 不再落盘 events，界面也不再展示）
@@ -2954,26 +3076,54 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         pool.length === 0
           ? h("div", { className: "sl-note" }, "提示：先在自选/持仓里添加股票，或在上面直接填写代码。")
           : null,
-        // 规则列表
+        // 规则列表：**按代码分组的抽屉**（同一只票的多条规则收在一组里）。
+        // 分组是派生视图，cfg.alerts 仍是扁平数组、Host 状态机仍按规则 id 索引，
+        // 所以存储与评估层完全不感知分组。手风琴单开，与持仓页 openCode 同一套交互。
         rules.length === 0
           ? h("div", { className: "sl-empty" }, "还没有预警规则。可在自选/持仓行右键「设为预警」，或在上方添加。")
-          : h("div", { className: "sl-alert-list" },
-              rules.map((r) => {
-                const st = (s.alertStates || {})[r.id];
-                const off = r.enabled === false;
-                return h("div", { key: r.id, className: "sl-alert-row" + (off ? " sl-alert-off" : "") },
-                  h("button", {
-                    className: "sl-alert-toggle" + (off ? "" : " on"),
-                    "data-sltip": off ? "已停用：不参与评估。点击启用" : "已启用：点击停用",
-                    onClick: () => toggleAlert(r.id),
-                  }, off ? "○" : "●"),
-                  h("span", { className: "sl-alert-nm", "data-sltip": (r.name || displayCode(r.code)) + "（" + displayCode(r.code) + "）" }, r.name || displayCode(r.code)),
-                  h("span", { className: "sl-alert-cond" }, alertRuleText(r)),
-                  st && st.phase === "fired"
-                    ? h("span", { className: "sl-alert-fired", "data-sltip": "今日已触发过；回落到滞回带外才会重新待命" }, "已触发")
+          : h("div", {
+              className: "sl-alert-list" + (groupCap ? " sl-sortable-cap" : ""),
+              ref: groupRef,
+              style: groupCap ? { maxHeight: groupCap + "px" } : null,
+            }, alertGroups.map((g, gi) => {
+              const open = s.alertOpen === g.code;
+              const firedN = g.rules.filter((r) => (s.alertStates || {})[r.id] && s.alertStates[r.id].phase === "fired").length;
+              return h(
+                "div",
+                { key: g.code, "data-sl-idx": gi, className: "sl-alert-group" },
+                h("div", {
+                  className: "sl-alert-ghead",
+                  onClick: () => setState({ alertOpen: open ? null : g.code }),
+                  "data-sltip": open ? "点击收起该股的预警规则" : "点击展开该股的 " + g.rules.length + " 条规则",
+                },
+                  h("span", { className: "sl-alert-gnm" }, g.name),
+                  h("span", { className: "sl-alert-gcode" }, displayCode(g.code)),
+                  h("span", { style: { flex: 1 } }),
+                  firedN > 0
+                    ? h("span", { className: "sl-alert-fired", "data-sltip": "今日已触发 " + firedN + " 条；回落到滞回带外才会重新待命" }, "已触发 " + firedN)
                     : null,
-                  h("button", { className: "sl-x", "data-sltip": "删除该规则", onClick: () => removeAlert(r.id) }, "✕"));
-              })),
+                  h("span", { className: "sl-alert-gcnt" }, g.onCount + "/" + g.rules.length + " 启用"),
+                  h("span", { className: "sl-alert-garw" }, open ? "▾" : "▸")),
+                open
+                  ? h("div", { className: "sl-alert-gbody" },
+                      g.rules.map((r) => {
+                        const st = (s.alertStates || {})[r.id];
+                        const off = r.enabled === false;
+                        return h("div", { key: r.id, className: "sl-alert-row" + (off ? " sl-alert-off" : "") },
+                          h("button", {
+                            className: "sl-alert-toggle" + (off ? "" : " on"),
+                            "data-sltip": off ? "已停用：不参与评估。点击启用" : "已启用：点击停用",
+                            onClick: () => toggleAlert(r.id),
+                          }, off ? "○" : "●"),
+                          h("span", { className: "sl-alert-cond" }, alertRuleText(r)),
+                          st && st.phase === "fired"
+                            ? h("span", { className: "sl-alert-fired", "data-sltip": "今日已触发过；回落到滞回带外才会重新待命" }, "已触发")
+                            : null,
+                          h("button", { className: "sl-x", "data-sltip": "删除该规则", onClick: () => removeAlert(r.id) }, "✕"));
+                      }))
+                  : null,
+              );
+            })),
       );
     }
 
@@ -3448,9 +3598,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               [["market", "大盘"], ["watch", "自选"], ["position", "持仓"], ["settings", "设置"]].map(([t, label]) =>
                 h("button", {
                   key: t,
-                  className: "sl-tab" + (s.tab === t && !s.detail && !s.alertPanel ? " sl-tab-on" : ""),
-                  // 点任何 tab 都退出二级页（预警面板挂在设置下，否则会「点了设置却还停在预警」）
-                  onClick: () => setState({ tab: t, detail: null, alertPanel: false }),
+                  className: "sl-tab" + (s.tab === t && !s.detail && !s.alertPanel && !s.txnPanel ? " sl-tab-on" : ""),
+                  // 点任何 tab 都退出二级页（预警/交易记录分别挂在设置、持仓下，否则会「点了持仓却还停在交易记录」）
+                  onClick: () => setState({ tab: t, detail: null, alertPanel: false, txnPanel: null }),
                 }, label))),
             h(FreshBadge, { updatedAt: s.updatedAt, pollMs: s.config && s.config.pollMs }),
             h("button", { className: "sl-icon", "data-sltip": "立即刷新", onClick: () => refreshQuotes() }, "⟳"),
@@ -3462,7 +3612,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               ? h(DetailView, { detail: s.detail })
               : s.tab === "market" ? h(MarketView)
                 : s.tab === "watch" ? h(WatchView)
-                  : s.tab === "position" ? h(PositionView)
+                  : s.tab === "position" ? (s.txnPanel ? h(TxnRecordsView, { panel: s.txnPanel }) : h(PositionView))
                     : s.alertPanel ? h(AlertView)
                       : h(SettingsView)),
           h("div", { className: "sl-foot" },

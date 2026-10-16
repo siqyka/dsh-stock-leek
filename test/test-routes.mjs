@@ -363,7 +363,13 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
     });
     const s2 = getAlertStatsForTest();
     // 只在 A 股交易时段验证（非交易时段循环按设计退避，不能据此判失败）
-    const nowBJ = new Date(Date.now() + (new Date().getTimezoneOffset() + 480) * 60000);
+    //
+    // 时区换算必须与运行机器的时区**无关**：把绝对时间 +8h 后用 getUTC* 读，
+    // 得到的就是北京墙上时间。曾经写成 `Date.now() + (getTimezoneOffset() + 480) * 60000`
+    // 再配 getUTC*：那套只在 **runner 位于 UTC** 时成立（偏移 0 → 加 8h → 读 UTC = 北京）；
+    // 在 UTC+8 的机器上 getTimezoneOffset() = −480 → 加 0 → 读到的是 UTC 时间，
+    // 于是「盘中」被判成「休市」，走了 else 分支去断言"没打上游"，而实际正在打 → 红。
+    const nowBJ = new Date(Date.now() + 8 * 3600 * 1000);
     const mins = nowBJ.getUTCHours() * 60 + nowBJ.getUTCMinutes();
     const wd = nowBJ.getUTCDay();
     const openNow = wd >= 1 && wd <= 5 && ((mins >= 570 && mins <= 690) || (mins >= 780 && mins <= 900));

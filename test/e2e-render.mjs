@@ -993,14 +993,16 @@ if (posSug) {
   }
 }
 
-// ---------- 7. 持仓变动（右键 → 变动面板 → 记买卖；今日收益据此） ----------
+// ---------- 7. 持仓交易（右键 → 记一笔抽屉 → 交易记录二级页） ----------
 clickTab("持仓");
 ovNode = ov.render({}); renderTree(ovNode);
 const prow = posRow(ovNode);
 contextMenu(prow);
 ovNode = ov.render({}); renderTree(ovNode);
-const txnMi = findMenuItem(ovNode, "买卖变动") || findMenuItem(ovNode, "变动记录");
-check("右键菜单含「⇅ 买卖变动」入口", !!txnMi, textOf(ovNode).join(" ").slice(0, 160));
+const txnMi = findMenuItem(ovNode, "记一笔交易") || findMenuItem(ovNode, "收起交易");
+check("右键菜单含「⇅ 记一笔交易」入口", !!txnMi, textOf(ovNode).join(" ").slice(0, 160));
+const recMi = findMenuItem(ovNode, "交易记录");
+check("右键菜单含「📒 交易记录」入口", !!recMi, textOf(ovNode).join(" ").slice(0, 160));
 if (txnMi) {
   click(txnMi); // setOpenCode → 展开 TxnPanel
   dismissMenu();
@@ -1008,7 +1010,15 @@ if (txnMi) {
   await wait(200);
   ovNode = ov.render({}); renderTree(ovNode);
   const panel = textOf(ovNode).join(" ");
-  check("变动面板展开（买入/卖出/记一笔）", /买入/.test(panel) && /卖出/.test(panel) && /记一笔/.test(panel), panel.slice(0, 240));
+  check("交易抽屉展开（买入/卖出/记一笔）", /买入/.test(panel) && /卖出/.test(panel) && /记一笔/.test(panel), panel.slice(0, 240));
+  // 成交明细已移到二级页：抽屉里不该再有成交列表容器。
+  // **按类名判**而不是按文本 `@价格` 判——此刻还没记过账，txns 为空，
+  // 就算把列表渲染回来也是空的，文本断言会假绿（非空洞验证时实测只红了一条）。
+  {
+    const hasListCls = (root, cls) => !!findNode(root, (n) => n.type === "div" && String((n.props && n.props.className) || "").indexOf(cls) >= 0);
+    check("抽屉里没有成交列表容器（sl-txn-list）", !hasListCls(ovNode, "sl-txn-list"), panel.slice(0, 240));
+  }
+  check("抽屉提示去交易记录页看明细", /交易记录/.test(panel), panel.slice(0, 240));
   const formInput = (ph) => findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === ph && typeof n.props.onChange === "function");
   // 记一笔买入 @1300 ×100
   formInput("价格").props.onChange({ target: { value: "1300" } });
@@ -1020,8 +1030,10 @@ if (txnMi) {
   ovNode = ov.render({}); renderTree(ovNode);
   const afterBuy = textOf(ovNode).join(" ");
   console.log("   买入后:", afterBuy.slice(0, 240));
-  check("买入后出现变动记录（买 @1300）", /买/.test(afterBuy) && /@1300\.00/.test(afterBuy), afterBuy.slice(0, 240));
   check("买入后股数 100→200（成本 1150.00 后跟现价再跟持股 200）", /1150\.00\s+[\d.]+\s+200\b/.test(afterBuy), afterBuy.slice(0, 200));
+  check("买入已写入配置（明细虽不在抽屉里，数据仍在）",
+    !!(((global.__sl_test_state__ || {}).config?.positions || [])[0]?.txns || []).some((t) => t.price === 1300 && t.qty === 100),
+    JSON.stringify((((global.__sl_test_state__ || {}).config?.positions || [])[0] || {}).txns));
   // 再记一笔卖出 @1350 ×50（切到「卖出」段）
   const sellTab = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "卖出");
   click(sellTab);
@@ -1034,15 +1046,68 @@ if (txnMi) {
   ovNode = ov.render({}); renderTree(ovNode);
   const afterSell = textOf(ovNode).join(" ");
   console.log("   卖出后:", afterSell.slice(0, 300));
-  check("卖出后出现两笔变动（含 卖 @1350）", /卖/.test(afterSell) && /@1350\.00/.test(afterSell), afterSell.slice(0, 300));
   check("卖出后股数 200→150（成本 1150.00 后跟现价再跟持股 150）", /1150\.00\s+[\d.]+\s+150\b/.test(afterSell), afterSell.slice(0, 200));
   errs = renderTree(ovNode);
-  check("多笔变动后无渲染错误", errs.length === 0, errs[0] && (errs[0].error.stack || errs[0].error));
+  check("多笔交易后无渲染错误", errs.length === 0, errs[0] && (errs[0].error.stack || errs[0].error));
   // 右键菜单项现显示笔数
   contextMenu(posRow(ovNode));
   ovNode = ov.render({}); renderTree(ovNode);
-  check("变动菜单显示 2 笔", !!findMenuItem(ovNode, "2 笔"), textOf(ovNode).join(" ").slice(0, 160));
-  dismissMenu();
+  check("交易记录菜单显示 2 笔", !!findMenuItem(ovNode, "2 笔"), textOf(ovNode).join(" ").slice(0, 160));
+
+  // ---------- 7b. 交易记录二级页：只显示被右键那只股票 ----------
+  const recMi2 = findMenuItem(ovNode, "交易记录");
+  check("重新右键仍能进交易记录", !!recMi2);
+  if (recMi2) {
+    click(recMi2);
+    dismissMenu();
+    ovNode = ov.render({}); renderTree(ovNode);
+    await wait(200);
+    ovNode = ov.render({}); renderTree(ovNode);
+    const rec = textOf(ovNode).join(" ");
+    console.log("   交易记录页:", rec.slice(0, 300));
+    const errsRec = renderTree(ovNode);
+    check("交易记录页渲染无错误", errsRec.length === 0, errsRec[0] && errsRec[0].error.stack);
+    check("交易记录页有返回头与标题", /←\s*返回/.test(rec) && /交易记录/.test(rec), rec.slice(0, 160));
+    check("交易记录页显示该股名", /贵州茅台/.test(rec), rec.slice(0, 160));
+    check("交易记录页列出两笔成交（@1300 / @1350）", /@1300\.00/.test(rec) && /@1350\.00/.test(rec), rec.slice(0, 300));
+    check("交易记录页标注买卖方向", /买/.test(rec) && /卖/.test(rec), rec.slice(0, 200));
+    check("交易记录页显示笔数汇总", /2\s*笔/.test(rec), rec.slice(0, 200));
+    check("交易记录页有买/卖/净汇总", /买\s*[\d.]/.test(rec) && /卖\s*[\d.]/.test(rec) && /净\s*\d+\s*股/.test(rec), rec.slice(0, 260));
+    check("今日成交带「今」标记", /今/.test(rec), rec.slice(0, 260));
+    // 只显示被右键那只：不得混入其它股票的成交
+    check("交易记录页只显示这只股票（无其它持仓名）", !/宁德时代|比亚迪/.test(rec), rec.slice(0, 200));
+
+    // 删除一笔 → 回到 1 笔。列表最新在前，删的是那笔「卖 50」→ 股数回退到 200。
+    // 遍历规则与 textOf 一致：**函数组件只走 __rendered**，否则 Fragment 的
+    // __rendered 与 children 是同一批节点，会被数两遍（先踩到"找不到"，
+    // 补了 __rendered 又踩到"翻倍"，两个坑都是 development.md §3 那一条）。
+    const delBtns = [];
+    (function collect(n) {
+      if (!n || typeof n !== "object") return;
+      if (Array.isArray(n)) { n.forEach(collect); return; }
+      if (n.type === "button" && String((n.props && n.props.className) || "") === "sl-x" && /删除/.test(String((n.props && n.props["data-sltip"]) || ""))) delBtns.push(n);
+      if (typeof n.type === "function") { collect(n.__rendered); return; }
+      if (n.children) n.children.forEach(collect);
+    })(ovNode);
+    check("交易记录页每笔可删除", delBtns.length === 2, delBtns.length);
+    if (delBtns.length === 2) {
+      click(delBtns[0]);
+      ovNode = ov.render({}); renderTree(ovNode);
+      await wait(250);
+      ovNode = ov.render({}); renderTree(ovNode);
+      const afterDel = textOf(ovNode).join(" ");
+      check("删除后只剩 1 笔", /1\s*笔/.test(afterDel) && !/2\s*笔/.test(afterDel), afterDel.slice(0, 260));
+      const posNow = ((global.__sl_test_state__ || {}).config?.positions || [])[0] || {};
+      check("删除已写入配置", (posNow.txns || []).length === 1, JSON.stringify(posNow.txns));
+      check("撤销该笔同时回退股数（删卖出 → 150 回到 200）", posNow.qty === 200, posNow.qty);
+      click(findNode(ovNode, (n) => n.type === "button" && /返回/.test(String(n.children && n.children[0]))));
+      ovNode = ov.render({}); renderTree(ovNode);
+      // 二级页标题带「交易记录：」冒号；抽屉里的指路提示没冒号，用它区分
+      check("返回后回到持仓列表", !/交易记录：/.test(textOf(ovNode).join(" ")), textOf(ovNode).join(" ").slice(0, 160));
+    }
+  } else {
+    dismissMenu(); // 进不去二级页也要关菜单，否则残留会干扰后续用例
+  }
 }
 // ---------- 8. 收益胶囊 hover 浮层（市值/累计收益+%/每只持仓今日盈亏+当日涨幅） ----------
 {
@@ -1080,9 +1145,46 @@ if (txnMi) {
   // ---------- 8a. 按时段展开/收起（9:00–15:06 展开）+ 点●手动切换 ----------
   // 时间由 __sl_now__ 钉死，逐个边界点验证。北京时间 = UTC+8。
   {
-    const at = (hhmm) => {
+    /**
+     * 本段所有时钟的基准日 = **真实行情日期**，不写死。
+     *
+     * barForceDay 的 key 来自 quoteDate(行情)，写死基准日会让"造出来的时钟"
+     * 与"产品读到的行情日期"在周末/节假日错位（写死周四、行情却是周五）。
+     */
+    const realQuoteDay = () => {
+      const q = ((global.__sl_test_state__ || {}).quotes) || {};
+      for (const k of Object.keys(q)) {
+        const t = String((q[k] || {}).time || "");
+        if (/^(sh|sz|bj)/.test(k) && /^\d{14}$/.test(t)) return t.slice(0, 4) + "-" + t.slice(4, 6) + "-" + t.slice(6, 8);
+      }
+      const p = (n) => String(n).padStart(2, "0");
+      const d = new Date();
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+    };
+    /**
+     * 行情日期的**下一个交易日**（跳过周末）。
+     *
+     * 次日绝不能写死：barForceDay 的 key 是真实行情日期，写死的"次日"迟早撞上
+     * 真实日期——撞上那天起「过期」永不成立。本用例就栽过一次（写死 2026-10-16，
+     * 等真实行情日期也变成 10-16，测试立刻失效且看起来像产品 bug）。
+     */
+    const nextTradingDay = (dayStr) => {
+      const d = new Date(dayStr + "T00:00:00Z");
+      for (;;) {
+        d.setUTCDate(d.getUTCDate() + 1);
+        const wd = d.getUTCDay();
+        if (wd !== 0 && wd !== 6) break;
+      }
+      return d.toISOString().slice(0, 10);
+    };
+    const baseDay = realQuoteDay();
+    const nextDay = nextTradingDay(baseDay);
+    const nextDayCompact = nextDay.replace(/-/g, "");
+    check("能取到真实行情日期并推出下一交易日（次日不能写死）", /^\d{4}-\d{2}-\d{2}$/.test(baseDay) && nextDay !== baseDay, { baseDay, nextDay });
+
+    const at = (hhmm, day) => {
       const [hh, mm] = hhmm.split(":").map(Number);
-      return Date.parse(`2026-10-15T00:00:00Z`) + (hh * 60 + mm - 480) * 60000; // 北京 hh:mm → UTC
+      return Date.parse(`${day || baseDay}T00:00:00Z`) + (hh * 60 + mm - 480) * 60000; // 北京 hh:mm → UTC
     };
     /** 点一下状态点，返回点击后是否展开 */
     const clickDot = () => {
@@ -1146,53 +1248,54 @@ if (txnMi) {
     check("同一天内手动态保持（无视时段）", barHasIndex() === true, barTexts().slice(0, 120));
     clickDot(); // 手动收起
     check("手动收起生效（此时明明是盘中）", barHasIndex() === false, barTexts().slice(0, 120));
+    // realQuoteDay / nextTradingDay / baseDay / nextDay 已在 8a 段顶部定义（勿重复声明）
     const nextDayQuotes = async (url, opts) => {
       const u = String(url);
       const r = await REAL_FETCH(u.startsWith("http") ? u : ORIGIN + u, opts);
       if (/\/quotes/.test(u)) {
         const j = await r.clone().json();
-        for (const row of (j.rows || [])) row.time = "20261016090000";
+        for (const row of (j.rows || [])) row.time = nextDayCompact + "100000";
         return jsonResponse(j, r.status);
       }
       return r;
     };
     global.window.fetch = nextDayQuotes;
     global.fetch = nextDayQuotes;
-    setNow(Date.parse("2026-10-16T02:00:00Z")); // 次日 10:00 北京，盘中
+    setNow(at("10:00", nextDay)); // 次日 10:00 北京，盘中
     let rf0 = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "⟳");
     if (!rf0) { ovNode = ov.render({}); renderTree(ovNode); rf0 = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "⟳"); }
     if (rf0) rf0.props.onClick({});
     await until(() => {
       const q = ((global.__sl_test_state__ || {}).quotes || {});
       const k = Object.keys(q)[0];
-      return !!k && String(q[k].time || "").startsWith("20261016");
+      return !!k && String(q[k].time || "").startsWith(nextDayCompact);
     }, 6000);
-    check("跨交易日后手动态失效，恢复按时段自动（次日盘中=展开）", barHasIndex() === true, barTexts().slice(0, 120));
-    setNow(at("20:00")); // 次日非交易时段，手动态已清 → 应回到自动收起
+    check("跨交易日后手动态失效，恢复按时段自动（次日盘中=展开）", barHasIndex() === true, { baseDay, nextDay });
+    setNow(at("20:00", nextDay)); // 次日非交易时段，手动态已清 → 应回到自动收起
     check("跨交易日后非交易时段自动收起（手动态确实清干净了）", barHasIndex() === false, barTexts().slice(0, 120));
 
     // **必须把行情日期拨回真实日期**再往下走。
     // 下一段 8b 要清仓，而 purgeStaleClosedPositions 判的是「行情日期 > 最后一笔成交日」。
-    // 留着 2026-10-16 的假行情，持仓会在卖完的同一刻就被当成过期清理掉，
+    // 留着次日的假行情，持仓会在卖完的同一刻就被当成过期清理掉，
     // 于是"清仓后收益还在不在"根本无从验证（第一版就这么把 8b 全弄红了）。
     global.window.fetch = patchedFetch;
     global.fetch = patchedFetch;
-    setNow(TS_IN_SESSION);
     let rf1 = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "⟳");
     if (!rf1) { ovNode = ov.render({}); renderTree(ovNode); rf1 = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "⟳"); }
     if (rf1) rf1.props.onClick({});
-    // 注意：别用 String(new Date()).slice(0,10) —— 那是 "Thu Oct 15"，不是日期。
-    const p2 = (n) => String(n).padStart(2, "0");
-    const d2 = new Date();
-    const realDay = d2.getFullYear() + p2(d2.getMonth() + 1) + p2(d2.getDate());
     const quoteDay = () => {
       const q = ((global.__sl_test_state__ || {}).quotes) || {};
       const k = Object.keys(q)[0];
       return k ? String(q[k].time || "") : "";
     };
-    await until(() => quoteDay().startsWith(realDay), 8000);
-    check("行情日期已拨回真实交易日（后续清仓用例的前置条件）", quoteDay().startsWith(realDay), quoteDay());
-    setNow(TS_IN_SESSION); // 还原，后续用例仍按盘中渲染
+    // 期望值用 baseDay（真实行情日期），不用本地今天：
+    // 周末/盘前两者会错开，写死本地日期会让这条前置断言在周末必挂。
+    const baseCompact = baseDay.replace(/-/g, "");
+    await until(() => quoteDay().startsWith(baseCompact), 8000);
+    check("行情日期已拨回真实交易日（后续清仓用例的前置条件）", quoteDay().startsWith(baseCompact), { baseDay, quoteDay: quoteDay() });
+    // 时钟也拨回同一天的盘中：与 baseDay 同源，否则 barForceDay 与行情日期错位、
+    // 8a 留下的手动态会莫名"复活"。
+    setNow(at("14:45", baseDay));
   }
   // 持仓后标题应变脸（不再是默认观望态）
   const ovAfter = ovReg.render({});
@@ -1743,6 +1846,163 @@ if (txnMi) {
   ovNode = ov.render({}); renderTree(ovNode);
   check("再次点击恢复启用", cfgNow().alerts[0].enabled !== false, cfgNow().alerts[0]);
 
+  // 4b) 规则按代码分组抽屉：同 code 多条收在一组，跨 code 分组，手风琴单开
+  {
+    const groupsIn = () => {
+      const gs = [];
+      (function walk(n) {
+        if (!n || typeof n !== "object") return;
+        if (Array.isArray(n)) { n.forEach(walk); return; }
+        if (n.type === "div" && String((n.props && n.props.className) || "") === "sl-alert-group") gs.push(n);
+        if (typeof n.type === "function") { walk(n.__rendered); return; }
+        if (n.children) n.children.forEach(walk);
+      })(ovNode);
+      return gs;
+    };
+    const gText = (g) => {
+      const acc = [];
+      (function walk(n) {
+        // 字符串判断必须在 "非对象就返回" 之前：字符串不是对象，
+        // 顺序写反会让所有文本被静默丢掉（gText 恒为空串，断言全红且看不出原因）。
+        if (typeof n === "string" || typeof n === "number") { acc.push(String(n)); return; }
+        if (!n || typeof n !== "object") return;
+        if (Array.isArray(n)) { n.forEach(walk); return; }
+        if (typeof n.type === "function") { walk(n.__rendered); return; }
+        if (n.children) n.children.forEach(walk);
+      })(g);
+      return acc.join(" ");
+    };
+    const gHead = (g) => findNode(g, (n) => n.type === "div" && String((n.props && n.props.className) || "") === "sl-alert-ghead");
+
+    // 再加一条**同 code 不同 type** 的规则：应并入同一组，而不是新增一组
+    const ci = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "代码/选择");
+    ci.props.onChange({ target: { value: "sh600519" } });
+    ovNode = ov.render({}); renderTree(ovNode);
+    findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "阈值").props.onChange({ target: { value: "3" } });
+    ovNode = ov.render({}); renderTree(ovNode);
+    const sel = findNode(ovNode, (n) => n.type === "select");
+    sel.props.onChange({ target: { value: "pct_up" } });
+    ovNode = ov.render({}); renderTree(ovNode);
+    click(findNode(ovNode, (n) => n.type === "button" && /添加/.test(String((n.children && n.children[0]) || ""))));
+    ovNode = ov.render({}); renderTree(ovNode);
+    check("同 code 加了第二条规则（配置层仍是扁平数组）", ruleCount() === rcForm + 2, ruleCount());
+    check("同 code 的两条规则**只占一个组**", groupsIn().length === 1, groupsIn().length);
+    const g0 = groupsIn()[0];
+    check("组头显示股票名与代码", /贵州茅台/.test(gText(g0)) && /600519/.test(gText(g0)), gText(g0).slice(0, 120));
+    check("组头显示启用计数 N/M", /2\/2\s*启用/.test(gText(g0)), gText(g0).slice(0, 120));
+    check("添加后自动展开该组（新规则不会藏进收起态）", /现价上穿/.test(gText(g0)) && /涨幅/.test(gText(g0)), gText(g0).slice(0, 160));
+
+    // 换一只 code：应新增第二个组，且手风琴把前一组收起
+    const ci2 = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "代码/选择");
+    ci2.props.onChange({ target: { value: "sz300750" } });
+    ovNode = ov.render({}); renderTree(ovNode);
+    findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "阈值").props.onChange({ target: { value: "200" } });
+    ovNode = ov.render({}); renderTree(ovNode);
+    findNode(ovNode, (n) => n.type === "select").props.onChange({ target: { value: "price_above" } });
+    ovNode = ov.render({}); renderTree(ovNode);
+    click(findNode(ovNode, (n) => n.type === "button" && /添加/.test(String((n.children && n.children[0]) || ""))));
+    ovNode = ov.render({}); renderTree(ovNode);
+    check("跨 code 分成两组", groupsIn().length === 2, groupsIn().length);
+    const [ga, gb] = groupsIn();
+    check("新组自动展开、旧组收起（手风琴单开）",
+      /现价上穿|涨幅/.test(gText(gb)) && !/现价上穿|涨幅/.test(gText(ga)),
+      { a: gText(ga).slice(0, 80), b: gText(gb).slice(0, 80) });
+    check("收起态的组头仍可见（名称+计数在，规则不渲染）",
+      !/现价上穿|涨幅/.test(gText(ga)) && /启用/.test(gText(ga)),
+      gText(ga).slice(0, 120));
+
+    // 点组头手动展开旧组 → 新组应收起
+    click(gHead(ga));
+    ovNode = ov.render({}); renderTree(ovNode);
+    const g2 = groupsIn();
+    check("点组头展开该组（规则重新渲染）", /现价上穿/.test(gText(g2[0])), gText(g2[0]).slice(0, 140));
+    check("展开一组会把另一组收起", !/宁德时代.*200/.test(gText(g2[1])) && !/现价上穿/.test(gText(g2[1])), gText(g2[1]).slice(0, 120));
+    // 再点一次收起
+    click(gHead(groupsIn()[0]));
+    ovNode = ov.render({}); renderTree(ovNode);
+    check("再点组头收起该组", !/现价上穿/.test(gText(groupsIn()[0])), gText(groupsIn()[0]).slice(0, 120));
+
+    // 已触发角标在**收起态**也要可见。
+    //
+    // 走**真实链路**而不是伪造 fetch：让 Host 评估真的把这条规则标成 fired
+    // （__alertTickForTest 写进账本），再进预警页让 refreshAlerts 正常拉取。
+    // 试过直接用 fetch 替身伪造 /alerts 响应：替身确实被命中、也返回了 fired，
+    // 但窗口内总有更早发出、用真实 fetch 的同路径请求后到，把 states 覆盖回 {}，
+    // 状态永远落不了地（直到超时）。伪造响应不如让真链路跑通。
+    {
+      const firedId = (cfgNow().alerts || [])[0].id;
+      const todayBJ2 = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" })
+        .format(new Date()).replace(/-/g, "");
+      const firedCfg = Object.assign({}, cfgNow(), {
+        remind: true,
+        alerts: [{ id: firedId, code: "sh600519", type: "price_above", value: 1, enabled: true }],
+      });
+      await hostPost("/dsh-stock-leek/config", { config: firedCfg });
+      __alertTickForTest(firedCfg, [{ code: "sh600519", name: "贵州茅台", price: 1700, percent: 2, time: todayBJ2 + "100000" }], {});
+      const ledger2 = await hostJson("/dsh-stock-leek/alerts");
+      check("Host 账本里确实记下了 fired（前置条件成立）",
+        !!(ledger2.states && ledger2.states[firedId] && ledger2.states[firedId].phase === "fired"),
+        JSON.stringify(ledger2.states));
+
+      openAlertPanelForTest(); // 返回的是**文本**，别赋给 ovNode（会把节点变量覆盖成字符串）
+      await until(() => {
+        const st = (global.__sl_test_state__ || {}).alertStates || {};
+        return !!(st[firedId] && st[firedId].phase === "fired");
+      }, 4000);
+      ovNode = ov.render({}); renderTree(ovNode);
+      const gFired = groupsIn()[0];
+      check("收起态的组头显示「已触发 N」（不展开也知道哪只响过）",
+        /已触发\s*1/.test(gText(gFired)) && !/现价上穿|涨幅/.test(gText(gFired)),
+        gText(gFired).slice(0, 140) + " || states=" + JSON.stringify((global.__sl_test_state__ || {}).alertStates || {}));
+      global.window.fetch = patchedFetch;
+      global.fetch = patchedFetch;
+    }
+
+    // 清回一条规则，避免影响后续用例。
+    // 必须走**客户端自己的删除按钮**（updateConfig 会同步 store）——
+    // 直接 hostPost 只改 Host 上的文件，客户端的 config 不会重新读，断言会继续看到旧数据。
+    {
+      const collectDel = () => {
+        const out = [];
+        (function walk(n) {
+          if (!n || typeof n !== "object") return;
+          if (Array.isArray(n)) { n.forEach(walk); return; }
+          if (n.type === "button" && String((n.props && n.props.className) || "") === "sl-x" && /删除该规则/.test(String((n.props && n.props["data-sltip"]) || ""))) out.push(n);
+          if (typeof n.type === "function") { walk(n.__rendered); return; }
+          if (n.children) n.children.forEach(walk);
+        })(ovNode);
+        return out;
+      };
+      openAlertPanelForTest(); // 注意：它返回的是**文本**，别赋给 ovNode（节点变量会被覆盖成字符串，后面 walk 全空）
+      ovNode = ov.render({}); renderTree(ovNode);
+      // 组头是 **toggle**：已经展开时点它会收起，删按钮就没了。
+      // 所以先看有没有删按钮，没有才点组头展开（幂等，不依赖进入时的展开态）。
+      let delInGroup = collectDel();
+      if (delInGroup.length === 0) {
+        click(gHead(groupsIn()[0]));
+        ovNode = ov.render({}); renderTree(ovNode);
+        delInGroup = collectDel();
+      }
+      check("分区展开后可删除组内规则", delInGroup.length >= 1, delInGroup.length);
+      while (delInGroup.length > 0) {
+        click(delInGroup[delInGroup.length - 1]); // 每次删最后一条
+        ovNode = ov.render({}); renderTree(ovNode);
+        await wait(200);
+        ovNode = ov.render({}); renderTree(ovNode);
+        if (groupsIn().length <= 1) break;
+        // 下一组可能还收着
+        let next = collectDel();
+        if (next.length === 0) {
+          click(gHead(groupsIn()[groupsIn().length - 1]));
+          ovNode = ov.render({}); renderTree(ovNode);
+          next = collectDel();
+        }
+        delInGroup = next;
+      }
+      check("删到只剩一组（组数随规则数收敛）", groupsIn().length === 1, groupsIn().length);
+    }
+  }
+
   // 5) 左下角**不放提醒图标**（用户明确要求）：展开与收起态都不得出现铃铛
   {
     const floatReg2 = findReg("shell.overlay", "dsh-stock-leek.floating-bar");
@@ -2291,6 +2551,157 @@ if (txnMi) {
   global.document.title = "DSH";
   stubNotification("default");
   ovNode = ov.render({}); renderTree(ovNode);
+}
+
+// ---------- 列表封顶：交易记录与预警规则都按 10 行出滚动条 ----------
+// 放在最后：要往配置里塞十几行假数据，塞完不再影响任何后续用例。
+//
+// 喂数据的手法：persistConfig 会把 POST /config 的**回包**并入本地状态，
+// 所以把回包改写成"客户端发来的配置 + 额外行"，再触发一次真实保存即可——
+// 比点 11 次 UI 快得多，而且走的仍是产品自己的合并分支。
+{
+  // 本段在文件末尾、独立块作用域里：cfgNow 等 helper 定义在前面的块内，这里拿不到，
+  // 直接用同一个来源（测试钩子暴露的 store 快照）。
+  const cfgNow = () => (globalThis.__sl_test_state__ || {}).config || {};
+  // 用 indexOf 而不是全等：封顶后会追加 " sl-sortable-cap"，
+  // 全等匹配在"有滚动条"时反而找不到容器（正是要断言的那种情况）。
+  const rowsOf = (cls) => {
+    const out = [];
+    (function walk(n) {
+      if (!n || typeof n !== "object") return;
+      if (Array.isArray(n)) { n.forEach(walk); return; }
+      if (String((n.props && n.props.className) || "").indexOf(cls) >= 0) out.push(n);
+      if (typeof n.type === "function") { walk(n.__rendered); return; }
+      if (n.children) n.children.forEach(walk);
+    })(ovNode);
+    return out;
+  };
+  const seedAndSave = async (mutate, expect) => {
+    const prevFetch = global.fetch;
+    const stub = async (url, opts) => {
+      if (String(url).indexOf("/dsh-stock-leek/config") >= 0 && opts && opts.method === "POST") {
+        const sent = JSON.parse(opts.body || "{}").config || {};
+        return { ok: true, json: async () => ({ ok: true, config: mutate(Object.assign({}, sent)), rev: 1, path: "(test)" }) };
+      }
+      return prevFetch(url, opts);
+    };
+    global.fetch = stub;
+    global.window.fetch = stub;
+    ovNode = ov.render({}); renderTree(ovNode);
+    ovText = clickTab("设置");
+    // 点刷新间隔按钮触发一次真实保存（与"老 Host 吃字段"用例同一手法）
+    const btn = findNode(ovNode, (n) => n.type === "button" && /^(3|5|10)s$/.test(String((n.children && n.children[0]) || "")));
+    if (btn) click(btn);
+    ovNode = ov.render({}); renderTree(ovNode);
+    // 轮询等**回包合并真的落地**，不要固定 sleep：
+    // 固定等待会让断言读到上一轮的配置（实测"看起来慢一拍"就是这么来的）。
+    if (expect) await until(expect, 4000);
+    global.fetch = prevFetch;
+    global.window.fetch = prevFetch;
+    ovNode = ov.render({}); renderTree(ovNode);
+  };
+  // 本段在文件末尾的独立块作用域里，前面块内的 helper（openAlertPanelForTest 等）拿不到，
+  // 这里就地重写两个"进入二级页"的交互。
+  const enterAlertPanel = () => {
+    clickTab("设置");
+    const entry = findNode(ovNode, (n) => n.type === "button" && /🔔 预警/.test(String((n.children && n.children[0]) || "")));
+    if (!entry) return false;
+    click(entry);
+    ovNode = ov.render({}); renderTree(ovNode);
+    return true;
+  };
+  const enterTxnPanel = () => {
+    clickTab("持仓");
+    ovNode = ov.render({}); renderTree(ovNode);
+    const row = posRow(ovNode);
+    if (!row) return false;
+    contextMenu(row);
+    ovNode = ov.render({}); renderTree(ovNode);
+    const mi = findMenuItem(ovNode, "交易记录");
+    if (!mi) { dismissMenu(); return false; }
+    click(mi);
+    dismissMenu();
+    ovNode = ov.render({}); renderTree(ovNode);
+    return true;
+  };
+
+  // 1) 交易记录：造一只带 12 笔成交的持仓 → 应加滚动类且上限 28×10+1=281px
+  {
+    // 此时持仓已被前面的清仓用例清空，所以自己造一只
+    await seedAndSave((c) => {
+      c.positions = [{
+        code: "sh600519", name: "贵州茅台", cost: 1000, qty: 100,
+        txns: Array.from({ length: 12 }, (_, i) => ({
+          id: "seed" + i, date: "2026-01-" + String((i % 9) + 1).padStart(2, "0"), time: "10:00",
+          price: 100 + i, qty: i % 2 ? -10 : 10,
+        })),
+      }];
+      return c;
+    }, () => ((((globalThis.__sl_test_state__ || {}).config || {}).positions || [])[0] || {}).txns
+      && (((globalThis.__sl_test_state__ || {}).config || {}).positions || [])[0].txns.length === 12);
+    check("已造出带 12 笔成交的持仓（前置条件）",
+      (((cfgNow().positions || [])[0] || {}).txns || []).length === 12,
+      ((cfgNow().positions || [])[0] || {}).txns && ((cfgNow().positions || [])[0] || {}).txns.length);
+    const ok = enterTxnPanel();
+    check("能打开交易记录二级页（前置条件）", ok && /交易记录：/.test(textOf(ovNode).join(" ")), textOf(ovNode).join(" ").slice(0, 140));
+    const list = rowsOf("sl-txnrec-list")[0];
+    check("交易记录页找到列表容器", !!list);
+    if (list) {
+      const cls = String((list.props && list.props.className) || "");
+      const capPx = parseInt(String((list.props.style && list.props.style.maxHeight) || ""), 10);
+      check("交易记录超 10 笔时加滚动类", cls.indexOf("sl-sortable-cap") >= 0, cls);
+      check("交易记录上限按实测行高算（28×10+1=281）", capPx === 281, capPx);
+      // 上限落在列表上、不在 .sl-body 上（表头与汇总条保持可见）
+      const body = findNode(ovNode, (n) => String((n.props && n.props.className) || "") === "sl-body");
+      check("交易记录上限不在 .sl-body 上", !(body && body.props.style && body.props.style.maxHeight), body && body.props.style);
+    }
+  }
+
+  // 2) 预警：塞 12 只不同股票 → 同样封顶（按**组**计数，不是按规则条数）
+  {
+    await seedAndSave((c) => {
+      const codes = ["sh600519", "sz300750", "sz002594", "sh601318", "sh600036", "sz000858",
+        "sh601899", "sz002415", "sh600030", "sh601166", "sz000333", "sh600276"];
+      c.alerts = codes.map((cd, i) => ({ id: "cap" + i, code: cd, name: "股票" + i, type: "price_above", value: 100 + i, enabled: true }));
+      return c;
+    }, () => (((globalThis.__sl_test_state__ || {}).config || {}).alerts || []).length === 12);
+    check("预警规则已塞成 12 组（前置条件）", ((cfgNow().alerts || []).length) === 12, (cfgNow().alerts || []).length);
+    const ok = enterAlertPanel();
+    check("预警页已打开（前置条件）", ok && /预警总开关/.test(textOf(ovNode).join(" ")), textOf(ovNode).join(" ").slice(0, 140));
+    const list = rowsOf("sl-alert-list")[0];
+    check("预警页找到分组列表容器", !!list);
+    if (list) {
+      const cls = String((list.props && list.props.className) || "");
+      const capPx = parseInt(String((list.props.style && list.props.style.maxHeight) || ""), 10);
+      check("预警超 10 组时加滚动类", cls.indexOf("sl-sortable-cap") >= 0, cls);
+      check("预警上限按实测行高算（28×10+1=281）", capPx === 281, capPx);
+    }
+  }
+
+  // 3) 边界：正好 10 组时**不该**封顶（否则会出现"能滚但没内容"的空滚动条）
+  {
+    await seedAndSave((c) => { c.alerts = (c.alerts || []).slice(0, 10); return c; },
+      () => (((globalThis.__sl_test_state__ || {}).config || {}).alerts || []).length === 10);
+    check("预警规则已减到 10 组（前置条件）", ((cfgNow().alerts || []).length) === 10, (cfgNow().alerts || []).length);
+    enterAlertPanel();
+    const list = rowsOf("sl-alert-list")[0];
+    if (list) {
+      const cls = String((list.props && list.props.className) || "");
+      check("正好 10 组时不加滚动类", cls.indexOf("sl-sortable-cap") < 0, cls);
+      check("正好 10 组时无 maxHeight", !(list.props.style && list.props.style.maxHeight), list.props.style);
+    } else {
+      check("正好 10 组时能找到列表容器", false);
+    }
+  }
+
+  // 收尾：清掉塞进去的假数据，别留在配置里
+  await seedAndSave((c) => { c.alerts = []; c.positions = []; return c; },
+    () => {
+      const cf = (globalThis.__sl_test_state__ || {}).config || {};
+      return (cf.alerts || []).length === 0 && (cf.positions || []).length === 0;
+    });
+  check("收尾已清空预警规则与持仓", ((cfgNow().alerts || []).length) === 0 && ((cfgNow().positions || []).length) === 0,
+    { alerts: (cfgNow().alerts || []).length, positions: (cfgNow().positions || []).length });
 }
 
 server.close();

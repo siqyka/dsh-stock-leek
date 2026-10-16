@@ -512,6 +512,18 @@ function startAlertLoop(ctx) {
   let stopped = false;
   let timer = null;
   let running = false;
+  /**
+   * 评估循环用的「当前时间」。
+   *
+   * 允许测试用 `globalThis.__sl_alert_now__` 钉死它——否则「休市退避 / 盘中快跑」
+   * 这类行为完全取决于跑测试时的真实钟点：本项目的 alert-loop-ref 用例就栽过，
+   * 它挑了美股规则（假设北京凌晨美股在盘中），白天跑必然看不到第二拍。
+   * 与客户端 marketNow()/__sl_now__ 同一套路。
+   */
+  const alertNow = () => {
+    const v = Number(globalThis.__sl_alert_now__);
+    return Number.isFinite(v) && v > 0 ? new Date(v) : new Date();
+  };
   const schedule = (ms) => {
     if (stopped) return;
     clearTimeout(timer);
@@ -534,7 +546,7 @@ function startAlertLoop(ctx) {
         schedule(ALERT_BACKOFF_MS); // 无规则：完全休眠，一次上游都不打
         return;
       }
-      const now = new Date();
+      const now = alertNow();
       if (!codes.some((c) => isMarketOpen(c, now))) {
         alertStats.sleeps++;
         schedule(ALERT_BACKOFF_MS); // 全市场休市：不打上游，低频看配置变化

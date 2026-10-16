@@ -35,16 +35,21 @@ function check(label, cond, extra) {
   }
 }
 
-// 子进程：起 Host → **写入一条美股规则**（关键：美股在北京时间凌晨仍在交易
-// 时段，循环才会按 pollMs 快节奏排下一拍。若用 A 股，此刻休市 → 循环退避 60s，
-// 几秒内看不到第二拍，断言会假红）。
+// 子进程：起 Host → 写入一条规则，并把「当前时间」钉死在**盘中**。
+//
+// 时间必须钉死：循环只有在「某条规则的市场此刻在交易时段」时才按 pollMs 快跑，
+// 否则退避 60s——7 秒的观测窗里只能看到首拍，断言必然假红。
+// 原先用美股规则赌「北京凌晨美股在盘中」，白天跑就挂（已实测）。
+// 现在用 __sl_alert_now__ 注入一个 A 股盘中的时刻，任何钟点跑都成立。
 const childSrc = `
 import { useTestConfigPath } from ${JSON.stringify(guardUrl)};
 useTestConfigPath("loopref");
+// 2026-10-15（周四）14:45 北京 = 06:45 UTC —— A 股盘中
+globalThis.__sl_alert_now__ = Date.parse("2026-10-15T06:45:00Z");
 const mod = await import(${JSON.stringify(indexUrl)});
 const cfg = mod.readConfig();
 cfg.remind = true;
-cfg.alerts = [{ id: "ref1", code: "usAAPL", type: "price_above", value: 1, enabled: true, createdAt: Date.now() }];
+cfg.alerts = [{ id: "ref1", code: "sh600519", type: "price_above", value: 1, enabled: true, createdAt: Date.now() }];
 cfg.pollMs = 2000; // 最快节奏，便于短时间观测多拍
 mod.writeConfig(cfg);
 mod.apply({ effect: (fn) => { fn(); return () => {}; }, webServer: { register: () => () => {} } });
