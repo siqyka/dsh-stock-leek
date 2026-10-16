@@ -95,6 +95,11 @@ check("kline candles", (r.json.candles || []).length >= 50, r.json.error);
 const last = (r.json.candles || []).slice(-1)[0];
 check("kline ohlc sane", last && last.high >= Math.max(last.open, last.close) && last.low <= Math.min(last.open, last.close), last);
 
+// 美股指数 K 线：必须走专用端点 usfqkline（通用 fqkline 对美股只回当天 1 根，
+// 表现为「美股没有K线」）。这条钉住端点切换，防退化。
+r = await get("/dsh-stock-leek/kline?code=usIXIC&period=day&count=20");
+check("美股指数 K 线有完整序列（usfqkline）", (r.json.candles || []).length >= 15, { got: (r.json.candles || []).length, error: r.json.error });
+
 // 5. search
 r = await get("/dsh-stock-leek/search?q=" + encodeURIComponent("茅台"));
 check("search 茅台", (r.json.rows || []).some((x) => x.code === "sh600519"), r.json.rows?.slice(0, 3));

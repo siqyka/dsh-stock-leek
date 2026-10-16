@@ -35,6 +35,8 @@ const PREFIX = "/dsh-stock-leek";
 const QUOTE_API = "https://qt.gtimg.cn/q=";
 const MINUTE_API = "https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={code}&r={r}";
 const KLINE_API = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={code},{period},,{end},{count},qfq";
+/** 美股专用 K 线端点：通用 fqkline 对美股只回当天 1 根，usfqkline 才给完整序列（实测） */
+const US_KLINE_API = "https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get?param={code},{period},,{end},{count},qfq";
 const SEARCH_API = "https://proxy.finance.qq.com/ifzqgtimg/appstock/smartbox/search/get?q={q}";
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
@@ -1033,7 +1035,11 @@ async function fetchKline(code, period, count, end) {
   const key = `${code}:${period}:${count}:${end || ""}`;
   const hit = klineCache.get(key);
   if (hit && Date.now() - hit.at < KLINE_TTL) return hit.data;
-  const url = KLINE_API.replace("{code}", code)
+  // 美股必须走专用端点 usfqkline：通用 fqkline 对美股**只回当天 1 根**，
+  // 实测 usIXIC 在 fqkline 仅 1 根、usfqkline 21 根（用户反馈「美股没有K线」的根因）。
+  const isUs = /^(us|gb_)/i.test(code);
+  const api = isUs ? US_KLINE_API : KLINE_API;
+  const url = api.replace("{code}", code)
     .replace("{period}", period)
     .replace("{end}", end || "")
     .replace("{count}", String(count));
