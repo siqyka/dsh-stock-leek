@@ -252,7 +252,7 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
     config: {
       watchlist: [{ code: "sh600519", name: "茅台" }],
       alerts: [
-        { id: "good1", code: "sh600519", type: "price_above", value: 1500, enabled: true },
+        { id: "good1", code: "sh600519", type: "price_above", value: 1500 },
         { id: "bad id", code: "sh600519", type: "price_above", value: 1 }, // id 非法字符
         { id: "good2", code: "hk00700", type: "limit_near", value: 2 }, // 港股无涨跌停
         { id: "good3", code: "sh600519", type: "no_such_type", value: 1 }, // 未知类型
@@ -265,7 +265,7 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
 
   // 状态机：**每个交易日只提示一次**（用户要求），下次符合条件须等次日
   const mId = "m" + seq;
-  const base = cfgFor([{ id: mId, code: "sh600519", type: "price_above", value: 10, enabled: true }]);
+  const base = cfgFor([{ id: mId, code: "sh600519", type: "price_above", value: 10 }]);
   let t = __alertTickForTest(base, [q(11)], { now: NOW });
   check("上穿触发 fired", t.fired.length === 1 && t.fired[0].ruleId === mId && t.fired[0].price === 11, t.fired);
 
@@ -285,7 +285,7 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
   // 跨日重置：先在 D15 建立 fired 态，再到 D16 用同一规则——
   // 只有「昨日 fired + 今日仍在上穿」同时成立才说明跨日真的重置了（非空洞）
   const dId = "d" + seq;
-  const dayCfg = cfgFor([{ id: dId, code: "sh600519", type: "price_above", value: 10, enabled: true }]);
+  const dayCfg = cfgFor([{ id: dId, code: "sh600519", type: "price_above", value: 10 }]);
   __alertTickForTest(dayCfg, [{ code: "sh600519", price: 11, percent: 1, time: "20261015100000" }], { now: NOW });
   // 次日：now 必须同步到次日——交易日判据要求「报价日 == 市场本地当日」，
   // 用 D15 的 now 会被判据挡掉，跨日断言就变成空转。
@@ -297,7 +297,7 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
   // 没有这条，节假日里「价格恒定满足条件」会误报一次。
   const holId = "h" + seq;
   const hol = __alertTickForTest(
-    cfgFor([{ id: holId, code: "sh600519", type: "price_above", value: 10, enabled: true }]),
+    cfgFor([{ id: holId, code: "sh600519", type: "price_above", value: 10 }]),
     [{ code: "sh600519", price: 99, percent: 1, time: "20261015100000" }], // 报价停在 D15
     { now: NOW2 }); // 而市场本地已是 D16 → 该市场今天没开
   check("报价日落后于市场当日 → 跳过不触发（节假日防误报）", hol.fired.length === 0 && hol.skipped.includes(holId), hol);
@@ -305,25 +305,25 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
   // 反向对照：同一报价，若 now 也停在 D15（当天）→ 必须触发。
   // 两条一起才证明跳过是「日期不匹配」造成的，而不是规则本身不工作。
   const hol2 = __alertTickForTest(
-    cfgFor([{ id: "h2" + seq, code: "sh600519", type: "price_above", value: 10, enabled: true }]),
+    cfgFor([{ id: "h2" + seq, code: "sh600519", type: "price_above", value: 10 }]),
     [{ code: "sh600519", price: 99, percent: 1, time: "20261015100000" }],
     { now: NOW });
   check("同报价在当日则正常触发（对照，防假绿）", hol2.fired.length === 1, hol2.fired);
 
   // 总开关：remind=false → 一律不评估（即使上穿）
-  const off = __alertTickForTest(cfgFor([{ id: "o" + seq, code: "sh600519", type: "price_above", value: 10, enabled: true }], false), [q(11)], { now: NOW });
+  const off = __alertTickForTest(cfgFor([{ id: "o" + seq, code: "sh600519", type: "price_above", value: 10 }], false), [q(11)], { now: NOW });
   check("总开关 remind=false 不触发", off.fired.length === 0, off.fired);
 
   // 悬空成本：cost_above 找不到持仓成本 → 跳过不误触
-  const orphan = __alertTickForTest(cfgFor([{ id: "c1", code: "sh600519", type: "cost_above", value: 0, enabled: true }]), [q(50)], { now: NOW });
+  const orphan = __alertTickForTest(cfgFor([{ id: "c1", code: "sh600519", type: "cost_above", value: 0 }]), [q(50)], { now: NOW });
   check("cost_above 无成本价跳过", orphan.fired.length === 0 && orphan.skipped.includes("c1"), { fired: orphan.fired, skipped: orphan.skipped });
   const withCost = __alertTickForTest(
-    { watchlist: [], positions: [{ code: "sh600519", cost: 9, qty: 100 }], alerts: [{ id: "c2", code: "sh600519", type: "cost_above", value: 0, enabled: true }], remind: true },
+    { watchlist: [], positions: [{ code: "sh600519", cost: 9, qty: 100 }], alerts: [{ id: "c2", code: "sh600519", type: "cost_above", value: 0 }], remind: true },
     [q(11)], { now: NOW });
   check("cost_above 成本有效时触发", withCost.fired.some((e) => e.ruleId === "c2"), withCost.fired);
 
   // 无行情日界（time 脏）：跳过触发，宁可不报不乱报
-  const noDay = __alertTickForTest(cfgFor([{ id: "n1", code: "sh600519", type: "price_above", value: 10, enabled: true }]), [{ code: "sh600519", price: 11, percent: 1, time: "" }], { now: NOW });
+  const noDay = __alertTickForTest(cfgFor([{ id: "n1", code: "sh600519", type: "price_above", value: 10 }]), [{ code: "sh600519", price: 11, percent: 1, time: "" }], { now: NOW });
   check("无行情日界跳过触发", noDay.fired.length === 0 && noDay.skipped.includes("n1"), noDay);
 
   // 落盘隔离：账本落在隔离临时路径派生的 .alerts，且 events 已持久化
@@ -338,7 +338,7 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
   check("/alerts 返回 states（评估依据）", !!hist.json.states && typeof hist.json.states === "object", hist.json.states);
   check("states 记录了已评估规则（证明评估仍在工作）", !!hist.json.states && Object.keys(hist.json.states).length > 0, hist.json.states);
 
-  // 验收 #5：未启用规则 → 评估循环完全休眠，**零上游请求**。
+  // 验收 #5：无规则 → 评估循环完全休眠，**零上游请求**。
   // 观测点：循环确实在跑（ticks 增长），但 fetches 一步不动。
   {
     await post("/dsh-stock-leek/config", { config: { watchlist: [], positions: [], alerts: [], remind: true } });
@@ -355,11 +355,11 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
   // 该回归由独立子进程的 test/alert-loop-ref.mjs 负责：只有子进程在
   // 「除该定时器外无其它句柄」时才暴露差别。
 
-  // 验收 #5 反向对照：**有**启用规则且盘中 → fetches 必须增长
+  // 验收 #5 反向对照：**有**规则且盘中 → fetches 必须增长
   // （否则上一条可能只是"循环根本没工作"而假绿）
   {
     await post("/dsh-stock-leek/config", {
-      config: { watchlist: [], positions: [], remind: true, alerts: [{ id: "live1", code: "sh600519", type: "price_above", value: 1, enabled: true }] },
+      config: { watchlist: [], positions: [], remind: true, alerts: [{ id: "live1", code: "sh600519", type: "price_above", value: 1 }] },
     });
     const s2 = getAlertStatsForTest();
     // 只在 A 股交易时段验证（非交易时段循环按设计退避，不能据此判失败）
@@ -382,6 +382,30 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
       check("非交易时段有规则也不打上游（休市门控）", s3.fetches === s2.fetches, { before: s2.fetches, after: s3.fetches });
     }
     await post("/dsh-stock-leek/config", { config: { watchlist: [], positions: [], alerts: [], remind: true } });
+  }
+
+  // 「停用」功能已移除 → 旧配置里残留的 enabled 字段必须被**忽略并丢弃**，
+  // 那条规则要照常参与评估（否则老用户的规则会静默失效：列表里看得见，却永远不响）。
+  {
+    const legacy = { id: "legacy1", code: "sh600519", type: "price_above", value: 1, enabled: false };
+    // 走真实 POST /config（sanitizeConfig 在 Host 内部，这里不直接 import）
+    const saved = await post("/dsh-stock-leek/config", {
+      config: { watchlist: [], positions: [], remind: true, alerts: [legacy] },
+    });
+    const back = saved.json && saved.json.config;
+    check("POST /config 回包里的规则已不含 enabled 字段",
+      !!(back && (back.alerts || []).length === 1 && !("enabled" in back.alerts[0])), back && back.alerts);
+
+    // 端到端：带 enabled:false 的旧规则照样触发
+    const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" })
+      .format(new Date()).replace(/-/g, "");
+    const tick = __alertTickForTest(
+      { remind: true, positions: [], alerts: [Object.assign({}, legacy, { id: "legacyE2E" })] },
+      [{ code: "sh600519", name: "贵州茅台", price: 1700, percent: 2, time: day + "100000" }],
+      {},
+    );
+    check("带 enabled:false 的旧规则仍会被评估（删除才是停用）",
+      Array.isArray(tick.fired) && tick.fired.some((f) => f.ruleId === "legacyE2E"), tick.fired);
   }
 }
 

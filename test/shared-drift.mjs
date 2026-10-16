@@ -480,7 +480,7 @@ for (const [name, samples] of FORMATTERS) {
 // stepAlert 状态机（仅 shared 有；Host 评估用，client 不评估）：
 // **每交易日只报一次** + 跨日重置 + 悬空成本跳过
 {
-  const rule = (t, v) => ({ id: "x1", code: "sh600519", type: t, value: v, enabled: true });
+  const rule = (t, v) => ({ id: "x1", code: "sh600519", type: t, value: v });
   const D = "20261015";
   const st = shared.stepAlert;
   // 上穿：armed → fired 报一次

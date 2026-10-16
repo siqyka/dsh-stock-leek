@@ -1836,15 +1836,17 @@ if (txnMi) {
   ovNode = ov.render({}); renderTree(ovNode);
   check("阈值 0 被拒（规则数不变）", ruleCount() === rcForm + 1, ruleCount());
 
-  // 4) 启停：点击 ● 后 enabled=false（Host 评估范围随之缩小）
-  const toggleBtn = findNode(ovNode, (n) => n.type === "button" && /●|○/.test(String((n.children && n.children[0]) || "")));
-  check("规则行有启停按钮", !!toggleBtn);
-  click(toggleBtn);
-  ovNode = ov.render({}); renderTree(ovNode);
-  check("停用后 enabled=false", cfgNow().alerts[0].enabled === false, cfgNow().alerts[0]);
-  click(findNode(ovNode, (n) => n.type === "button" && /●|○/.test(String((n.children && n.children[0]) || ""))));
-  ovNode = ov.render({}); renderTree(ovNode);
-  check("再次点击恢复启用", cfgNow().alerts[0].enabled !== false, cfgNow().alerts[0]);
+  // 4) 「停用」功能已整体移除：规则存在即评估，删除就是停用
+  //    （曾经有 ●/○ 单条开关 + 组头整组开关，现在一个都不该有）
+  {
+    check("规则行没有启停按钮（●/○ 已移除）",
+      !findNode(ovNode, (n) => n.type === "button" && /^[●○]$/.test(String((n.children && n.children[0]) || ""))),
+      textOf(ovNode).join(" ").slice(0, 160));
+    check("组头没有整组启停按钮",
+      !findNode(ovNode, (n) => n.type === "button" && String((n.props && n.props.className) || "").indexOf("sl-alert-gtoggle") >= 0));
+    check("规则对象里不再有 enabled 字段",
+      (cfgNow().alerts || []).every((r) => !("enabled" in r)), cfgNow().alerts);
+  }
 
   // 4b) 规则按代码分组抽屉：同 code 多条收在一组，跨 code 分组，手风琴单开
   {
@@ -1889,7 +1891,7 @@ if (txnMi) {
     check("同 code 的两条规则**只占一个组**", groupsIn().length === 1, groupsIn().length);
     const g0 = groupsIn()[0];
     check("组头显示股票名与代码", /贵州茅台/.test(gText(g0)) && /600519/.test(gText(g0)), gText(g0).slice(0, 120));
-    check("组头显示启用计数 N/M", /2\/2\s*启用/.test(gText(g0)), gText(g0).slice(0, 120));
+    check("组头显示规则条数（不是启用计数）", /2\s*条/.test(gText(g0)) && !/启用/.test(gText(g0)), gText(g0).slice(0, 120));
     check("添加后自动展开该组（新规则不会藏进收起态）", /现价上穿/.test(gText(g0)) && /涨幅/.test(gText(g0)), gText(g0).slice(0, 160));
 
     // 换一只 code：应新增第二个组，且手风琴把前一组收起
@@ -1907,8 +1909,8 @@ if (txnMi) {
     check("新组自动展开、旧组收起（手风琴单开）",
       /现价上穿|涨幅/.test(gText(gb)) && !/现价上穿|涨幅/.test(gText(ga)),
       { a: gText(ga).slice(0, 80), b: gText(gb).slice(0, 80) });
-    check("收起态的组头仍可见（名称+计数在，规则不渲染）",
-      !/现价上穿|涨幅/.test(gText(ga)) && /启用/.test(gText(ga)),
+    check("收起态的组头仍可见（名称+条数在，规则不渲染）",
+      !/现价上穿|涨幅/.test(gText(ga)) && /\d+\s*条/.test(gText(ga)),
       gText(ga).slice(0, 120));
 
     // 点组头手动展开旧组 → 新组应收起
@@ -1935,7 +1937,7 @@ if (txnMi) {
         .format(new Date()).replace(/-/g, "");
       const firedCfg = Object.assign({}, cfgNow(), {
         remind: true,
-        alerts: [{ id: firedId, code: "sh600519", type: "price_above", value: 1, enabled: true }],
+        alerts: [{ id: firedId, code: "sh600519", type: "price_above", value: 1 }],
       });
       await hostPost("/dsh-stock-leek/config", { config: firedCfg });
       __alertTickForTest(firedCfg, [{ code: "sh600519", name: "贵州茅台", price: 1700, percent: 2, time: todayBJ2 + "100000" }], {});
@@ -2002,63 +2004,26 @@ if (txnMi) {
       check("删到只剩一组（组数随规则数收敛）", groupsIn().length === 1, groupsIn().length);
     }
 
-    // 4c) 收起态也能停用：组头必须有启停入口
-    //
-    // 分组后单条的 ●/○ 被收进展开体，收起态就一个停用入口都没有——
-    // 组头原本只是一段死文本「2/2 启用」，看着像开关却点不动（用户报的正是这个）。
+    // 4c) 停用功能已移除：无论收起还是展开，都不该有任何启停控件
+    //     （曾经有过：单条 ●/○ + 组头整组开关。用户要求「删除就是停用」）
     {
-      // 本用例只剩一个组：alertOpen 为 null 即该组收起
-      const s0Open = () => (global.__sl_test_state__ || {}).alertOpen !== null;
-      // 先补一条同 code 的规则，凑出「N/2」以便验证批量启停
-      const ci3 = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "代码/选择");
-      const keepCode = (cfgNow().alerts || [])[0].code;
-      ci3.props.onChange({ target: { value: keepCode } });
-      ovNode = ov.render({}); renderTree(ovNode);
-      findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "阈值").props.onChange({ target: { value: "9" } });
-      ovNode = ov.render({}); renderTree(ovNode);
-      click(findNode(ovNode, (n) => n.type === "button" && /添加/.test(String((n.children && n.children[0]) || ""))));
-      ovNode = ov.render({}); renderTree(ovNode);
-      check("已凑出同股 2 条规则（前置条件）", (cfgNow().alerts || []).length === 2, (cfgNow().alerts || []).length);
-
-      const gToggle = () => findNode(ovNode, (n) => n.type === "button"
-        && String((n.props && n.props.className) || "").indexOf("sl-alert-gtoggle") >= 0);
-      // 关键：**先确保组是收起的**，否则测不到"收起态有没有入口"
-      if (s0Open()) { click(gHead(groupsIn()[0])); ovNode = ov.render({}); renderTree(ovNode); }
-      check("组处于收起态（前置条件）", !s0Open(), (global.__sl_test_state__ || {}).alertOpen);
-      check("收起态组头有启停按钮", !!gToggle(), gText(groupsIn()[0]).slice(0, 120));
-      check("收起态不渲染单条 ●/○（说明组头那个按钮是唯一入口）",
-        !findNode(ovNode, (n) => n.type === "button" && /^[●○]$/.test(String((n.children && n.children[0]) || ""))),
-        gText(groupsIn()[0]).slice(0, 120));
-
-      if (gToggle()) {
-        const beforeAll = (cfgNow().alerts || []).every((r) => r.enabled !== false);
-        check("前置：两条都是启用态", beforeAll, cfgNow().alerts);
-        // 收起态点一下 → 整组停用
-        click(gToggle());
+      const anyToggle = () => findNode(ovNode, (n) => n.type === "button"
+        && (/^[●○]$/.test(String((n.children && n.children[0]) || ""))
+          || String((n.props && n.props.className) || "").indexOf("sl-alert-gtoggle") >= 0));
+      // 组头是 toggle，先**显式归位**再断言，别依赖上一段留下的展开态
+      const setOpen = (want) => {
+        if (((global.__sl_test_state__ || {}).alertOpen !== null) === want) return;
+        click(gHead(groupsIn()[0]));
         ovNode = ov.render({}); renderTree(ovNode);
-        await wait(150);
-        ovNode = ov.render({}); renderTree(ovNode);
-        check("收起态点组头按钮 → 整组停用", (cfgNow().alerts || []).every((r) => r.enabled === false), cfgNow().alerts);
-        check("组头显示「已全部停用」", /已全部停用/.test(gText(groupsIn()[0])), gText(groupsIn()[0]).slice(0, 140));
-
-        // 再点一下 → 整组启用
-        const t2 = findNode(ovNode, (n) => n.type === "button" && String((n.props && n.props.className) || "").indexOf("sl-alert-gtoggle") >= 0);
-        if (t2) click(t2);
-        ovNode = ov.render({}); renderTree(ovNode);
-        await wait(150);
-        ovNode = ov.render({}); renderTree(ovNode);
-        check("再点一下 → 整组启用", (cfgNow().alerts || []).every((r) => r.enabled !== false), cfgNow().alerts);
-        check("组头恢复「2/2 启用」", /2\/2\s*启用/.test(gText(groupsIn()[0])), gText(groupsIn()[0]).slice(0, 140));
-      }
-
-      // 点组头按钮不该顺带把抽屉也展开/收起（stopPropagation）
-      const openBefore = s0Open();
-      const t3 = findNode(ovNode, (n) => n.type === "button" && String((n.props && n.props.className) || "").indexOf("sl-alert-gtoggle") >= 0);
-      if (t3) click(t3);
-      ovNode = ov.render({}); renderTree(ovNode);
-      await wait(120);
-      ovNode = ov.render({}); renderTree(ovNode);
-      check("点启停按钮不会连带开合抽屉（事件已隔离）", s0Open() === openBefore, { openBefore, after: s0Open() });
+      };
+      setOpen(false);
+      check("收起态没有任何启停控件", !anyToggle(), gText(groupsIn()[0]).slice(0, 120));
+      setOpen(true);
+      check("展开态也没有任何启停控件", !anyToggle(), gText(groupsIn()[0]).slice(0, 160));
+      check("展开后规则行只剩「规则文本 + 删除」",
+        !!findNode(ovNode, (n) => n.type === "button" && String((n.props && n.props["data-sltip"]) || "") === "删除该规则"),
+        gText(groupsIn()[0]).slice(0, 160));
+      setOpen(false); // 归位，免得影响后续用例
     }
   }
 
@@ -2094,9 +2059,9 @@ if (txnMi) {
     })();
     const c1 = cfgNow();
     await hostPost("/dsh-stock-leek/config", {
-      config: Object.assign({}, c1, { remind: true, alerts: [{ id: "bell1", code: "sh600519", type: "price_above", value: 1, enabled: true }] }),
+      config: Object.assign({}, c1, { remind: true, alerts: [{ id: "bell1", code: "sh600519", type: "price_above", value: 1 }] }),
     });
-    __alertTickForTest({ remind: true, positions: [], alerts: [{ id: "bell1", code: "sh600519", type: "price_above", value: 1, enabled: true }] },
+    __alertTickForTest({ remind: true, positions: [], alerts: [{ id: "bell1", code: "sh600519", type: "price_above", value: 1 }] },
       [{ code: "sh600519", name: "贵州茅台", price: 1700, percent: 2, time: todayBJ + "100000" }], {});
     const ledger = await hostJson("/dsh-stock-leek/alerts");
     // 用户要求：去掉触发历史（events 不再落盘），但评估仍要工作 → states 必须有记录。
@@ -2188,7 +2153,7 @@ if (txnMi) {
   // 初始加载的合并分支——那样断言是空转的。这里走 persistConfig 的回包合并：
   // 每次 POST /config 成功都会执行同一套「老 Host 吃字段 → 保留本地值」逻辑。
   {
-    const localCfg = Object.assign({}, cfgNow(), { alerts: [{ id: "keep1", code: "sh600519", type: "pct_up", value: 3, enabled: true }] });
+    const localCfg = Object.assign({}, cfgNow(), { alerts: [{ id: "keep1", code: "sh600519", type: "pct_up", value: 3 }] });
     const prevFetch = global.fetch;
     // 让 POST /config 的回包**丢掉 alerts**（模拟不认识该字段的老 Host）
     const stubPost = (dropAlerts) => async (url, opts) => {
@@ -2721,7 +2686,7 @@ if (txnMi) {
     await seedAndSave((c) => {
       const codes = ["sh600519", "sz300750", "sz002594", "sh601318", "sh600036", "sz000858",
         "sh601899", "sz002415", "sh600030", "sh601166", "sz000333", "sh600276"];
-      c.alerts = codes.map((cd, i) => ({ id: "cap" + i, code: cd, name: "股票" + i, type: "price_above", value: 100 + i, enabled: true }));
+      c.alerts = codes.map((cd, i) => ({ id: "cap" + i, code: cd, name: "股票" + i, type: "price_above", value: 100 + i }));
       return c;
     }, () => (((globalThis.__sl_test_state__ || {}).config || {}).alerts || []).length === 12);
     check("预警规则已塞成 12 组（前置条件）", ((cfgNow().alerts || []).length) === 12, (cfgNow().alerts || []).length);

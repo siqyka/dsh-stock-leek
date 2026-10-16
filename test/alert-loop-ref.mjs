@@ -49,7 +49,7 @@ globalThis.__sl_alert_now__ = Date.parse("2026-10-15T06:45:00Z");
 const mod = await import(${JSON.stringify(indexUrl)});
 const cfg = mod.readConfig();
 cfg.remind = true;
-cfg.alerts = [{ id: "ref1", code: "sh600519", type: "price_above", value: 1, enabled: true, createdAt: Date.now() }];
+cfg.alerts = [{ id: "ref1", code: "sh600519", type: "price_above", value: 1, createdAt: Date.now() }];
 cfg.pollMs = 2000; // 最快节奏，便于短时间观测多拍
 mod.writeConfig(cfg);
 mod.apply({ effect: (fn) => { fn(); return () => {}; }, webServer: { register: () => () => {} } });

@@ -139,7 +139,7 @@ function defaultConfig() {
     barVisible: true,
     /** 提醒：预警总开关（关闭后规则保留但不评估；预警功能见 docs/alerts-plan.md） */
     remind: true,
-    /** 预警规则（enabled 各自独立；实际评估还受 cfg.remind 总开关控制） */
+    /** 预警规则（存在即参与评估，要停就删；实际评估还受 cfg.remind 总开关控制） */
     alerts: [],
     /** 持仓页「今日盈亏走势」曲线是否展开（false=收起；用户点按后记住） */
     pnlCurve: true,
@@ -418,11 +418,16 @@ function writeAlerts(data) {
   }
 }
 
-/** 启用中规则的 code 集合（评估范围；全部停用或总开关关闭时为空 → 循环休眠） */
+/**
+ * 需要评估的股票代码集合（评估范围；无规则或总开关关闭时为空 → 循环休眠）。
+ *
+ * 规则**没有启用/停用之分**：存在即评估，要停就删（sanitizeAlert 不产出 enabled，
+ * 旧配置里残留的该字段也不再读取）。唯一的总闸是 cfg.remind。
+ */
 function activeAlertCodes(cfg) {
   if (!cfg || cfg.remind === false) return []; // 总开关：关了就一条都不评估
   const set = new Set();
-  for (const r of (cfg && cfg.alerts) || []) if (r && r.enabled !== false) set.add(r.code);
+  for (const r of (cfg && cfg.alerts) || []) if (r) set.add(r.code);
   return [...set];
 }
 
@@ -459,7 +464,7 @@ function marketTodayFor(code, now) {
  */
 function applyAlertTick(cfg, quotes, data, now) {
   if (!cfg || cfg.remind === false) return { fired: [], skipped: [] }; // 总开关
-  const rules = ((cfg && cfg.alerts) || []).filter((r) => r && r.enabled !== false);
+  const rules = ((cfg && cfg.alerts) || []).filter(Boolean);
   const costBy = new Map();
   for (const p of (cfg && cfg.positions) || []) {
     if (Number.isFinite(p.cost) && p.cost > 0) costBy.set(p.code, p.cost);

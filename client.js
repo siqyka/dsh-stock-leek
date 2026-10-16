@@ -104,9 +104,6 @@ window.__ModuleLoader__.load({
 .sl-alert-list{display:flex;flex-direction:column;gap:2px;margin-top:2px}
 .sl-alert-row{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:8px;font-size:11px}
 .sl-alert-row:hover{background:var(--sl-hover)}
-.sl-alert-off{opacity:.5}
-.sl-alert-toggle{background:transparent;border:none;color:var(--sl-muted);cursor:pointer;font-size:11px;padding:0 2px;font-family:inherit}
-.sl-alert-toggle.on{color:var(--sl-accent)}
 .sl-alert-nm{color:var(--sl-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:96px}
 .sl-alert-cond{color:var(--sl-dim);white-space:nowrap;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .sl-alert-fired{color:var(--sl-warn);font-size:10px;white-space:nowrap}
@@ -117,10 +114,6 @@ window.__ModuleLoader__.load({
 .sl-alert-gnm{color:var(--sl-text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px}
 .sl-alert-gcode{color:var(--sl-muted);font-size:10px;flex:none;font-variant-numeric:tabular-nums}
 .sl-alert-gcnt{color:var(--sl-muted);font-size:10px;white-space:nowrap;flex:none}
-/* 组头启停按钮：收起态唯一的停用入口，所以要有可点的样子（旧版是无样式的死文本） */
-.sl-alert-gtoggle{background:transparent;border:1px solid var(--sl-border-soft);color:var(--sl-muted);border-radius:5px;cursor:pointer;font:inherit;font-size:10px;line-height:1;padding:2px 6px;white-space:nowrap;flex:none}
-.sl-alert-gtoggle:hover{color:var(--sl-text);border-color:var(--sl-accent-border);background:var(--sl-hover)}
-.sl-alert-gtoggle.on{color:var(--sl-accent);border-color:var(--sl-accent-border)}
 .sl-alert-garw{color:var(--sl-muted);font-size:9px;flex:none;width:10px;text-align:center}
 .sl-alert-gbody{border-top:1px solid var(--sl-border-soft);padding:2px 4px 4px;display:flex;flex-direction:column;gap:2px}
 .sl-alert-gbody .sl-alert-row{padding-left:10px}
@@ -522,8 +515,8 @@ window.__ModuleLoader__.load({
         code,
         type: raw.type,
         value: Math.min(1e8, Math.round(value * 10000) / 10000),
-        enabled: raw.enabled !== false,
       };
+      // 没有 enabled：规则存在即参与评估，要停就删（与 lib/shared.js 同款，勿单边修改）
       if (typeof raw.name === "string" && raw.name.trim()) out.name = raw.name.trim().slice(0, 40);
       if (Number.isFinite(Number(raw.createdAt))) out.createdAt = Math.round(Number(raw.createdAt));
       return out;
@@ -1518,12 +1511,11 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       for (const r of rules || []) {
         let g = byCode.get(r.code);
         if (!g) {
-          g = { code: r.code, name: r.name || displayCode(r.code), rules: [], onCount: 0 };
+          g = { code: r.code, name: r.name || displayCode(r.code), rules: [] };
           byCode.set(r.code, g);
           groups.push(g);
         }
         g.rules.push(r);
-        if (r.enabled !== false) g.onCount += 1;
       }
       return groups;
     }
@@ -1541,7 +1533,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
 
     /** 新增规则：本地先按 shared 同款清洗过一遍，非法直接挡在 UI（Host 侧还有一道） */
     function addAlert(item) {
-      const rule = sanitizeAlert(Object.assign({ id: newAlertId(), enabled: true, createdAt: Date.now() }, item));
+      const rule = sanitizeAlert(Object.assign({ id: newAlertId(), createdAt: Date.now() }, item));
       if (!rule) {
         toast("预警规则不合法：检查类型 / 阈值 / 代码（limit_near 仅 A 股）", "#ff5555");
         return null;
@@ -1572,32 +1564,11 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       });
       toast("已删除该预警规则");
     }
-    /** 启用/停用单条：Host 的评估范围只看 enabled !== false 的规则 */
-    function toggleAlert(id) {
-      updateConfig((cfg) => {
-        const r = (cfg.alerts || []).find((x) => x.id === id);
-        if (r) r.enabled = r.enabled === false;
-        return cfg;
-      });
-    }
-    /**
-     * 整组启用/停用（组头那个「N/M 启用」按钮）。
-     *
-     * 分组抽屉把单条的 ●/○ 收进了展开体里，收起态就**没有任何停用入口**了——
-     * 「2/2 启用」看着像个开关却点不动。所以组头必须有这一下：
-     * 目标是「全部启用」还是「全部停用」由 onCount 决定——只要有停用的就全启用，
-     * 否则全停用。这样一次点击总能得到明确结果，不用先看状态再决定点几下。
-     */
-    function toggleAlertGroup(rules) {
-      const ids = (rules || []).map((r) => r.id);
-      if (!ids.length) return;
-      const allOn = (rules || []).every((r) => r.enabled !== false);
-      updateConfig((cfg) => {
-        for (const r of cfg.alerts || []) if (ids.indexOf(r.id) >= 0) r.enabled = !allOn;
-        return cfg;
-      });
-      toast(allOn ? "已停用该股 " + ids.length + " 条预警" : "已启用该股 " + ids.length + " 条预警");
-    }
+    // 曾经的「启用/停用」（toggleAlert / toggleAlertGroup）已整体移除：
+    // 规则存在即参与评估，**删除就是停用**。两个理由：
+    //   1) 它把"列表里有这条规则"和"它会不会响"变成两件事，对着规则列表也看不出哪些在生效；
+    //   2) 分组抽屉把单条开关收进展开体后，收起态连入口都没有（组头那段文字点不动）。
+    // 旧配置里残留的 enabled 字段不再读取也不再写回 —— sanitizeAlert 直接不产出它。
     /** 右键「设为预警」→ 预填该股的对话框（现价/成本价作初值，用户可改） */
     function openAddAlert(code, name, preset) {
       setState({ addAlert: { code, name: name || displayCode(code), preset: preset || null } });
@@ -2977,8 +2948,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             "data-sltip": "规则管理 / 桌面通知\n评估在 Host 独立循环：关掉页面也会照常评估",
             onClick: () => openAlertPanel(),
           }, (() => {
-            // 触发历史已去掉 → 没有「未读数」可算，改为显示启用中的规则数
-            const list = (cfg.alerts || []).filter((r) => r.enabled !== false);
+            // 触发历史已去掉 → 没有「未读数」可算，改为显示规则条数。
+            // 规则不再有启用/停用之分，所以这里就是纯粹的总数。
+            const list = cfg.alerts || [];
             return list.length ? "🔔 预警（" + list.length + " 条）" : "🔔 预警";
           })())),
         h("div", { className: "sl-setrow" },
@@ -3124,27 +3096,14 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                   firedN > 0
                     ? h("span", { className: "sl-alert-fired", "data-sltip": "今日已触发 " + firedN + " 条；回落到滞回带外才会重新待命" }, "已触发 " + firedN)
                     : null,
-                  // 收起态**唯一**的启停入口：分组后单条的 ●/○ 在展开体里，
-                  // 不展开就没法停用（组头原本只是一段死文本，看着像开关却点不动）
-                  h("button", {
-                    className: "sl-alert-gtoggle" + (g.onCount > 0 ? " on" : ""),
-                    "data-sltip": g.onCount > 0
-                      ? "该股 " + g.rules.length + " 条规则中 " + g.onCount + " 条启用\n点击全部停用"
-                      : "该股 " + g.rules.length + " 条规则全部已停用\n点击全部启用",
-                    onClick: (e) => { e.stopPropagation(); toggleAlertGroup(g.rules); },
-                  }, g.onCount > 0 ? g.onCount + "/" + g.rules.length + " 启用" : "已全部停用"),
+                  // 纯计数，不是开关：规则没有启用/停用之分（删除即停用）
+                  h("span", { className: "sl-alert-gcnt" }, g.rules.length + " 条"),
                   h("span", { className: "sl-alert-garw" }, open ? "▾" : "▸")),
                 open
                   ? h("div", { className: "sl-alert-gbody" },
                       g.rules.map((r) => {
                         const st = (s.alertStates || {})[r.id];
-                        const off = r.enabled === false;
-                        return h("div", { key: r.id, className: "sl-alert-row" + (off ? " sl-alert-off" : "") },
-                          h("button", {
-                            className: "sl-alert-toggle" + (off ? "" : " on"),
-                            "data-sltip": off ? "已停用：不参与评估。点击启用" : "已启用：点击停用",
-                            onClick: () => toggleAlert(r.id),
-                          }, off ? "○" : "●"),
+                        return h("div", { key: r.id, className: "sl-alert-row" },
                           h("span", { className: "sl-alert-cond" }, alertRuleText(r)),
                           st && st.phase === "fired"
                             ? h("span", { className: "sl-alert-fired", "data-sltip": "今日已触发过；回落到滞回带外才会重新待命" }, "已触发")
