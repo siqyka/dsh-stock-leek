@@ -11,7 +11,9 @@
  * 配色 A 股惯例：红涨绿跌。
  */
 window.__ModuleLoader__.load({
-  id: "dsh-stock-leek",
+  // 必须等于 package.json 的 name：客户端加载器会校验"加载到的 bundle 是否用
+  // __ModuleLoader__.load 注册了它期望的 id"，而期望的 id 来自包名。
+  id: "@shiqyka/dsh-stock-leek",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;

@@ -1,7 +1,11 @@
 # dsh-stock-leek bundle patch.
 # Applied when the plugin is installed via `dsh plugin --profile <p> add <spec>`.
-# Registers the node-side plugin entry; the client half is picked up
-# automatically from dsh.client in package.json by dsh-client-modules.
+#
+# `name` MUST be the full npm package name: the loader resolves it through Node
+# (`exactPackageSpecifier` + require.resolve) to locate the package manifest, and
+# only then does it read `dsh.client` to bring in the browser half. A bare
+# "dsh-stock-leek" resolves to nothing here (the published package is scoped),
+# so the row never mounts and the UI silently never appears.
 - insert:
     - id: dsh-stock-leek
-      name: dsh-stock-leek
+      name: '@shiqyka/dsh-stock-leek'
