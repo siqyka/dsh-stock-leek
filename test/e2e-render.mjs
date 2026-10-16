@@ -2001,6 +2001,65 @@ if (txnMi) {
       }
       check("删到只剩一组（组数随规则数收敛）", groupsIn().length === 1, groupsIn().length);
     }
+
+    // 4c) 收起态也能停用：组头必须有启停入口
+    //
+    // 分组后单条的 ●/○ 被收进展开体，收起态就一个停用入口都没有——
+    // 组头原本只是一段死文本「2/2 启用」，看着像开关却点不动（用户报的正是这个）。
+    {
+      // 本用例只剩一个组：alertOpen 为 null 即该组收起
+      const s0Open = () => (global.__sl_test_state__ || {}).alertOpen !== null;
+      // 先补一条同 code 的规则，凑出「N/2」以便验证批量启停
+      const ci3 = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "代码/选择");
+      const keepCode = (cfgNow().alerts || [])[0].code;
+      ci3.props.onChange({ target: { value: keepCode } });
+      ovNode = ov.render({}); renderTree(ovNode);
+      findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "阈值").props.onChange({ target: { value: "9" } });
+      ovNode = ov.render({}); renderTree(ovNode);
+      click(findNode(ovNode, (n) => n.type === "button" && /添加/.test(String((n.children && n.children[0]) || ""))));
+      ovNode = ov.render({}); renderTree(ovNode);
+      check("已凑出同股 2 条规则（前置条件）", (cfgNow().alerts || []).length === 2, (cfgNow().alerts || []).length);
+
+      const gToggle = () => findNode(ovNode, (n) => n.type === "button"
+        && String((n.props && n.props.className) || "").indexOf("sl-alert-gtoggle") >= 0);
+      // 关键：**先确保组是收起的**，否则测不到"收起态有没有入口"
+      if (s0Open()) { click(gHead(groupsIn()[0])); ovNode = ov.render({}); renderTree(ovNode); }
+      check("组处于收起态（前置条件）", !s0Open(), (global.__sl_test_state__ || {}).alertOpen);
+      check("收起态组头有启停按钮", !!gToggle(), gText(groupsIn()[0]).slice(0, 120));
+      check("收起态不渲染单条 ●/○（说明组头那个按钮是唯一入口）",
+        !findNode(ovNode, (n) => n.type === "button" && /^[●○]$/.test(String((n.children && n.children[0]) || ""))),
+        gText(groupsIn()[0]).slice(0, 120));
+
+      if (gToggle()) {
+        const beforeAll = (cfgNow().alerts || []).every((r) => r.enabled !== false);
+        check("前置：两条都是启用态", beforeAll, cfgNow().alerts);
+        // 收起态点一下 → 整组停用
+        click(gToggle());
+        ovNode = ov.render({}); renderTree(ovNode);
+        await wait(150);
+        ovNode = ov.render({}); renderTree(ovNode);
+        check("收起态点组头按钮 → 整组停用", (cfgNow().alerts || []).every((r) => r.enabled === false), cfgNow().alerts);
+        check("组头显示「已全部停用」", /已全部停用/.test(gText(groupsIn()[0])), gText(groupsIn()[0]).slice(0, 140));
+
+        // 再点一下 → 整组启用
+        const t2 = findNode(ovNode, (n) => n.type === "button" && String((n.props && n.props.className) || "").indexOf("sl-alert-gtoggle") >= 0);
+        if (t2) click(t2);
+        ovNode = ov.render({}); renderTree(ovNode);
+        await wait(150);
+        ovNode = ov.render({}); renderTree(ovNode);
+        check("再点一下 → 整组启用", (cfgNow().alerts || []).every((r) => r.enabled !== false), cfgNow().alerts);
+        check("组头恢复「2/2 启用」", /2\/2\s*启用/.test(gText(groupsIn()[0])), gText(groupsIn()[0]).slice(0, 140));
+      }
+
+      // 点组头按钮不该顺带把抽屉也展开/收起（stopPropagation）
+      const openBefore = s0Open();
+      const t3 = findNode(ovNode, (n) => n.type === "button" && String((n.props && n.props.className) || "").indexOf("sl-alert-gtoggle") >= 0);
+      if (t3) click(t3);
+      ovNode = ov.render({}); renderTree(ovNode);
+      await wait(120);
+      ovNode = ov.render({}); renderTree(ovNode);
+      check("点启停按钮不会连带开合抽屉（事件已隔离）", s0Open() === openBefore, { openBefore, after: s0Open() });
+    }
   }
 
   // 5) 左下角**不放提醒图标**（用户明确要求）：展开与收起态都不得出现铃铛

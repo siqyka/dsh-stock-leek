@@ -117,6 +117,10 @@ window.__ModuleLoader__.load({
 .sl-alert-gnm{color:var(--sl-text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px}
 .sl-alert-gcode{color:var(--sl-muted);font-size:10px;flex:none;font-variant-numeric:tabular-nums}
 .sl-alert-gcnt{color:var(--sl-muted);font-size:10px;white-space:nowrap;flex:none}
+/* 组头启停按钮：收起态唯一的停用入口，所以要有可点的样子（旧版是无样式的死文本） */
+.sl-alert-gtoggle{background:transparent;border:1px solid var(--sl-border-soft);color:var(--sl-muted);border-radius:5px;cursor:pointer;font:inherit;font-size:10px;line-height:1;padding:2px 6px;white-space:nowrap;flex:none}
+.sl-alert-gtoggle:hover{color:var(--sl-text);border-color:var(--sl-accent-border);background:var(--sl-hover)}
+.sl-alert-gtoggle.on{color:var(--sl-accent);border-color:var(--sl-accent-border)}
 .sl-alert-garw{color:var(--sl-muted);font-size:9px;flex:none;width:10px;text-align:center}
 .sl-alert-gbody{border-top:1px solid var(--sl-border-soft);padding:2px 4px 4px;display:flex;flex-direction:column;gap:2px}
 .sl-alert-gbody .sl-alert-row{padding-left:10px}
@@ -1575,6 +1579,24 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         if (r) r.enabled = r.enabled === false;
         return cfg;
       });
+    }
+    /**
+     * 整组启用/停用（组头那个「N/M 启用」按钮）。
+     *
+     * 分组抽屉把单条的 ●/○ 收进了展开体里，收起态就**没有任何停用入口**了——
+     * 「2/2 启用」看着像个开关却点不动。所以组头必须有这一下：
+     * 目标是「全部启用」还是「全部停用」由 onCount 决定——只要有停用的就全启用，
+     * 否则全停用。这样一次点击总能得到明确结果，不用先看状态再决定点几下。
+     */
+    function toggleAlertGroup(rules) {
+      const ids = (rules || []).map((r) => r.id);
+      if (!ids.length) return;
+      const allOn = (rules || []).every((r) => r.enabled !== false);
+      updateConfig((cfg) => {
+        for (const r of cfg.alerts || []) if (ids.indexOf(r.id) >= 0) r.enabled = !allOn;
+        return cfg;
+      });
+      toast(allOn ? "已停用该股 " + ids.length + " 条预警" : "已启用该股 " + ids.length + " 条预警");
     }
     /** 右键「设为预警」→ 预填该股的对话框（现价/成本价作初值，用户可改） */
     function openAddAlert(code, name, preset) {
@@ -3102,7 +3124,15 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                   firedN > 0
                     ? h("span", { className: "sl-alert-fired", "data-sltip": "今日已触发 " + firedN + " 条；回落到滞回带外才会重新待命" }, "已触发 " + firedN)
                     : null,
-                  h("span", { className: "sl-alert-gcnt" }, g.onCount + "/" + g.rules.length + " 启用"),
+                  // 收起态**唯一**的启停入口：分组后单条的 ●/○ 在展开体里，
+                  // 不展开就没法停用（组头原本只是一段死文本，看着像开关却点不动）
+                  h("button", {
+                    className: "sl-alert-gtoggle" + (g.onCount > 0 ? " on" : ""),
+                    "data-sltip": g.onCount > 0
+                      ? "该股 " + g.rules.length + " 条规则中 " + g.onCount + " 条启用\n点击全部停用"
+                      : "该股 " + g.rules.length + " 条规则全部已停用\n点击全部启用",
+                    onClick: (e) => { e.stopPropagation(); toggleAlertGroup(g.rules); },
+                  }, g.onCount > 0 ? g.onCount + "/" + g.rules.length + " 启用" : "已全部停用"),
                   h("span", { className: "sl-alert-garw" }, open ? "▾" : "▸")),
                 open
                   ? h("div", { className: "sl-alert-gbody" },
