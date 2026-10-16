@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 // 共享纯逻辑（格式化 / 盈亏口径 / 常量）：client.js 因平台不支持相对 require 只能内联一份，
 // test/shared-drift.mjs 会校验两边行为一致，防止改动漂移。
-import { MA_ALL, isMarketOpen, quoteDayFor, stepAlert, sanitizeAlerts } from "./lib/shared.js";
+import { MA_ALL, MARKET_KEYS, marketPaused, withoutPausedMarkets, isMarketOpen, quoteDayFor, stepAlert, sanitizeAlerts } from "./lib/shared.js";
 
 const name = "dsh-stock-leek";
 /** Required services: webServer（HTTP 路由）。 */
@@ -145,6 +145,8 @@ function defaultConfig() {
     pnlCurve: true,
     /** K 线图默认显示的均线周期 */
     ma: [5, 10, 20],
+    /** 已暂停的市场（多选开关；被暂停的市场不刷新行情、不评估预警、指数栏不因它展开） */
+    pausedMarkets: [],
   };
 }
 
@@ -237,6 +239,14 @@ function sanitizeConfig(raw) {
   if (typeof raw.remind === "boolean") cfg.remind = raw.remind;
   // 预警规则：白名单清洗（sanitizeAlerts 自带 id 字符集/类型/上限 50/去重）
   cfg.alerts = sanitizeAlerts(raw.alerts);
+  // 已暂停的市场：只认 cn/hk/us 三键，去重，空数组=全开。
+  // 被暂停的市场：不刷新行情、不评估预警、指数栏不因它展开（用户要求，可多选）。
+  if (Array.isArray(raw.pausedMarkets)) {
+    const seen = new Set();
+    cfg.pausedMarkets = raw.pausedMarkets
+      .map(String)
+      .filter((k) => MARKET_KEYS.includes(k) && !seen.has(k) && seen.add(k));
+  }
   if (typeof raw.pnlCurve === "boolean") cfg.pnlCurve = raw.pnlCurve;
   // 均线周期：只接受 MA_ALL 中出现的值，去重保序，最多 4 条
   if (Array.isArray(raw.ma)) {
@@ -552,17 +562,22 @@ function startAlertLoop(ctx) {
         return;
       }
       const now = alertNow();
-      if (!codes.some((c) => isMarketOpen(c, now))) {
+      // 市场开关（用户要求，可多选）：被暂停的市场完全不评估——
+      // 与「已收盘自动停」同一条链：开关关掉 = 用户明确不要这个市场的数据。
+      // 具体过滤在 applyAlertTick 内（测试通道共用该路径）。
+      const paused = cfg.pausedMarkets;
+      const activeCodes = withoutPausedMarkets(codes, paused);
+      if (!activeCodes.some((c) => isMarketOpen(c, now))) {
         alertStats.sleeps++;
-        schedule(ALERT_BACKOFF_MS); // 全市场休市：不打上游，低频看配置变化
+        schedule(ALERT_BACKOFF_MS); // 全市场休市（或全被暂停）：不打上游，低频看配置变化
         return;
       }
       // 与行情广播同款护栏：对齐上游批量上限，规则膨胀不放大 URL
       alertStats.fetches++;
       // 按 code 逐个门控：混合市场时（如 A股 + 美股规则并存），美股盘中不能
       // 顺带把休市的 A 股也评估了——报价停在昨收，条件可能恒真而误报。
-      // 只对「该市场此刻在交易时段」的 code 取行情与判定。
-      const openCodes = codes.filter((c) => isMarketOpen(c, now));
+      // 只对「该市场此刻在交易时段且未被暂停」的 code 取行情与判定。
+      const openCodes = activeCodes.filter((c) => isMarketOpen(c, now));
       const map = await fetchQuotes(openCodes.slice(0, 200));
       const data = readAlerts();
       const before = JSON.stringify(data.states);
@@ -1144,13 +1159,14 @@ function readBody(req) {
   });
 }
 
-/** 汇总当前配置需要抓取的所有代码（供 /config 附带快照，客户端首屏零等待） */
+/** 汇总当前配置需要抓取的所有代码（供 /config 附带快照，客户端首屏零等待）。
+ *  ⚠️ 排除「被暂停的市场」——用户关掉的市场连首屏快照也不给（开关语义要一致） */
 function configuredCodes(cfg) {
   const set = new Set();
   for (const x of cfg.indices) set.add(x.code);
   for (const x of cfg.watchlist) set.add(x.code);
   for (const x of cfg.positions) set.add(x.code);
-  return [...set];
+  return withoutPausedMarkets([...set], cfg.pausedMarkets);
 }
 
 /**

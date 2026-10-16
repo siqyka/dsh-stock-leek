@@ -98,6 +98,9 @@ const FORMATTERS = [
   ["fmtExact", [1234.56, -0.4, NaN]],
   ["displayCode", ["sh600519", "hk00700", "usAAPL", "sz300750", "", null]],
   ["marketLabel", ["sh600519", "hk00700", "usAAPL", "bj430047", "", null]],
+  // 市场开关（可多选）：键映射与暂停过滤必须两端一致——
+  // Host（预警评估/首屏快照）与 client（轮询/SSE 订阅）靠它决定"刷不刷"。
+  ["marketKeyOf", ["sh600519", "sz300750", "bj430047", "hk00700", "usAAPL", "gb_DJI", "000001", "", null]],
   // 曲线刷新 tick：修复「盈亏走势不跟随设置刷新间隔」时引入的，必须两端一致。
   // 样本用 [updatedAt, pollMs] 成对给出——第二参数决定窗口大小，
   // 只测单参会漏掉「窗口被写死一分钟」这个原始 bug。
@@ -166,6 +169,37 @@ for (const [name, samples] of FORMATTERS) {
   check("无效时间戳/间隔回落到确定的兜底值", tick(0, 5000) === 0 && tick(NaN, 5000) === 0 && tick(T) === tick(T, 5000), {
     zero: tick(0, 5000), nan: tick(NaN, 5000), fallback: tick(T),
   });
+}
+
+// 市场开关过滤：两端一致 + 语义正确。withoutPausedMarkets 内部调用 marketPaused，
+// extractFn 需注入依赖（同 todayPnl 注入 quoteDate 的模式）。
+{
+  const ck = extractFn("marketKeyOf");
+  // 依赖链两层：withoutPausedMarkets → marketPaused → marketKeyOf，注入要补全
+  const cm = extractFn("marketPaused", { marketKeyOf: ck });
+  const cw = extractFn("withoutPausedMarkets", { marketPaused: cm });
+  check("withoutPausedMarkets 在 client.js 中可提取", !!cw);
+  const CASES = [
+    [[["sh600519", "hk00700", "usAAPL"], []], ["sh600519", "hk00700", "usAAPL"]],   // 全开
+    [[["sh600519", "hk00700", "usAAPL"], ["us"]], ["sh600519", "hk00700"]],
+    [[["sh600519", "hk00700", "usAAPL"], ["cn", "hk"]], ["usAAPL"]],
+    [[["sh600519", "hk00700", "usAAPL"], ["cn", "hk", "us"]], []],                   // 全关=全滤
+    [[["sh600519"], ["hk"]], ["sh600519"]],                                          // 开关对它无效
+    [[[], ["us"]], []],
+    [[["sh600519"], null], ["sh600519"]],                                            // 无配置=全开
+    [[["000001"], ["us"]], ["000001"]],                                              // 未知市场前缀：不受影响
+  ];
+  const diffs = [];
+  for (const [[codes, paused], expect] of CASES) {
+    const a = cw ? cw(codes, paused) : null;
+    const b = shared.withoutPausedMarkets(codes, paused);
+    if (JSON.stringify(a) !== JSON.stringify(b) || JSON.stringify(b) !== JSON.stringify(expect)) {
+      diffs.push({ codes, paused, client: a, shared: b, expect });
+    }
+  }
+  check("withoutPausedMarkets 与 shared.js 行为一致", diffs.length === 0, diffs.slice(0, 3));
+  // 语义自检：全关时返回空数组（这是「全部暂停 → 一次上游都不打」的基础）
+  check("全市场暂停时返回空数组", shared.withoutPausedMarkets(["sh600519", "usAAPL"], ["cn", "us"]).length === 0);
 }
 
 // clamp：client.js 与 shared.js 各一份

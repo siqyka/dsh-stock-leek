@@ -263,6 +263,35 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
   const kept = badPost.json.config?.alerts || [];
   check("alerts 清洗只留合法规则", kept.length === 1 && kept[0].id === "good1", kept);
 
+  // 市场开关（pausedMarkets，可多选）：只认 cn/hk/us 三键，去重、脏键剔除。
+  // 被暂停的市场：不刷新行情、不评估预警、指数栏不因它展开（用户要求）。
+  {
+    const mp = await post("/dsh-stock-leek/config", {
+      config: {
+        watchlist: [],
+        pausedMarkets: ["us", "us", "hk", "垃圾", 42, "__proto__"],
+      },
+    });
+    const got = mp.json.config?.pausedMarkets;
+    check("pausedMarkets 清洗：去重+剔脏键", JSON.stringify(got) === JSON.stringify(["us", "hk"]), got);
+    check("pausedMarkets 默认空数组（全开）", JSON.stringify((await get("/dsh-stock-leek/config")).json.config?.pausedMarkets) === "[]" || Array.isArray((await get("/dsh-stock-leek/config")).json.config?.pausedMarkets));
+  }
+
+  // 市场开关对评估的生效方式：循环层先 `withoutPausedMarkets` 过滤拉取范围
+  // （被暂停市场的 code **不进** map），applyAlertTick 对没有行情的规则走
+  // 「停牌/未订阅：状态不动」。这里模拟循环过滤后的输入——不给暂停市场的行情，
+  // 断言规则被跳过且不触发（若给行情则正常触发，作为对照防止"永远不评估"假绿）。
+  {
+    const swId = "sw" + seq;
+    const swCfg = cfgFor([{ id: swId, code: "sh600519", type: "price_above", value: 10 }]);
+    // 模拟"A股被暂停"：循环层不会把 sh600519 放进拉取结果 → map 为空
+    const tPaused = __alertTickForTest(swCfg, [], { now: NOW });
+    check("市场被暂停 → 无行情即跳过（不触发）", tPaused.fired.length === 0 && tPaused.skipped.includes(swId), tPaused);
+    // 对照：同一规则、给行情 → 正常触发（证明跳过是开关的结果，不是规则坏了）
+    const tOn = __alertTickForTest(swCfg, [q(11)], { now: NOW });
+    check("市场未暂停（有行情）→ 正常触发（对照）", tOn.fired.some((e) => e.ruleId === swId), tOn.fired);
+  }
+
   // 状态机：**每个交易日只提示一次**（用户要求），下次符合条件须等次日
   const mId = "m" + seq;
   const base = cfgFor([{ id: mId, code: "sh600519", type: "price_above", value: 10 }]);

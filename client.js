@@ -546,6 +546,27 @@ window.__ModuleLoader__.load({
       }
       return null;
     }
+    // ==== 市场开关（与 lib/shared.js 一致；shared-drift 对拍锁定）====
+    // 用户要求：A股/港股/美股三个开关可多选；被暂停的市场不刷新行情、
+    // 指数栏也不因它展开。未知市场（无前缀）不受开关影响，按启用处理。
+    const MARKET_KEYS = ["cn", "hk", "us"];
+    function marketKeyOf(code) {
+      const c = String(code || "").toLowerCase();
+      if (/^(sh|sz|bj)/.test(c)) return "cn";
+      if (/^hk/.test(c)) return "hk";
+      if (/^(us|gb_)/.test(c)) return "us";
+      return null;
+    }
+    function marketPaused(code, paused) {
+      if (!Array.isArray(paused) || paused.length === 0) return false;
+      const key = marketKeyOf(code);
+      return key !== null && paused.includes(key);
+    }
+    function withoutPausedMarkets(codes, paused) {
+      const arr = Array.isArray(codes) ? codes : [];
+      if (!Array.isArray(paused) || paused.length === 0) return arr;
+      return arr.filter((c) => !marketPaused(c, paused));
+    }
     /**
      * 指数栏此刻该不该展开（**不含手动覆盖**，只回答"按时段该不该"）。
      *
@@ -553,10 +574,14 @@ window.__ModuleLoader__.load({
      *
      * **午休不收起**：判据取整个交易日的跨度（首个开盘 − 缓冲 ~ 最后收盘 + 缓冲），
      * 而不是逐时段匹配。否则 A 股每天 11:30–13:00 栏会消失两个半小时。
+     *
+     * **市场开关参与判断**（用户要求）：被暂停的市场视为"永不展开"——
+     * 它的行情都停了，展开一个显示定格数字的栏没有意义。
      */
     function shouldExpandBar(code, now) {
       now = now || marketNow();
       const c = String(code || "").toLowerCase();
+      if (marketPaused(c, state.config && state.config.pausedMarkets)) return false; // 开关关掉 → 不参与展开
       const wd = now.getDay();
       if (wd === 0 || wd === 6) return false; // 周末一律收起
       const ws = marketWindows(c);
@@ -803,6 +828,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             if (!Array.isArray(merged.ma) && Array.isArray(cfg.ma)) merged.ma = cfg.ma;
             // 同上：老 Host 吃掉 alerts 时保留本地规则，别让用户刚建的规则在回包后消失
             if (!Array.isArray(merged.alerts) && Array.isArray(cfg.alerts)) merged.alerts = cfg.alerts;
+            // 同上：老 Host 吃掉 pausedMarkets（市场开关）时保留本地选择，
+            // 否则用户刚关掉的市场会被静默重新打开
+            if (!Array.isArray(merged.pausedMarkets) && Array.isArray(cfg.pausedMarkets)) merged.pausedMarkets = cfg.pausedMarkets;
             state = Object.assign({}, state, { config: merged });
             // 保存成功即视为配置已恢复，撤下损坏告警
             if (state.configWarning) state.configWarning = null;
@@ -842,9 +870,13 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     async function refreshQuotes() {
       const cfg = state.config;
       if (!cfg) return;
-      const codes = allCodes(cfg);
+      // 市场开关（可多选）：被暂停的市场**完全不刷**——开关关掉 = 用户明确
+      // 不要这个市场的行情，与"已收盘自动停"同一条链。
+      const codes = withoutPausedMarkets(allCodes(cfg), cfg.pausedMarkets);
       if (codes.length === 0) {
-        setState({ quotes: {}, error: null, updatedAt: Date.now() });
+        // 全部市场都被暂停 / 无任何代码：跳过本次拉取。
+        // 保留已有 quotes 不清空（界面还能显示最后一份快照），只更新时间戳。
+        setState({ error: null, updatedAt: Date.now() });
         return;
       }
       try {
@@ -899,10 +931,11 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     function sseSupported() {
       return typeof EventSource === "function";
     }
-    /** 关注集合（含详情页那只） */
+    /** 关注集合（含详情页那只）；排除被暂停的市场——订阅了 Host 也会去拉上游 */
     function sseCodes() {
-      const base = allCodes(state.config);
+      const base = withoutPausedMarkets(allCodes(state.config), state.config && state.config.pausedMarkets);
       const d = state.detail && state.detail.code;
+      // 详情页那只**不受开关限制**：用户主动打开了个股详情，就是要看它
       return d ? base.concat([d]) : base;
     }
     function openStream() {
@@ -1234,6 +1267,8 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           // 老 Host 的白名单重建会吃掉 alerts（与当年 ma 被吃同一个坑）：
           // 本地有规则而回包没有 → 保留本地，避免 UI 上规则凭空消失
           if (!Array.isArray(merged.alerts) && cfg && Array.isArray(cfg.alerts)) merged.alerts = cfg.alerts;
+          // 同上：老 Host 吃掉 pausedMarkets（市场开关）时保留本地选择
+          if (!Array.isArray(merged.pausedMarkets) && cfg && Array.isArray(cfg.pausedMarkets)) merged.pausedMarkets = cfg.pausedMarkets;
           setState({ config: merged });
           try { localStorage.setItem(LS_CONFIG, JSON.stringify(merged)); } catch { /* ignore */ }
         }
@@ -2936,6 +2971,26 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           (v) => updateConfig((c) => { c.barAlign = v; return c; })),
         seg("刷新间隔", [[3000, "3s"], [5000, "5s"], [10000, "10s"], [30000, "30s"], [60000, "60s"]], cfg.pollMs,
           (v) => updateConfig((c) => { c.pollMs = v; return c; })),
+        // 自动刷新市场（**多选**）：关掉的市场不刷行情、不评估预警、指数栏不因它展开。
+        // 「已收盘自动停」按各市场的交易时段判定；这里的开关是叠加在其上的总闸。
+        h("div", { className: "sl-setrow" },
+          h("span", { className: "sl-setlabel", "data-sltip": "关闭的市场：不刷新行情、不评估预警\n指数栏也不因它展开。收盘的市场自动停（无需开关）" }, "自动刷新市场"),
+          h("span", { className: "sl-seg" },
+            [["cn", "A股"], ["hk", "港股"], ["us", "美股"]].map(([k, label]) => {
+              const paused = ((cfg.pausedMarkets) || []).includes(k);
+              return h("button", {
+                key: k,
+                className: paused ? "" : "on",
+                "data-sltip": paused
+                  ? label + "已暂停：不刷新行情、不评估预警、指数栏不因它展开"
+                  : label + "自动刷新：收盘后自动停",
+                onClick: () => updateConfig((c) => {
+                  const cur = Array.isArray(c.pausedMarkets) ? c.pausedMarkets.slice() : [];
+                  c.pausedMarkets = paused ? cur.filter((x) => x !== k) : cur.concat([k]);
+                  return c;
+                }),
+              }, label);
+            }))),
         h("div", { className: "sl-setrow" },
           h("span", { className: "sl-setlabel" }, "涨色 / 跌色"),
           h("span", { style: { display: "flex", gap: 8, alignItems: "center" } },
@@ -2964,7 +3019,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           }, probing ? "测试中…" : "🔌 测试数据源"),
           h("button", {
             className: "sl-btn sl-btn-ghost",
-            onClick: () => { if (confirm("恢复默认配置？自选/持仓/预警将被清空。")) { localStorage.removeItem(LS_CONFIG); updateConfig(() => ({ version: 1, indices: [], barIndices: [], watchlist: [], positions: [], pollMs: 5000, riseColor: "#f5455c", fallColor: "#1eb980", barStyle: "full", barAlign: "left", barPlacement: "floating", barVisible: true, remind: true, alerts: [], pnlCurve: true })); } },
+            onClick: () => { if (confirm("恢复默认配置？自选/持仓/预警将被清空。")) { localStorage.removeItem(LS_CONFIG); updateConfig(() => ({ version: 1, indices: [], barIndices: [], watchlist: [], positions: [], pollMs: 5000, riseColor: "#f5455c", fallColor: "#1eb980", barStyle: "full", barAlign: "left", barPlacement: "floating", barVisible: true, remind: true, alerts: [], pausedMarkets: [], pnlCurve: true })); } },
           }, "恢复默认")),
         probe
           ? h("div", { className: "sl-note" },
