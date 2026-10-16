@@ -66,6 +66,28 @@ for (const c of normCases) {
 }
 check("全部输入净化后不含 URL 结构字符", sanitizeOk, sanitizeBad.slice(0, 3));
 
+// 美股交易所后缀必须剥掉（实测 smartbox 搜索返回的美股代码自带 OQ/AM 后缀）：
+// 行情接口碰巧容忍 `usAAPLOQ`，但分时/K线接口不认 → 详情页「无分时/无K线」。
+// 同时防误伤：本身以 N/AM/OQ 结尾的真实代码（AON、TSM、USO）不能被剥坏。
+{
+  const suffixCases = [
+    ["usAAPLOQ", "usAAPL"],   // 纳斯达克
+    ["usTSLAOQ", "usTSLA"],
+    ["usAPLYAM", "usAPLY"],   // NYSE American（ETF）
+    ["usAAPL", "usAAPL"],     // 已干净：不变
+    ["usAON", "usAON"],       // 误伤检查：AON 结尾不是后缀
+    ["usTSM", "usTSM"],       // 误伤检查
+    ["usUSO", "usUSO"],       // 误伤检查
+  ];
+  const bad = [];
+  for (const [input, expect] of suffixCases) {
+    let out;
+    try { out = normalizeApiCode(input); } catch (e) { out = "THREW:" + e.message; }
+    if (out !== expect) bad.push({ input, out, expect });
+  }
+  check("美股交易所后缀被剥（OQ/AM），且不误伤真实代码", bad.length === 0, bad.slice(0, 3));
+}
+
 // ---------------------------------------------------------------- 2. 端到端健壮性
 const routes = new Map();
 apply({ effect: (fn) => fn(), webServer: { register: ({ path, handler }) => { routes.set(path, handler); return () => routes.delete(path); } } });

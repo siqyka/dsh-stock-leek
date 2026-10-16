@@ -687,7 +687,16 @@ function normalizeApiCode(input) {
     return "hk" + rest.toUpperCase();
   }
   if (/^us/i.test(code)) {
-    const rest = code.slice(2).replace(/\./g, "");
+    let rest = code.slice(2).replace(/\./g, "");
+    // ⚠️ 剥掉交易所后缀（实测 smartbox 搜索返回的美股代码自带）：
+    //   OQ=纳斯达克、AM=NYSE American。不剥的话：行情接口碰巧容忍
+    //   （usAAPLOQ 也能出价），但分时/K线接口**不认这种代码**，全部返回空
+    //   → 详情页「无分时/无K线」（用户实测）。
+    // 刻意**不剥 N**（纽交所后缀）：单字母 N 误伤率太高（如真实代码 AON、
+    // TSM 结尾的会被剥坏），且实测搜索结果里未见 N 结尾的条目。
+    // 剥完若剩空串则保留原样（上层会因接口无效而优雅报错）。
+    const stripped = rest.replace(/(OQ|AM)$/, "");
+    if (stripped) rest = stripped;
     const alias = US_INDEX_ALIAS[rest.toUpperCase()];
     if (alias) return alias;
     return "us" + rest.toUpperCase();
