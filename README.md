@@ -3,7 +3,7 @@
 
 # dsh-stock-leek
 
-**把大盘指数、自选股与持仓盈亏，直接嵌进 DSH 对话界面。**
+**npm 包名 [`@shiqyka/dsh-stock-leek`](https://www.npmjs.com/package/@shiqyka/dsh-stock-leek) · 把大盘指数、自选股与持仓盈亏，直接嵌进 DSH 对话界面。**
 
 对话左下角常驻指数栏 + 可拖动行情悬浮窗：实时行情 · 分时 / K 线 · 持仓盈亏，
 不用离开 DSH，也不用再开一个行情软件。
@@ -32,8 +32,8 @@
 ```bash
 # 本地目录（把 <path> 换成你自己 clone 的位置）
 dsh plugin --profile desktop add file:<path>/dsh-stock-leek
-# 或发布后按包名
-dsh plugin add dsh-stock-leek
+# 或发布后按包名（npm scoped 包，DSH 插件管理器自动识别）
+dsh plugin add @shiqyka/dsh-stock-leek
 ```
 
 安装后**刷新页面**生效。对话输入框下方出现指数栏，点任意指数胶囊打开悬浮窗，点 `⚙` 直达设置。
