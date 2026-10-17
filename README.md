@@ -119,14 +119,17 @@ dsh-stock-leek/
 ├── docs/             # 详细文档
 │   ├── architecture.md
 │   ├── configuration.md
-│   └── development.md
+│   ├── development.md
+│   └── alerts-plan.md       # 预警功能设计与决策依据
 ├── test/             # 集成测试（零外部依赖，直接跑）
 │   ├── config-guard.mjs    # 测试配置路径隔离守卫（共用）
+│   ├── plugin-contract.mjs # 插件装载契约（package.json ↔ patch ↔ bundle id）
 │   ├── config-isolation.mjs# 守卫自身自检（导入顺序写错会当场抛错）
 │   ├── shared-drift.mjs    # shared.js ↔ client.js 纯函数对拍
 │   ├── config-path.mjs     # 默认配置路径 + 旧路径搬迁（子进程 + 假 HOME）
 │   ├── test-routes.mjs     # Host 路由层
 │   ├── security.mjs        # 安全回归：URL 注入 / 配置净化 / SSE 事件注入
+│   ├── alert-loop-ref.mjs  # 预警循环定时器自触发（独立子进程）
 │   └── e2e-render.mjs      # Client 渲染层（mini-React + 真实路由）
 └── README.md
 ```
@@ -138,7 +141,8 @@ dsh-stock-leek/
 ## 测试
 
 ```bash
-npm test                      # 七个套件全跑
+npm test                      # 八个套件全跑
+node test/plugin-contract.mjs # 插件装载契约（package.json ↔ patch ↔ bundle id）
 node test/shared-drift.mjs    # 纯函数一致性 + 关键函数性质对拍
 node test/config-isolation.mjs# 配置路径隔离守卫自检
 node test/config-path.mjs     # 配置路径与旧路径搬迁
@@ -148,7 +152,7 @@ node test/alert-loop-ref.mjs  # 预警循环定时器自触发（独立子进程
 node test/e2e-render.mjs      # 渲染层（指数栏/悬浮窗/详情/持仓/成本线/盈亏曲线/时段收展/预警弹窗与通知降级/拖动排序）
 ```
 
-七个测试都用 `node` 直接跑，零 npm 依赖。配置路径由 `config-guard` 强制隔离（默认写系统临时目录并自动清理；指向真实配置会拒绝启动）。测试会请求腾讯/东财真实行情接口，需联网。详见 [docs/development.md](docs/development.md)。
+八个测试都用 `node` 直接跑，零 npm 依赖。配置路径由 `config-guard` 强制隔离（默认写系统临时目录并自动清理；指向真实配置会拒绝启动）。测试会请求腾讯/东财真实行情接口，需联网。详见 [docs/development.md](docs/development.md)。
 
 ## 安全设计
 

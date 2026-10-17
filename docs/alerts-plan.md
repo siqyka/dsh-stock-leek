@@ -405,7 +405,7 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 | 7 | `limit_near` 市场限制 | `sanitizeAlert` + UI option disabled | drift：港美股拒收；routes：POST 清洗后仅留合法条 |
 | 8 | 清仓后 cost 规则跳过 | `costBy` 查不到则 `skipped` | routes：无成本价 → `skipped` 含该 id 且 fired 为空 |
 | 9 | 重连先对账 | `alertEs.onopen → refreshAlerts()` | e2e：隐藏时预警流保持、行情流断开（含对照断言） |
-| 10 | 测试全绿 | — | 七个套件（drift / isolation / config-path / routes / security / alert-loop-ref / e2e）全绿；跑 `npm test` 看当前数量（文档刻意不写死条数） |
+| 10 | 测试全绿 | — | 八个套件（plugin-contract / drift / isolation / config-path / routes / security / alert-loop-ref / e2e）全绿；跑 `npm test` 看当前数量（文档刻意不写死条数） |
 
 实施中修正的两处**测试方法错误**（都会让断言空转，记录备查）：
 

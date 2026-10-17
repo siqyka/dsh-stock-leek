@@ -505,7 +505,6 @@ window.__ModuleLoader__.load({
       "price_above", "price_below", "cost_above", "cost_below",
       "pct_up", "pct_down", "limit_near", "speed_up",
     ];
-    const ALERT_HYSTERESIS = 0.5;
     function sanitizeAlert(raw) {
       if (!raw || typeof raw !== "object") return null;
       if (typeof raw.id !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(raw.id)) return null;
@@ -554,7 +553,6 @@ window.__ModuleLoader__.load({
     // ==== 市场开关（与 lib/shared.js 一致；shared-drift 对拍锁定）====
     // 用户要求：A股/港股/美股三个开关可多选；被暂停的市场不刷新行情、
     // 指数栏也不因它展开。未知市场（无前缀）不受开关影响，按启用处理。
-    const MARKET_KEYS = ["cn", "hk", "us"];
     function marketKeyOf(code) {
       const c = String(code || "").toLowerCase();
       if (/^(sh|sz|bj)/.test(c)) return "cn";
@@ -1613,9 +1611,6 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     function openAddAlert(code, name, preset) {
       setState({ addAlert: { code, name: name || displayCode(code), preset: preset || null } });
     }
-    function closeAddAlert() {
-      setState({ addAlert: null });
-    }
     /** 行情交易日 YYYY-MM-DD（A股 time=20261013161452 / 港美=2026-10-13 16:08:32）；浏览器今日兜底 */
     function quoteDate(q) {
       const t = String((q && q.time) || "");
@@ -2228,7 +2223,6 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       const chg = sel ? sel.close - prevClose : 0;
       const chgPct = sel && prevClose ? (chg / prevClose) * 100 : null;
       const amp = sel && prevClose ? ((sel.high - sel.low) / prevClose) * 100 : null;
-      const chgColor = sel ? (sel.close >= sel.open ? "var(--sl-up)" : "var(--sl-down)") : "var(--sl-dim)";
       // MA 数值：跟随选中/悬浮的那一根；未选中时取最后一根
       const maAt = (abs, p) => (abs - p + 1 < 0 ? null : (() => { let s = 0; for (let j = abs - p + 1; j <= abs; j++) s += all[j].close; return s / p; })());
       const maReadIdx = selAbs === null ? total - 1 : selAbs;

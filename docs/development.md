@@ -3,12 +3,14 @@
 ## 跑测试
 
 ```bash
-npm test                      # 七个套件全跑
+npm test                      # 八个套件全跑
+node test/plugin-contract.mjs # 插件装载契约（package.json ↔ patch ↔ bundle id）
 node test/shared-drift.mjs    # 纯函数一致性 + 关键函数性质对拍
 node test/config-isolation.mjs# 配置路径隔离守卫自检
 node test/config-path.mjs     # 配置路径与旧路径搬迁
 node test/test-routes.mjs     # 路由层（备份/损坏/冲突/pnlCurve/SSE）
 node test/security.mjs        # 安全层（URL 注入 / 配置净化 / SSE 注入）
+node test/alert-loop-ref.mjs  # 预警循环定时器自触发（独立子进程）
 node test/e2e-render.mjs      # 渲染层（指数栏/悬浮窗/详情/持仓/成本线/盈亏曲线/时段收展/拖动排序）
 ```
 
@@ -18,6 +20,7 @@ node test/e2e-render.mjs      # 渲染层（指数栏/悬浮窗/详情/持仓/�
 
 | 套件 | 测什么 | 关键手法 |
 |---|---|---|
+| `plugin-contract.mjs` | 插件装载的四条契约：`cordis.patch.yml` 的 `name` 必须等于 npm 包名、声明 `dsh.client` 的包必须 `exports` 出 `./client`、bundle 注册的 id 必须等于 `packageName` | 读 package.json + patch + client bundle 源码，直接断言四者一致（当年「装了不显示」的根因） |
 | `shared-drift.mjs` | `lib/shared.js` ↔ `client.js` 内联副本是否漂移 | 花括号配平抠函数体 → `new Function` 求值 → 逐输入对拍 |
 | `config-isolation.mjs` | 守卫自身是否真的拦得住（防止守卫失效后误伤用户配置） | 故意指向真实配置路径，确认**拒绝启动**；确认临时目录被清理 |
 | `config-path.mjs` | 默认路径、迁移链、兼容环境变量 | **子进程 + 假 HOME**（`HOME`/`USERPROFILE` 都改），因为默认路径分支只有不设 `DSH_STOCK_LEEK_CONFIG` 时才走得到 |
@@ -203,7 +206,7 @@ node --check index.js
 npm test
 ```
 
-七个套件全绿才算完成。若改了 `client.js` 的内联纯函数，记得 `lib/shared.js` 也要同步——`shared-drift` 会拦住你。
+八个套件全绿才算完成。若改了 `client.js` 的内联纯函数，记得 `lib/shared.js` 也要同步——`shared-drift` 会拦住你。
 
 > **文档里刻意不写断言条数。** 断言数随改动频繁增减，写死必然过期（此前已连续三次对不上）。要看当前数量直接跑一遍即可。
 

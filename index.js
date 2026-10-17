@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 // 共享纯逻辑（格式化 / 盈亏口径 / 常量）：client.js 因平台不支持相对 require 只能内联一份，
 // test/shared-drift.mjs 会校验两边行为一致，防止改动漂移。
-import { MA_ALL, MARKET_KEYS, marketPaused, withoutPausedMarkets, isMarketOpen, quoteDayFor, stepAlert, sanitizeAlerts } from "./lib/shared.js";
+import { MA_ALL, MARKET_KEYS, withoutPausedMarkets, isMarketOpen, quoteDayFor, stepAlert, sanitizeAlerts } from "./lib/shared.js";
 
 const name = "dsh-stock-leek";
 /** Required services: webServer（HTTP 路由）。 */
