@@ -343,6 +343,16 @@ window.__ModuleLoader__.load({
 .sl-ob-ask .sl-ob-bar i{background:var(--sl-down)}
 .sl-ob-bid .sl-ob-price{color:var(--sl-up)}
 .sl-ob-bid .sl-ob-bar i{background:var(--sl-up)}
+/* ---- 上下结构：卖5→卖1 / 现价 / 买1→买5（券商软件惯例） ---- */
+.sl-ob-rows .sl-ob-stack{display:flex;flex-direction:column;gap:1px}
+/* 上下结构是单列铺满，行内横条从右往左长（读数区在左，条贴在右） */
+.sl-ob-rows .sl-ob-lv{width:28px}
+.sl-ob-rows .sl-ob-price{width:84px}
+.sl-ob-rows .sl-ob-qty{flex:1}
+.sl-ob-rows .sl-ob-bar{justify-content:flex-end}
+.sl-ob-rows .sl-ob-bar i{border-radius:4px 0 0 4px}
+/* 中间现价行：把上下两半分开 */
+.sl-ob-mid{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:var(--sl-muted);padding:3px 4px;margin:2px 0;border-top:1px dashed var(--sl-border-soft);border-bottom:1px dashed var(--sl-border-soft);font-variant-numeric:tabular-nums}
 .sl-toast{position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:10000;background:var(--sl-bg);border:1px solid var(--sl-border);border-radius:8px;padding:6px 14px;box-shadow:var(--sl-shadow);pointer-events:none;white-space:nowrap;color:var(--sl-text)}
 /* 右键菜单 */
 .sl-menu{position:fixed;z-index:10001;min-width:168px;max-width:240px;padding:4px;display:flex;flex-direction:column;gap:1px;background:var(--sl-bg);border:1px solid var(--sl-border);border-radius:8px;box-shadow:var(--sl-shadow);pointer-events:auto}
@@ -3716,8 +3726,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     function OrderBook(props) {
       const q = props.q;
       const book = q && q.book;
-      // 手数 / 金额 切换：纯展示偏好，放本地 useState 就够（不必进配置、也不跨股票同步）
+      // 两个纯展示偏好，放本地 useState 就够（不必进配置、也不跨股票同步）
       const [unit, setUnit] = useState("lots"); // lots | amount
+      const [layout, setLayout] = useState("cols"); // cols=左右 | rows=上下
       if (!book || ((book.bids || []).length === 0 && (book.asks || []).length === 0)) {
         return h("div", { className: "sl-empty", style: { padding: "6px 8px" } }, "该股暂无五档盘口数据（停牌、集合竞价前，或港美股不提供）");
       }
@@ -3731,55 +3742,73 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       const sumB = bids.reduce((a, x) => a + x.qty, 0);
       const sumA = asks.reduce((a, x) => a + x.qty, 0);
       const ratio = sumB + sumA > 0 ? ((sumB - sumA) / (sumB + sumA)) * 100 : null;
-      /**
-       * 单档显示值。手数按 AAC 惯例显示「手」（1 手=100 股）；金额显示到「万」便于阅读。
-       */
+      /** 单档显示值：手数按「N手」（1手=100股）；金额按万/亿。 */
       const valText = (x) => (unit === "lots" ? Math.round(x.qty / 100) + "手" : fmtMoney(amountOf(x), ""));
       const valTip = (x, side, lv) =>
         (side === "bid" ? "买" : "卖") + lv + "  " + fmtPrice(x.price) +
         "\n" + x.qty + " 股（" + Math.round(x.qty / 100) + " 手）" +
         "\n金额 " + fmtExact(amountOf(x)) + " 元";
+      const bar = (x) => h("span", { className: "sl-ob-bar" }, h("i", { style: { width: Math.max(2, Math.round((metric(x) / maxMetric) * 100)) + "%" } }));
       const row = (side, lv, x) => {
         const isBid = side === "bid";
         return h("div", {
           key: side + lv,
           className: "sl-ob-row " + (isBid ? "sl-ob-bid" : "sl-ob-ask"),
           "data-sltip": valTip(x, side, lv),
-          // sl-ob-rev：买盘横条从右往左长（镜像），两列视觉上分别贴向中间与外侧
-          style: isBid ? null : null,
         },
           h("span", { className: "sl-ob-lv" }, lv),
           h("span", { className: "sl-ob-price" }, fmtPrice(x.price)),
           h("span", { className: "sl-ob-qty" }, valText(x)),
-          h("span", { className: "sl-ob-bar" }, h("i", { style: { width: Math.max(2, Math.round((metric(x) / maxMetric) * 100)) + "%" } })));
+          bar(x));
       };
-      // 左卖右买两列，两列都**从贴近现价的一档开始往下排**：
-      //   卖盘 卖1→卖5（卖1 在最上），买盘 买1→买5（买1 在最上）
-      // 这样左右两列首行分别是最接近现价的卖一/买一，横向读同一行的「距离现价远近」一致，
-      // 比传统把卖5 放顶上更好对照（用户要求卖1 在最上）。
+      const pad = (arr, n) => (arr.length >= n ? arr : arr.concat(Array.from({ length: n - arr.length }, (_, i) => h("div", { key: "pad" + i, className: "sl-ob-row sl-ob-pad" }))));
+      const head = h("div", { className: "sl-ob-head" },
+        h("span", null, "五档盘口"),
+        h("span", { style: { flex: 1 } }),
+        // 布局切换：左右 / 上下
+        h("span", { className: "sl-ob-unit" },
+          [["cols", "左右"], ["rows", "上下"]].map(([v, t]) =>
+            h("button", {
+              key: v,
+              className: layout === v ? "on" : "",
+              "data-sltip": v === "cols" ? "左右结构：卖盘在左、买盘在右" : "上下结构：卖5→卖1 在上、现价居中、买1→买5 在下（券商软件惯例）",
+              onClick: () => setLayout(v),
+            }, t))),
+        // 单位切换：手数 / 金额
+        h("span", { className: "sl-ob-unit" },
+          [["lots", "手数"], ["amount", "金额"]].map(([v, t]) =>
+            h("button", {
+              key: v,
+              className: unit === v ? "on" : "",
+              "data-sltip": v === "lots" ? "按手数显示（1 手 = 100 股）" : "按挂单金额显示（价格 × 股数）",
+              onClick: () => setUnit(v),
+            }, t))),
+        ratio !== null
+          ? h("span", {
+              className: "sl-ob-ratio " + (ratio > 0 ? "sl-up" : ratio < 0 ? "sl-down" : "sl-flat"),
+              "data-sltip": "委比 = (买五档总量 − 卖五档总量) ÷ 两者之和\n买 " + sumB + " 股 / 卖 " + sumA + " 股",
+            }, "委比 " + (ratio > 0 ? "+" : "") + ratio.toFixed(1) + "%")
+          : null);
+
+      if (layout === "rows") {
+        // **上下结构**（券商软件惯例）：卖5→卖1 在上、现价居中、买1→买5 在下。
+        // 注意这里卖盘要**倒序**（卖5 在顶），与左右结构的卖1 在顶正好相反 ——
+        // 因为上下结构讲究"价格向中间收敛"：上半部价高在下、下半部价低在上。
+        const askRows = asks.map((x, i) => row("ask", "卖" + (i + 1), x)).reverse();
+        const bidRows = bids.map((x, i) => row("bid", "买" + (i + 1), x));
+        return h("div", { className: "sl-ob sl-ob-rows" },
+          head,
+          h("div", { className: "sl-ob-stack sl-ob-stack-ask" }, pad(askRows, 5)),
+          h("div", { className: "sl-ob-mid" },
+            h("span", null, "现价"),
+            h("b", { style: { color: q.percent > 0 ? "var(--sl-up)" : q.percent < 0 ? "var(--sl-down)" : "var(--sl-flat)" } }, fmtPrice(q.price))),
+          h("div", { className: "sl-ob-stack sl-ob-stack-bid" }, pad(bidRows, 5)));
+      }
+      // **左右结构**（默认）：卖盘在左、买盘在右，两列都从贴近现价的一档往下排
       const askRows = asks.map((x, i) => row("ask", "卖" + (i + 1), x));
       const bidRows = bids.map((x, i) => row("bid", "买" + (i + 1), x));
-      const pad = (arr, n) => (arr.length >= n ? arr : arr.concat(Array.from({ length: n - arr.length }, (_, i) => h("div", { key: "pad" + i, className: "sl-ob-row sl-ob-pad" }))));
-      return h("div", { className: "sl-ob" },
-        h("div", { className: "sl-ob-head" },
-          h("span", null, "五档盘口"),
-          h("span", { style: { flex: 1 } }),
-          // 单位切换：两个小按钮
-          h("span", { className: "sl-ob-unit" },
-            [["lots", "手数"], ["amount", "金额"]].map(([v, t]) =>
-              h("button", {
-                key: v,
-                className: unit === v ? "on" : "",
-                "data-sltip": v === "lots" ? "按手数显示（1 手 = 100 股）" : "按挂单金额显示（价格 × 股数）",
-                onClick: () => setUnit(v),
-              }, t))),
-          ratio !== null
-            ? h("span", {
-                className: "sl-ob-ratio " + (ratio > 0 ? "sl-up" : ratio < 0 ? "sl-down" : "sl-flat"),
-                "data-sltip": "委比 = (买五档总量 − 卖五档总量) ÷ 两者之和\n买 " + sumB + " 股 / 卖 " + sumA + " 股",
-              }, "委比 " + (ratio > 0 ? "+" : "") + ratio.toFixed(1) + "%")
-            : null),
-        // 列头：左卖右买
+      return h("div", { className: "sl-ob sl-ob-cols-layout" },
+        head,
         h("div", { className: "sl-ob-cols" },
           h("span", { className: "sl-ob-colhead sl-ob-t-ask" }, "卖盘"),
           h("span", { className: "sl-ob-colhead sl-ob-t-bid" }, "买盘")),

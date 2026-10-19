@@ -738,7 +738,7 @@ check("详情已屏蔽「🤖 分析」入口", ovText.indexOf("分析") < 0 && 
     })(root);
     return out;
   };
-  const ob = findNode(ovNode, (n) => String((n.props && n.props.className) || "") === "sl-ob");
+  const ob = findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
   check("详情页有五档盘口区块", !!ob, ovText.slice(0, 240));
   if (ob) {
     // 1) 两列结构：左卖右买（DOM 顺序 = 视觉顺序，flex 行内先出现的在左边）
@@ -775,7 +775,7 @@ check("详情已屏蔽「🤖 分析」入口", ovText.indexOf("分析") < 0 && 
     if (amtBtn) {
       click(amtBtn);
       ovNode = ov.render({}); renderTree(ovNode);
-      const ob2 = findNode(ovNode, (n) => String((n.props && n.props.className) || "") === "sl-ob");
+      const ob2 = findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
       const t2 = txtOf(ob2);
       // 金额口径不应再出现「N手」，而应出现万/元
       check("切到金额后不再显示「手」", !/\d+手/.test(t2), t2.slice(0, 180));
@@ -788,6 +788,47 @@ check("详情已屏蔽「🤖 分析」入口", ovText.indexOf("分析") < 0 && 
       // 切回手数，避免影响后续断言
       const lotsBtn = findNode(ob2, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "手数");
       if (lotsBtn) { click(lotsBtn); ovNode = ov.render({}); renderTree(ovNode); }
+    }
+
+    // 4) 布局切换：左右 → 上下
+    // 上下结构按券商惯例：卖5→卖1 在上、现价居中、买1→买5 在下
+    {
+      const obNow = findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
+      check("默认是左右结构", String((obNow.props && obNow.props.className) || "").indexOf("sl-ob-rows") < 0, obNow.props.className);
+      const rowsBtn = findNode(obNow, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "上下");
+      check("盘口有「上下」布局切换按钮", !!rowsBtn);
+      if (rowsBtn) {
+        click(rowsBtn);
+        ovNode = ov.render({}); renderTree(ovNode);
+        const obR = findNode(ovNode, (n) => String((n.props && n.props.className) || "").indexOf("sl-ob-rows") >= 0);
+        check("切到上下结构（sl-ob-rows）", !!obR, textOf(ovNode).join(" ").slice(0, 160));
+        if (obR) {
+          // 两个堆叠容器：ask 在上、bid 在下
+          const stacks = collect(obR, (n) => String((n.props && n.props.className) || "").indexOf("sl-ob-stack") >= 0);
+          check("上下结构分成卖盘/买盘两个堆叠块", stacks.length === 2, stacks.length);
+          check("上半是卖盘、下半是买盘",
+            stacks.length === 2 && /ask/.test(String(stacks[0].props.className)) && /bid/.test(String(stacks[1].props.className)),
+            stacks.map((s) => s.props.className));
+          // 卖盘自上而下 = 卖5→卖1（54321）
+          const askLvR = collect(stacks[0], (n) => String((n.props && n.props.className) || "") === "sl-ob-lv")
+            .map((n) => { const m = /卖(\d)/.exec(txtOf(n)); return m ? Number(m[1]) : null; });
+          check("上下结构：卖盘自上而下是 卖5→卖1（54321）",
+            askLvR.length >= 2 && askLvR.every((v, i) => v !== null && (i === 0 || askLvR[i - 1] >= v)) && askLvR[0] > askLvR[askLvR.length - 1],
+            askLvR);
+          // 买盘自上而下 = 买1→买5（12345）
+          const bidLvR = collect(stacks[1], (n) => String((n.props && n.props.className) || "") === "sl-ob-lv")
+            .map((n) => { const m = /买(\d)/.exec(txtOf(n)); return m ? Number(m[1]) : null; });
+          check("上下结构：买盘自上而下是 买1→买5（12345）",
+            bidLvR.length >= 2 && bidLvR.every((v, i) => v !== null && (i === 0 || bidLvR[i - 1] <= v)) && bidLvR[0] < bidLvR[bidLvR.length - 1],
+            bidLvR);
+          // 中间有现价行，且夹在两个堆叠块之间
+          check("上下结构中间有「现价」行", /现价/.test(txtOf(obR)), txtOf(obR).slice(0, 160));
+        }
+        // 切回左右，避免影响后续用例
+        const obR2 = findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
+        const colsBtn = findNode(obR2, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "左右");
+        if (colsBtn) { click(colsBtn); ovNode = ov.render({}); renderTree(ovNode); }
+      }
     }
   }
 }
