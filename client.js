@@ -1512,6 +1512,18 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         if (!p.openedAt && prevQty <= 0 && nextQty > 0) {
           p.openedAt = quoteDate(state.quotes[code]);
         }
+        // 编辑对话框改的是**基准持仓**（不是当前持仓）。
+        // 关键：用户可能先记了几笔交易、再回头改成本/股数——那次修改等于宣告
+        // 「此刻持仓就是这样」，之前的流水已被吸收，不能再叠加一遍（否则双重计算）。
+        // 所以这里刷新 baseAt=现在，只让**之后**记的流水参与 replay。
+        if (p.txns && p.txns.length) {
+          p.baseQty = nextQty;
+          p.baseCost = p.cost || 0;
+          p.baseAt = Date.now();
+          // 一律走 replay 得出当前持仓，**不在这里直接赋值**——
+          // 直接赋会让 baseAt 过滤失效时也看不出问题（断言会空转，实测踩过）。
+          applyReplay(p);
+        }
         return cfg;
       });
     }
@@ -1671,11 +1683,12 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         const p = cfgFind(cfg.positions, code);
         if (!p) return null;
         const cur = p.qty || 0;
-        const curCost = p.cost || 0;
         if (qty < 0 && cur + qty < 0) {
           toast("卖出股数超过当前持仓（" + cur + "）", "#ff5555");
           return null;
         }
+        // 第一笔流水之前先把当时的持仓冻结为「基准」。用户可能先手填成本+股数，也可能直接记账。
+        ensureBase(p);
         p.txns = p.txns || [];
         p.txns.push({
           id: (txn.date || "") + ":" + Date.now() + ":" + Math.round(Math.random() * 1e6),
@@ -1683,18 +1696,90 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           time: txn.time || "",
           price: Math.round(price * 10000) / 10000,
           qty,
+          // 记录时刻：用于判断这笔是否晚于「最后一次手动修正」，早于修正点的会被吸收
+          at: Date.now(),
         });
         p.txns.sort((a, b) => String(a.date + a.time).localeCompare(String(b.date + b.time)));
-        const newQty = cur + qty;
-        p.qty = newQty;
-        if (qty > 0 && newQty > 0) {
-          // 买入：加权平均成本
-          p.cost = Math.round(((curCost * cur + price * qty) / newQty) * 10000) / 10000;
-        }
+        // 记完流水后从「基准 + 修正点之后的流水」重算 qty/cost，而不是增量改：
+        // 增量公式一旦和手工编辑过的值混在一起就会永久失配，且无法自愈。
+        applyReplay(p);
         ok = true;
         return cfg;
       });
       return ok;
+    }
+    /**
+     * 冻结基准持仓（只在第一次出现流水时做一次，此时还没有修正点 baseAt）。
+     *
+     * baseQty/baseCost 就是「开始记账那一刻的持仓」，来源是用户手填的成本/股数。
+     * 冻结后当前持仓由「基准 + 基准之后的流水」决定，手工录入与逐笔记账落在同一模型。
+     * 已经有 baseQty 字段的不再改动（哪怕值是 0，那也是「基准空仓」的合法记录）。
+     */
+    function ensureBase(p) {
+      if (p && p.baseQty === undefined) {
+        p.baseQty = p.qty || 0;
+        p.baseCost = p.cost || 0;
+        // 首次冻结时还没有任何修正点 → baseAt=0 表示"全部流水都参与"
+        if (p.baseAt === undefined) p.baseAt = 0;
+      }
+    }
+    /** 按「基准 + 修正点之后的流水」重算并写回 p.qty / p.cost */
+    function applyReplay(p) {
+      const b = replayPosition(p.baseQty, p.baseCost, p.txns, p.baseAt);
+      p.qty = b.qty;
+      p.cost = b.cost;
+    }
+    /**
+     * 从交易流水重算「持仓股数 + 成本价」（加权平均法）。
+     * **成本口径的唯一真相源**：以前是增量维护 qty/cost，与编辑对话框（手工改）
+     * 形成两个真相源，实测产出了自相矛盾的配置（cost 低于所有买入价、
+     * qty 与流水净额差 8800 股）。改成「流水是唯一输入」后，任何增删都自洽。
+     * 规则：买入加权摊薄 / 卖出只减股数不改成本 / 清仓后成本归零 / 超卖夹到 0。
+     * lib/shared.js 的内联副本，两端由 test/shared-drift.mjs 对拍。
+     */
+    function costBasisFromTxns(txns) {
+      let qty = 0;
+      let cost = 0;
+      for (const t of txns || []) {
+        const q = Number(t && t.qty);
+        const price = Number(t && t.price);
+        if (!Number.isFinite(q) || q === 0 || !Number.isFinite(price) || price <= 0) continue;
+        if (q > 0) {
+          const newQty = qty + q;
+          // qty 为 0 时 `cost*qty` 自然是 0，清仓后重新建仓不会被旧成本污染
+          cost = Math.round(((cost * qty + price * q) / newQty) * 10000) / 10000;
+          qty = newQty;
+        } else {
+          qty = Math.max(0, qty + q);
+          // 刻意不清零 cost：realizedPnl 要用它算已实现盈亏，
+          // 清零会让「清仓瞬间累计盈亏暴涨」（实测 37000 → 140000）
+        }
+      }
+      return { qty, cost };
+    }
+    /**
+     * 基准（最后一次手动修正）+ 交易流水 → 当前持仓。lib/shared.js 的内联副本。
+     *
+     * 只在「修正点（baseAt）之后」记的流水才叠加：用户可能先手填持仓、记几笔交易，
+     * **再回头改成本/股数**——那次修改等于宣告"此刻持仓就是这样"，之前的流水已被
+     * 吸收，再叠一遍就是双重计算。
+     *   baseAt ≤ 0 → 全部流水参与（还没发生过修正）
+     *   baseAt > 0 → 只算之后记的；更早的（含没有 at 的老流水）视为已被吸收
+     */
+    function replayPosition(baseQty, baseCost, txns, baseAt) {
+      const bq = Number(baseQty) || 0;
+      const bc = Number(baseCost) || 0;
+      const cut = Number(baseAt) || 0;
+      const list = [];
+      if (bq > 0 && bc > 0) list.push({ qty: bq, price: bc });
+      for (const t of txns || []) {
+        if (cut > 0) {
+          const at = Number(t && t.at);
+          if (!Number.isFinite(at) || at <= cut) continue;
+        }
+        list.push(t);
+      }
+      return costBasisFromTxns(list);
     }
     function removeTxn(code, id) {
       updateConfig((cfg) => {
@@ -1702,15 +1787,16 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         if (!p || !p.txns) return null;
         const t = p.txns.find((x) => x.id === id);
         if (!t) return null;
+        ensureBase(p);
         p.txns = p.txns.filter((x) => x.id !== id);
-        if (p.txns.length === 0) delete p.txns;
-        const cur = p.qty || 0;
-        const prevQty = cur - t.qty; // 撤销该变动
-        if (t.qty > 0 && prevQty > 0) {
-          // 撤销买入：还原加权平均成本
-          p.cost = Math.round(((p.cost * cur - t.price * t.qty) / prevQty) * 10000) / 10000;
+        if (p.txns.length === 0) {
+          // 最后一笔流水删掉 → 回到期初状态（用户手填的值），而不是把持仓清零
+          delete p.txns;
+          if (p.baseQty !== undefined) { p.qty = p.baseQty; p.cost = p.baseCost; }
+        } else {
+          // 撤销任意一笔都能回到自洽状态
+          applyReplay(p);
         }
-        p.qty = Math.max(0, prevQty);
         return cfg;
       });
     }

@@ -275,6 +275,109 @@ for (const [name, samples] of FORMATTERS) {
   }
 }
 
+// 成本重算：从流水 replay，而不是增量维护 qty/cost
+// 背景：qty/cost 既被手工编辑覆盖、又被增量算法改写，两个真相源互相打架，
+// 实测用户配置里出现「cost 8.8943 低于所有买入价」「qty 6300 但流水净额 −2500」。
+{
+  const cb = shared.costBasisFromTxns;
+  check("costBasisFromTxns 已导出", typeof cb === "function");
+
+  const cases = [
+    // 单笔买入
+    [[{ qty: 1000, price: 10 }], { qty: 1000, cost: 10 }],
+    // 两笔买入：加权平均
+    [[{ qty: 1000, price: 10 }, { qty: 1000, price: 20 }], { qty: 2000, cost: 15 }],
+    // 买入后部分卖出：成本不变、股数减少
+    [[{ qty: 1000, price: 10 }, { qty: -400, price: 12 }], { qty: 600, cost: 10 }],
+    // 清仓后再买：新仓成本**只由新买入决定**，不被旧成本污染
+    [[{ qty: 1000, price: 10 }, { qty: -1000, price: 12 }, { qty: 500, price: 20 }], { qty: 500, cost: 20 }],
+    // 空流水
+    [[], { qty: 0, cost: 0 }],
+    // 卖出多于持仓（脏数据）：股数夹到 0，**成本保留**——realizedPnl 还要用它算已实现盈亏，
+    // 清零会导致「清仓瞬间累计盈亏暴涨」（实测 37000 → 140000）
+    [[{ qty: 100, price: 10 }, { qty: -300, price: 12 }], { qty: 0, cost: 10 }],
+    // 清仓（不留超卖）后成本同样保留
+    [[{ qty: 100, price: 10 }, { qty: -100, price: 12 }], { qty: 0, cost: 10 }],
+  ];
+  const bad = [];
+  for (const [txns, want] of cases) {
+    const got = cb(txns);
+    const okQty = got.qty === want.qty;
+    const okCost = Math.abs(got.cost - want.cost) < 1e-6;
+    if (!okQty || !okCost) bad.push({ txns, want, got });
+  }
+  check("costBasisFromTxns 口径正确（含清仓后重买、超卖夹紧）", bad.length === 0, bad.slice(0, 3));
+
+  // 用户实际流水：超卖部分被夹紧，但**结果必须自洽**（qty 不为负、成本落在买入价区间内）
+  const real = [
+    { qty: 1100, price: 9.4 }, { qty: 100, price: 9.47 }, { qty: 300, price: 9.45 },
+    { qty: 300, price: 9.41 }, { qty: -5300, price: 9.08 }, { qty: 1000, price: 9.26 },
+  ];
+  const r = cb(real);
+  const buyPrices = real.filter((t) => t.qty > 0).map((t) => t.price);
+  check("用户流水：qty 不为负（超卖被夹紧）", r.qty >= 0, r);
+  check("用户流水：成本落在买入价区间内（不再低于最低买入价）",
+    r.qty === 0 ? r.cost === 0 : (r.cost >= Math.min(...buyPrices) - 1e-6 && r.cost <= Math.max(...buyPrices) + 1e-6),
+    { cost: r.cost, minBuy: Math.min(...buyPrices), maxBuy: Math.max(...buyPrices) });
+
+  // replayPosition：期初 + 流水。这是「手工录入」与「逐笔记账」共存的核心模型。
+  const rp = shared.replayPosition;
+  check("replayPosition 已导出", typeof rp === "function");
+  const rc = [
+    // 期初 200@100，无流水 → 就是期初
+    [200, 100, [], { qty: 200, cost: 100 }],
+    // 期初 200@100，买入 100@130 → 300 股，成本 (100*200+130*100)/300
+    [200, 100, [{ qty: 100, price: 130 }], { qty: 300, cost: Math.round(((100 * 200 + 130 * 100) / 300) * 10000) / 10000 }],
+    // 期初 200@100，卖出 50@150 → 150 股，成本**不变** 100
+    [200, 100, [{ qty: -50, price: 150 }], { qty: 150, cost: 100 }],
+    // 期初空仓 + 买入 → 只看买入
+    [0, 0, [{ qty: 100, price: 20 }], { qty: 100, cost: 20 }],
+    // 期初有量但没成本（手填了股数没填价）→ 期初不参与加权，只按流水算
+    [200, 0, [{ qty: 100, price: 20 }], { qty: 100, cost: 20 }],
+  ];
+  const rbad = [];
+  for (const [bq, bc, txns, want] of rc) {
+    const got = rp(bq, bc, txns);
+    if (got.qty !== want.qty || Math.abs(got.cost - want.cost) > 1e-6) rbad.push({ bq, bc, txns, want, got });
+  }
+  check("replayPosition 口径正确（期初+流水，卖出不改成本）", rbad.length === 0, rbad.slice(0, 3));
+
+  // 「**几笔交易之后**再改成本/股数」——用户明确指出的场景。
+  // 那次修改等于宣告「此刻持仓就是这样」，之前的流水已被吸收，不能再叠加一遍。
+  {
+    const at0 = 1000, at1 = 2000, at2 = 3000;
+    const baseAt = 2500; // 在第 1、2 笔之后做了修正
+    const baseQty = 500, baseCost = 8; // 修正后宣告：此刻 500 股 @8
+    const txns = [
+      { qty: 1000, price: 10, at: at0 },  // 修正前 → 被吸收
+      { qty: 200, price: 12, at: at1 },   // 修正前 → 被吸收
+      { qty: 100, price: 9, at: at2 },    // 修正后 → 参与
+    ];
+    const got = rp(baseQty, baseCost, txns, baseAt);
+    // 只叠加最后一笔：500@8 + 100@9 → 600 股，成本 (8*500+9*100)/600
+    const wantCost = Math.round(((8 * 500 + 9 * 100) / 600) * 10000) / 10000;
+    check("几笔交易后再改成本/股数：旧流水被吸收，不双重计算",
+      got.qty === 600 && Math.abs(got.cost - wantCost) < 1e-6, { got, want: { qty: 600, cost: wantCost } });
+
+    // baseAt=0（还没修正过）→ 全部流水都参与
+    const all = rp(0, 0, [
+      { qty: 1000, price: 10, at: at0 },
+      { qty: 100, price: 9, at: at2 },
+    ], 0);
+    const wantAll = Math.round(((1000 * 10 + 100 * 9) / 1100) * 10000) / 10000;
+    check("未修正过（baseAt=0）时全部流水参与", all.qty === 1100 && Math.abs(all.cost - wantAll) < 1e-6, all);
+
+    // 没有 at 字段的老流水：修正点之后一律视为「更早」被吸收
+    const legacy = rp(300, 7, [{ qty: 100, price: 20 }], 5000);
+    check("老流水没有 at 字段时，修正点后不再叠加", legacy.qty === 300 && Math.abs(legacy.cost - 7) < 1e-6, legacy);
+
+    // 修正后新增的流水照常叠加
+    const after = rp(300, 7, [{ qty: 100, price: 20, at: 6000 }], 5000);
+    check("修正点之后记的流水正常叠加",
+      after.qty === 400 && Math.abs(after.cost - Math.round(((7 * 300 + 20 * 100) / 400) * 10000) / 10000) < 1e-6, after);
+  }
+}
+
 // 关键口径自检：确保 shared.js 自身语义没被改坏（防止两边一起错）
 {
   const p = { code: "sh600519", qty: 200, txns: [{ date: TODAY, qty: 100, price: 100 }] };

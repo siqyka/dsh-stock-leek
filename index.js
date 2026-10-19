@@ -176,6 +176,22 @@ function sanitizeItem(raw, withPosition) {
     // 建仓当天的行情日期（YYYY-MM-DD）：todayPnl 靠它区分「今天刚建的仓」与
     // 「昨天就持有、今天没动」。白名单重建**必须放行**，否则每次保存都被丢掉。
     if (typeof raw.openedAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.openedAt)) out.openedAt = raw.openedAt;
+    // 期初持仓（开始记流水之前手填的成本/股数）：当前持仓 = 期初 + 流水重算。
+    // 同样必须放行，否则「先手填再记账」这条路径的期初会被丢掉、持仓凭空缩水。
+    if (raw.baseQty !== undefined) {
+      const bq = Number(raw.baseQty);
+      out.baseQty = Number.isFinite(bq) && bq > 0 ? Math.round(bq) : 0;
+    }
+    if (raw.baseCost !== undefined) {
+      const bc = Number(raw.baseCost);
+      out.baseCost = Number.isFinite(bc) && bc > 0 ? Math.round(bc * 10000) / 10000 : 0;
+    }
+    // 修正点：这次基准是「什么时候」的。只让此时刻**之后**记的流水参与重算，
+    // 更早的视为已被这次修正吸收（否则用户改完成本，老流水又被叠一遍）。
+    if (raw.baseAt !== undefined) {
+      const ba = Number(raw.baseAt);
+      out.baseAt = Number.isFinite(ba) && ba > 0 ? Math.round(ba) : 0;
+    }
     // 变动记录（买入 qty>0 / 卖出 qty<0）：今日收益据此计算，可多条
     if (Array.isArray(raw.txns)) {
       const txns = [];
@@ -193,6 +209,10 @@ function sanitizeItem(raw, withPosition) {
           price: Math.round(price * 10000) / 10000,
           qty: Math.round(tq),
         });
+        // 记账时刻（epoch ms）：replayPosition 用它判断这笔是否晚于「最后一次修正」。
+        // 同样必须放行，否则每次保存都被丢掉、修正点之后无法区分新旧流水。
+        const at = Number(t.at);
+        if (Number.isFinite(at) && at > 0) txns[txns.length - 1].at = Math.round(at);
         if (txns.length >= 200) break;
       }
       if (txns.length > 0) out.txns = txns;

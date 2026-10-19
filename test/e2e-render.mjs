@@ -1192,6 +1192,110 @@ if (txnMi) {
     dismissMenu(); // 进不去二级页也要关菜单，否则残留会干扰后续用例
   }
 }
+
+// ---------- 7c. 几笔交易之后**再改成本/股数**：旧流水必须被吸收，不能双重计算 ----------
+// 用户明确指出的场景：改成本/股数不只发生在建仓前，也发生在若干笔交易之后。
+// 那次修改等于宣告「此刻持仓就是这样」——之前的流水已被吸收，再叠一遍就是双算。
+{
+  const cfgP = ((global.__sl_test_state__ || {}).config?.positions || []).find((x) => x.code === "sh600519") || {};
+  // 前置：此时已有 2 笔流水（买100@1300、卖50@1350），当前 150 股 / 成本 1150
+  check("前置：该持仓已有交易流水", (cfgP.txns || []).length >= 1, (cfgP.txns || []).length);
+
+  // 通过 UI 把成本/股数改为 500股 @2000（模拟"我其实是这样持仓的"）
+  clickTab("持仓");
+  ovNode = ov.render({}); renderTree(ovNode);
+  contextMenu(posRow(ovNode));
+  ovNode = ov.render({}); renderTree(ovNode);
+  const mi = findMenuItem(ovNode, "编辑成本");
+  check("能打开编辑对话框（前置）", !!mi);
+  if (mi) {
+    click(mi);
+    dismissMenu();
+    ovNode = ov.render({}); renderTree(ovNode);
+    findNode(ovNode, (n) => n.type === "input" && String(n.props.placeholder || "").indexOf("如 1274.89") >= 0)
+      .props.onChange({ target: { value: "2000" } });
+    ovNode = ov.render({}); renderTree(ovNode);
+    findNode(ovNode, (n) => n.type === "input" && String(n.props.placeholder || "").indexOf("如 100") >= 0)
+      .props.onChange({ target: { value: "500" } });
+    ovNode = ov.render({}); renderTree(ovNode);
+    click(findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "保存"));
+    await wait(700);
+    ovNode = ov.render({}); renderTree(ovNode);
+
+    const p1 = ((global.__sl_test_state__ || {}).config?.positions || []).find((x) => x.code === "sh600519") || {};
+    // 改完之后当前持仓应**等于手填值**，不能被旧流水再叠加一遍
+    check("改成本/股数后当前持仓 = 手填值（旧流水被吸收）",
+      p1.qty === 500 && Math.abs(p1.cost - 2000) < 1e-6, { qty: p1.qty, cost: p1.cost });
+    check("同时刷新了修正点 baseAt（用于区分之后的新流水）",
+      typeof p1.baseAt === "number" && p1.baseAt > 0, { baseAt: p1.baseAt, baseQty: p1.baseQty, baseCost: p1.baseCost });
+    // 关键：上面那条只看"赋值结果"，双重计算时也可能恰好相等（空转过一次）。
+    // 这里再触发一次**删掉最后一笔流水**的动作——它会走 applyReplay，
+    // 此时只有 baseAt 过滤正确，才能回到 500 股而不是又叠加老流水。
+    if ((p1.txns || []).length >= 1) {
+      contextMenu(posRow(ovNode));
+      ovNode = ov.render({}); renderTree(ovNode);
+      const recMi3 = findMenuItem(ovNode, "交易记录");
+      if (recMi3) {
+        click(recMi3);
+        dismissMenu();
+        ovNode = ov.render({}); renderTree(ovNode);
+        const delBtns = [];
+        (function walk(n) {
+          if (!n || typeof n !== "object") return;
+          if (Array.isArray(n)) { n.forEach(walk); return; }
+          if (n.type === "button" && String((n.props && n.props.className) || "") === "sl-x"
+            && /删除/.test(String((n.props && n.props["data-sltip"]) || ""))) delBtns.push(n);
+          if (typeof n.type === "function") { walk(n.__rendered); return; }
+          if (n.children) n.children.forEach(walk);
+        })(ovNode);
+        if (delBtns.length) {
+          click(delBtns[0]); // 删最新一笔
+          await wait(600);
+          ovNode = ov.render({}); renderTree(ovNode);
+          const p3 = ((global.__sl_test_state__ || {}).config?.positions || []).find((x) => x.code === "sh600519") || {};
+          // 删掉的是修正前的老流水 → 因为被 baseAt 吸收，持仓应**纹丝不动**仍是 500@2000
+          check("删掉修正前的老流水，持仓不受影响（证明吸收真的生效）",
+            p3.qty === 500 && Math.abs(p3.cost - 2000) < 1e-6, { qty: p3.qty, cost: p3.cost });
+          click(findNode(ovNode, (n) => n.type === "button" && /返回/.test(String(n.children && n.children[0]))));
+          ovNode = ov.render({}); renderTree(ovNode);
+        }
+      }
+    }
+
+    // 修正之后**再记一笔**买入：应正常叠加到期初之上
+    // 注意：菜单项是 toggle（已展开时叫「收起交易」），点它会把抽屉关掉。
+    // 所以先确认抽屉当前是否已展开，只在收起时才去点。
+    const drawerOpen = () => !!findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "价格");
+    if (!drawerOpen()) {
+      contextMenu(posRow(ovNode));
+      ovNode = ov.render({}); renderTree(ovNode);
+      const txnMi2 = findMenuItem(ovNode, "记一笔交易");
+      if (txnMi2) {
+        click(txnMi2);
+        dismissMenu();
+        ovNode = ov.render({}); renderTree(ovNode);
+        await wait(150);
+        ovNode = ov.render({}); renderTree(ovNode);
+      }
+    }
+    const priceIn = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "价格");
+    const qtyIn = findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "股数");
+    check("交易抽屉已展开（前置）", !!priceIn && !!qtyIn, textOf(ovNode).join(" ").slice(0, 180));
+    if (priceIn && qtyIn) {
+      priceIn.props.onChange({ target: { value: "1000" } });
+      ovNode = ov.render({}); renderTree(ovNode);
+      findNode(ovNode, (n) => n.type === "input" && n.props.placeholder === "股数").props.onChange({ target: { value: "100" } });
+      ovNode = ov.render({}); renderTree(ovNode);
+      click(findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]).indexOf("记一笔") >= 0));
+      await wait(700);
+      ovNode = ov.render({}); renderTree(ovNode);
+      const p2 = ((global.__sl_test_state__ || {}).config?.positions || []).find((x) => x.code === "sh600519") || {};
+      const wantCost = Math.round(((2000 * 500 + 1000 * 100) / 600) * 10000) / 10000;
+      check("修正之后的新流水正常叠加（500@2000 + 100@1000 → 600股）",
+        p2.qty === 600 && Math.abs(p2.cost - wantCost) < 1e-6, { qty: p2.qty, cost: p2.cost, want: wantCost });
+    }
+  }
+}
 // ---------- 8. 收益胶囊 hover 浮层（市值/累计收益+%/每只持仓今日盈亏+当日涨幅） ----------
 {
   // 重新渲染悬浮指数栏（此时已有持仓 + 行情）
