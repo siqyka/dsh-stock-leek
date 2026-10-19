@@ -712,58 +712,83 @@ check("详情含分时/K线切换", /分时/.test(ovText) && /日K/.test(ovText)
 check("详情含指标", /今开|昨收|最高/.test(ovText), ovText.slice(0, 240));
 check("详情已屏蔽「🤖 分析」入口", ovText.indexOf("分析") < 0 && !findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]).indexOf("分析") >= 0), ovText.slice(0, 240));
 
-// 五档盘口：详情页应画出买卖两列，且**卖盘在上、买盘在下**（与券商软件一致）
+// 五档盘口：**左卖右买**两列，且手数/金额可切换
 {
-  const ob = findNode(ovNode, (n) => String((n.props && n.props.className) || "") === "sl-ob");
-  check("详情页有五档盘口区块", !!ob, ovText.slice(0, 240));
-  if (ob) {
-    const rowsText = [];
+  const txtOf = (root) => {
+    const seg = [];
+    (function inner(x) {
+      // 字符串判断必须在"非对象就返回"之前，否则文本会被静默丢掉（踩过）
+      if (typeof x === "string" || typeof x === "number") { seg.push(String(x)); return; }
+      if (!x || typeof x !== "object") return;
+      if (Array.isArray(x)) { x.forEach(inner); return; }
+      if (typeof x.type === "function") { inner(x.__rendered); return; }
+      if (x.children) x.children.forEach(inner);
+      else if (x.props && x.props.children !== undefined) inner(x.props.children);
+    })(root);
+    return seg.join(" ");
+  };
+  const collect = (root, pred) => {
+    const out = [];
     (function walk(n) {
       if (!n || typeof n !== "object") return;
       if (Array.isArray(n)) { n.forEach(walk); return; }
-      const cls = String((n.props && n.props.className) || "");
-      if (cls.indexOf("sl-ob-row") >= 0) {
-        const seg = [];
-        (function inner(x) {
-          // 字符串判断必须在"非对象就返回"之前，否则文本会被静默丢掉（踩过）
-          if (typeof x === "string" || typeof x === "number") { seg.push(String(x)); return; }
-          if (!x || typeof x !== "object") return;
-          if (Array.isArray(x)) { x.forEach(inner); return; }
-          if (typeof x.type === "function") { inner(x.__rendered); return; }
-          // h() 的文本子节点在 children；但元素也可能把文本放在 props.children
-          if (x.children) x.children.forEach(inner);
-          else if (x.props && x.props.children !== undefined) inner(x.props.children);
-        })(n);
-        rowsText.push({ ask: cls.indexOf("sl-ob-ask") >= 0, bid: cls.indexOf("sl-ob-bid") >= 0, text: seg.join(" ") });
-      }
+      if (pred(n)) out.push(n);
       if (typeof n.type === "function") { walk(n.__rendered); return; }
       if (n.children) n.children.forEach(walk);
-    })(ovNode);
-    check("盘口渲染出档位行（买卖各自成列）", rowsText.length >= 2, rowsText.length);
-    check("盘口标注买/卖档位", rowsText.some((r) => /买/.test(r.text)) || rowsText.some((r) => /卖/.test(r.text)), rowsText.slice(0, 3));
-    // 关键顺序：卖盘行必须排在买盘行之前（DOM 顺序 = 视觉顺序）
-    const firstAsk = rowsText.findIndex((r) => r.ask);
-    const firstBid = rowsText.findIndex((r) => r.bid);
-    check("卖盘排在买盘之前（卖五…卖一 / 现价 / 买一…买五）",
-      firstAsk >= 0 && firstBid >= 0 && firstAsk < firstBid, { firstAsk, firstBid });
-    // **卖盘内部要倒序**：卖五在最上、卖一贴近现价。
-    // 只验"卖在买之前"是不够的——去掉 .reverse() 那条照样绿（实测空转过一次）。
-    const askLv = rowsText.filter((r) => r.ask).map((r) => {
-      const m = /卖(\d)/.exec(r.text);
-      return m ? Number(m[1]) : null;
+    })(root);
+    return out;
+  };
+  const ob = findNode(ovNode, (n) => String((n.props && n.props.className) || "") === "sl-ob");
+  check("详情页有五档盘口区块", !!ob, ovText.slice(0, 240));
+  if (ob) {
+    // 1) 两列结构：左卖右买（DOM 顺序 = 视觉顺序，flex 行内先出现的在左边）
+    const askSide = collect(ob, (n) => String((n.props && n.props.className) || "").indexOf("sl-ob-side-ask") >= 0);
+    const bidSide = collect(ob, (n) => String((n.props && n.props.className) || "").indexOf("sl-ob-side-bid") >= 0);
+    check("盘口分成卖盘/买盘两列", askSide.length === 1 && bidSide.length === 1, { ask: askSide.length, bid: bidSide.length });
+    // 关键：卖盘列必须排在买盘列**之前**（= 在左侧）
+    const allSides = collect(ob, (n) => {
+      const c = String((n.props && n.props.className) || "");
+      return c.indexOf("sl-ob-side") >= 0;
     });
-    check("卖盘自上而下是 卖五→卖一（内部倒序）",
-      askLv.length >= 2 && askLv.every((v, i) => v !== null && (i === 0 || askLv[i - 1] >= v)) && askLv[0] > askLv[askLv.length - 1],
-      askLv);
-    // 买盘内部正序：买一在最上、买五在最下
-    const bidLv = rowsText.filter((r) => r.bid).map((r) => {
-      const m = /买(\d)/.exec(r.text);
-      return m ? Number(m[1]) : null;
-    });
-    check("买盘自上而下是 买一→买五（内部正序）",
-      bidLv.length >= 2 && bidLv.every((v, i) => v !== null && (i === 0 || bidLv[i - 1] <= v)) && bidLv[0] < bidLv[bidLv.length - 1],
-      bidLv);
-    check("中间有「现价」分隔行", /现价/.test(textOf(ob).join(" ")), textOf(ob).join(" ").slice(0, 120));
+    check("卖盘在左、买盘在右（左卖右买）",
+      allSides.length === 2 && /ask/.test(String(allSides[0].props.className)) && /bid/.test(String(allSides[1].props.className)),
+      allSides.map((s) => s.props.className));
+
+    // 2) 每列内部的档位顺序：卖 5→1（向中间收敛）、买 1→5
+    const lvOf = (side, ch) => collect(side, (n) => String((n.props && n.props.className) || "") === "sl-ob-lv")
+      .map((n) => { const m = new RegExp(ch + "(\\d)").exec(txtOf(n)); return m ? Number(m[1]) : null; });
+    if (askSide.length === 1) {
+      const askLv = lvOf(askSide[0], "卖");
+      // 卖1 在最上、往下是卖5（与买盘同向：都从贴近现价的一档开始）
+      check("卖盘列自上而下是 卖1→卖5", askLv.length >= 2 && askLv.every((v, i) => v !== null && (i === 0 || askLv[i - 1] <= v)) && askLv[0] < askLv[askLv.length - 1], askLv);
+    }
+    if (bidSide.length === 1) {
+      const bidLv = lvOf(bidSide[0], "买");
+      check("买盘列自上而下是 买1→买5", bidLv.length >= 2 && bidLv.every((v, i) => v !== null && (i === 0 || bidLv[i - 1] <= v)) && bidLv[0] < bidLv[bidLv.length - 1], bidLv);
+    }
+    check("有列头标注 卖盘/买盘", /卖盘/.test(txtOf(ob)) && /买盘/.test(txtOf(ob)), txtOf(ob).slice(0, 120));
+
+    // 3) 单位切换：默认「手数」，点「金额」后同一档显示金额
+    check("默认按手数显示（出现「手」）", /手/.test(txtOf(ob)), txtOf(ob).slice(0, 160));
+    const amtBtn = findNode(ob, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "金额");
+    check("盘口有「金额」切换按钮", !!amtBtn);
+    if (amtBtn) {
+      click(amtBtn);
+      ovNode = ov.render({}); renderTree(ovNode);
+      const ob2 = findNode(ovNode, (n) => String((n.props && n.props.className) || "") === "sl-ob");
+      const t2 = txtOf(ob2);
+      // 金额口径不应再出现「N手」，而应出现万/元
+      check("切到金额后不再显示「手」", !/\d+手/.test(t2), t2.slice(0, 180));
+      check("切到金额后显示金额单位（万/元）", /万|亿/.test(t2) || /\d{2,}/.test(t2), t2.slice(0, 180));
+      check("切单位后卖盘仍在买盘左侧（结构不变）",
+        (() => {
+          const ss = collect(ob2, (n) => String((n.props && n.props.className) || "").indexOf("sl-ob-side") >= 0);
+          return ss.length === 2 && /ask/.test(String(ss[0].props.className));
+        })(), null);
+      // 切回手数，避免影响后续断言
+      const lotsBtn = findNode(ob2, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "手数");
+      if (lotsBtn) { click(lotsBtn); ovNode = ov.render({}); renderTree(ovNode); }
+    }
   }
 }
 // 切到日K

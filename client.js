@@ -308,23 +308,41 @@ window.__ModuleLoader__.load({
 .sl-stats{display:flex;flex-wrap:wrap;gap:4px 12px;color:var(--sl-dim);font-size:11px}
 .sl-stats b{color:var(--sl-text);font-weight:600}
 .sl-chartbox{padding:2px 6px}
-/* 五档盘口：卖盘在上、买盘在下（价格自上而下递减，与券商软件一致） */
-.sl-ob{display:flex;flex-direction:column;gap:1px;padding:6px 8px 8px;margin:0 6px 8px;border:1px solid var(--sl-border-soft);border-radius:8px;background:var(--sl-bg2)}
-.sl-ob-head{display:flex;align-items:center;gap:8px;font-size:10px;color:var(--sl-muted);margin-bottom:3px}
-.sl-ob-row{position:relative;display:flex;align-items:center;gap:8px;font-size:11px;padding:2px 4px;border-radius:4px;font-variant-numeric:tabular-nums;overflow:hidden}
+/* 五档盘口：**左卖右买**两列 */
+.sl-ob{display:flex;flex-direction:column;gap:2px;padding:6px 8px 8px;margin:0 6px 8px;border:1px solid var(--sl-border-soft);border-radius:8px;background:var(--sl-bg2)}
+.sl-ob-head{display:flex;align-items:center;gap:8px;font-size:10px;color:var(--sl-muted);margin-bottom:2px}
+/* 手数/金额切换 */
+.sl-ob-unit{display:inline-flex;gap:0;border:1px solid var(--sl-border-soft);border-radius:5px;overflow:hidden;flex:none}
+.sl-ob-unit button{background:transparent;border:none;color:var(--sl-muted);cursor:pointer;font:inherit;font-size:10px;line-height:1;padding:2px 7px}
+.sl-ob-unit button:hover{color:var(--sl-text);background:var(--sl-hover)}
+.sl-ob-unit button.on{color:var(--sl-accent);background:var(--sl-accent-soft)}
+.sl-ob-ratio{flex:none;font-size:10px;font-variant-numeric:tabular-nums}
+/* 两列列头 */
+.sl-ob-cols{display:flex;gap:10px;font-size:10px;color:var(--sl-muted);padding:0 4px 2px;border-bottom:1px solid var(--sl-border-soft)}
+.sl-ob-colhead{flex:1;min-width:0}
+.sl-ob-t-bid{text-align:right}
+/* 主体：左卖右买，两列各 5 行 */
+.sl-ob-body{display:flex;gap:10px}
+.sl-ob-side{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.sl-ob-row{position:relative;display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 4px;border-radius:4px;font-variant-numeric:tabular-nums;overflow:hidden;min-height:18px}
 .sl-ob-row:hover{background:var(--sl-hover)}
-.sl-ob-lv{flex:none;width:22px;color:var(--sl-muted);font-size:10px}
-.sl-ob-price{flex:none;width:74px;text-align:right}
-.sl-ob-qty{flex:none;width:58px;text-align:right;color:var(--sl-dim)}
-/* 横条：绝对定位铺在行底，宽度按该档量占十档最大量的比例 */
-.sl-ob-bar{position:absolute;left:0;top:0;bottom:0;width:100%;pointer-events:none;display:flex;justify-content:flex-end;opacity:.16}
-.sl-ob-bar i{display:block;height:100%;border-radius:4px 0 0 4px}
-.sl-ob-bid .sl-ob-price{color:var(--sl-up)}
-.sl-ob-bid .sl-ob-bar i{background:var(--sl-up)}
+/* 占位行：某侧不足五档时保持两列等高，避免左右错位 */
+.sl-ob-pad{visibility:hidden}
+.sl-ob-lv{flex:none;width:24px;color:var(--sl-muted);font-size:10px}
+.sl-ob-price{flex:none;width:62px;text-align:right}
+.sl-ob-qty{flex:1;min-width:0;text-align:right;color:var(--sl-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 横条：铺在行底，宽度按当前口径（手数/金额）占十档最大值的比例 */
+.sl-ob-bar{position:absolute;left:0;top:0;bottom:0;width:100%;pointer-events:none;display:flex;opacity:.16}
+.sl-ob-bar i{display:block;height:100%}
+/* 卖盘横条从右往左长（贴着中间），买盘从左往右长 —— 两列视觉上向中间收敛 */
+.sl-ob-ask .sl-ob-bar{justify-content:flex-end}
+.sl-ob-ask .sl-ob-bar i{border-radius:4px 0 0 4px}
+.sl-ob-bid .sl-ob-bar{justify-content:flex-start}
+.sl-ob-bid .sl-ob-bar i{border-radius:0 4px 4px 0}
 .sl-ob-ask .sl-ob-price{color:var(--sl-down)}
 .sl-ob-ask .sl-ob-bar i{background:var(--sl-down)}
-/* 中间那行现价：把卖盘与买盘分开 */
-.sl-ob-mid{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:var(--sl-muted);padding:3px 4px;margin:2px 0;border-top:1px dashed var(--sl-border-soft);border-bottom:1px dashed var(--sl-border-soft);font-variant-numeric:tabular-nums}
+.sl-ob-bid .sl-ob-price{color:var(--sl-up)}
+.sl-ob-bid .sl-ob-bar i{background:var(--sl-up)}
 .sl-toast{position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:10000;background:var(--sl-bg);border:1px solid var(--sl-border);border-radius:8px;padding:6px 14px;box-shadow:var(--sl-shadow);pointer-events:none;white-space:nowrap;color:var(--sl-text)}
 /* 右键菜单 */
 .sl-menu{position:fixed;z-index:10001;min-width:168px;max-width:240px;padding:4px;display:flex;flex-direction:column;gap:1px;background:var(--sl-bg);border:1px solid var(--sl-border);border-radius:8px;box-shadow:var(--sl-shadow);pointer-events:auto}
@@ -3698,42 +3716,76 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     function OrderBook(props) {
       const q = props.q;
       const book = q && q.book;
+      // 手数 / 金额 切换：纯展示偏好，放本地 useState 就够（不必进配置、也不跨股票同步）
+      const [unit, setUnit] = useState("lots"); // lots | amount
       if (!book || ((book.bids || []).length === 0 && (book.asks || []).length === 0)) {
         return h("div", { className: "sl-empty", style: { padding: "6px 8px" } }, "该股暂无五档盘口数据（停牌、集合竞价前，或港美股不提供）");
       }
       const bids = book.bids || [];
       const asks = book.asks || [];
-      const maxQty = Math.max(1, ...bids.map((x) => x.qty), ...asks.map((x) => x.qty));
-      // 委比 = (买量 − 卖量) / (买量 + 卖量)，衡量盘口多空压力
+      const amountOf = (x) => x.price * x.qty;
+      // 横条基准：按当前展示口径取最大值，切换单位时条长也一起变
+      const metric = (x) => (unit === "lots" ? x.qty / 100 : amountOf(x));
+      const maxMetric = Math.max(1, ...bids.map(metric), ...asks.map(metric));
+      // 委比 = (买量 − 卖量) / (买量 + 卖量)，始终按股数算（金额受价格影响，不适合做委比）
       const sumB = bids.reduce((a, x) => a + x.qty, 0);
       const sumA = asks.reduce((a, x) => a + x.qty, 0);
       const ratio = sumB + sumA > 0 ? ((sumB - sumA) / (sumB + sumA)) * 100 : null;
+      /**
+       * 单档显示值。手数按 AAC 惯例显示「手」（1 手=100 股）；金额显示到「万」便于阅读。
+       */
+      const valText = (x) => (unit === "lots" ? Math.round(x.qty / 100) + "手" : fmtMoney(amountOf(x), ""));
+      const valTip = (x, side, lv) =>
+        (side === "bid" ? "买" : "卖") + lv + "  " + fmtPrice(x.price) +
+        "\n" + x.qty + " 股（" + Math.round(x.qty / 100) + " 手）" +
+        "\n金额 " + fmtExact(amountOf(x)) + " 元";
       const row = (side, lv, x) => {
         const isBid = side === "bid";
-        const tip = (isBid ? "买" : "卖") + lv + " " + fmtPrice(x.price) + "\n挂单 " + fmtQty(x.qty, q.code) + "（" + x.qty + " 股）";
-        return h("div", { key: side + lv, className: "sl-ob-row " + (isBid ? "sl-ob-bid" : "sl-ob-ask"), "data-sltip": tip },
-          h("span", { className: "sl-ob-lv" }, (isBid ? "买" : "卖") + lv),
+        return h("div", {
+          key: side + lv,
+          className: "sl-ob-row " + (isBid ? "sl-ob-bid" : "sl-ob-ask"),
+          "data-sltip": valTip(x, side, lv),
+          // sl-ob-rev：买盘横条从右往左长（镜像），两列视觉上分别贴向中间与外侧
+          style: isBid ? null : null,
+        },
+          h("span", { className: "sl-ob-lv" }, lv),
           h("span", { className: "sl-ob-price" }, fmtPrice(x.price)),
-          h("span", { className: "sl-ob-qty" }, fmtQty(x.qty, q.code)),
-          h("span", { className: "sl-ob-bar" }, h("i", { style: { width: Math.max(2, Math.round((x.qty / maxQty) * 100)) + "%" } })));
+          h("span", { className: "sl-ob-qty" }, valText(x)),
+          h("span", { className: "sl-ob-bar" }, h("i", { style: { width: Math.max(2, Math.round((metric(x) / maxMetric) * 100)) + "%" } })));
       };
-      // 卖盘倒序：卖五在最上，卖一贴近现价
-      const askRows = asks.map((x, i) => row("ask", i + 1, x)).reverse();
+      // 左卖右买两列，两列都**从贴近现价的一档开始往下排**：
+      //   卖盘 卖1→卖5（卖1 在最上），买盘 买1→买5（买1 在最上）
+      // 这样左右两列首行分别是最接近现价的卖一/买一，横向读同一行的「距离现价远近」一致，
+      // 比传统把卖5 放顶上更好对照（用户要求卖1 在最上）。
+      const askRows = asks.map((x, i) => row("ask", "卖" + (i + 1), x));
+      const bidRows = bids.map((x, i) => row("bid", "买" + (i + 1), x));
+      const pad = (arr, n) => (arr.length >= n ? arr : arr.concat(Array.from({ length: n - arr.length }, (_, i) => h("div", { key: "pad" + i, className: "sl-ob-row sl-ob-pad" }))));
       return h("div", { className: "sl-ob" },
         h("div", { className: "sl-ob-head" },
           h("span", null, "五档盘口"),
           h("span", { style: { flex: 1 } }),
+          // 单位切换：两个小按钮
+          h("span", { className: "sl-ob-unit" },
+            [["lots", "手数"], ["amount", "金额"]].map(([v, t]) =>
+              h("button", {
+                key: v,
+                className: unit === v ? "on" : "",
+                "data-sltip": v === "lots" ? "按手数显示（1 手 = 100 股）" : "按挂单金额显示（价格 × 股数）",
+                onClick: () => setUnit(v),
+              }, t))),
           ratio !== null
             ? h("span", {
-                className: ratio > 0 ? "sl-up" : ratio < 0 ? "sl-down" : "sl-flat",
+                className: "sl-ob-ratio " + (ratio > 0 ? "sl-up" : ratio < 0 ? "sl-down" : "sl-flat"),
                 "data-sltip": "委比 = (买五档总量 − 卖五档总量) ÷ 两者之和\n买 " + sumB + " 股 / 卖 " + sumA + " 股",
               }, "委比 " + (ratio > 0 ? "+" : "") + ratio.toFixed(1) + "%")
             : null),
-        asks.length ? askRows : null,
-        h("div", { className: "sl-ob-mid" },
-          h("span", null, "现价"),
-          h("b", { style: { color: q.percent > 0 ? "var(--sl-up)" : q.percent < 0 ? "var(--sl-down)" : "var(--sl-flat)" } }, fmtPrice(q.price))),
-        bids.length ? bids.map((x, i) => row("bid", i + 1, x)) : null);
+        // 列头：左卖右买
+        h("div", { className: "sl-ob-cols" },
+          h("span", { className: "sl-ob-colhead sl-ob-t-ask" }, "卖盘"),
+          h("span", { className: "sl-ob-colhead sl-ob-t-bid" }, "买盘")),
+        h("div", { className: "sl-ob-body" },
+          h("div", { className: "sl-ob-side sl-ob-side-ask" }, pad(askRows, 5)),
+          h("div", { className: "sl-ob-side sl-ob-side-bid" }, pad(bidRows, 5))));
     }
 
     /**
