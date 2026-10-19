@@ -238,6 +238,16 @@ for (const [name, samples] of FORMATTERS) {
       ],
       // 非今日的变动应被忽略
       [{ code: "sh600519", qty: 100, txns: [{ date: "2000-01-01", qty: 50, price: 1 }] }, { price: 100, yestclose: 95 }, 500],
+      // 今天才建立的持仓（openedAt=今天、还没有交易记录）：今日盈亏要按**成本**算，
+      // 不能按昨收——那会凭空多出「昨天就持有」的浮盈。
+      // 例：成本 52.435，现价 52.390，昨收 52.310 → 真实今日应是 -45，不是 +80。
+      [{ code: "sh601336", qty: 1000, cost: 52.435, openedAt: TODAY }, { price: 52.39, yestclose: 52.31 }, -45],
+      // 昨天及更早建立的持仓仍然按昨收算（不受影响）
+      [{ code: "sh601336", qty: 1000, cost: 52.435, openedAt: "2000-01-01" }, { price: 52.39, yestclose: 52.31 }, 80],
+      // openedAt 缺省（老配置）：保持旧行为，按昨收算
+      [{ code: "sh601336", qty: 1000, cost: 52.435 }, { price: 52.39, yestclose: 52.31 }, 80],
+      // 今天建仓但没有成本价（还没填）：退回昨收口径，别算出 NaN
+      [{ code: "sh601336", qty: 1000, openedAt: TODAY }, { price: 52.39, yestclose: 52.31 }, 80],
     ];
     const diffs = [];
     for (const [p, q, expect] of cases) {
@@ -252,8 +262,14 @@ for (const [name, samples] of FORMATTERS) {
       } catch (e) {
         b = "ERR:" + e.message;
       }
-      if (String(a) !== String(b)) diffs.push({ p, q, client: a, shared: b });
-      if (expect !== null && a !== expect) diffs.push({ expect, actual: a, p });
+      // 价格是小数，金额必然带浮点误差（如 -45.000000000001705）。
+      // 用严格相等会把**正确的实现**判成错的，所以数值一律走容差比较。
+      const same = (x, y) => {
+        if (typeof x === "number" && typeof y === "number") return Math.abs(x - y) < 1e-6;
+        return String(x) === String(y);
+      };
+      if (!same(a, b)) diffs.push({ p, q, client: a, shared: b });
+      if (expect !== null && !same(a, expect)) diffs.push({ expect, actual: a, p });
     }
     check("todayPnl 与 shared.js 行为一致", diffs.length === 0, diffs.slice(0, 3));
   }

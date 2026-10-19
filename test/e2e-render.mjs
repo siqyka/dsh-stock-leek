@@ -10,6 +10,7 @@
  * （未指定 → 系统临时目录；指向真实配置 → 直接拒绝启动）。
  */
 import http from "node:http";
+import { readFileSync } from "node:fs";
 import { useTestConfigPath } from "./config-guard.mjs";
 
 useTestConfigPath("e2e");
@@ -1002,6 +1003,75 @@ if (posSug) {
       const t = textOf(ovNode).join(" ");
       console.log("   持仓片段:", t.slice(0, 260));
       check("持仓显示盈亏（成本1000/股数100）", /累计|市值/.test(t) && /贵州茅台/.test(t) && /1000/.test(t), t.slice(0, 220));
+
+      // 首次填上 qty>0 即视为「今天建仓」→ 必须落下 openedAt（行情日期口径）。
+      // 没有它，todayPnl 会把新仓当成「昨天就持有」，今日盈亏按昨收算而虚增。
+      //
+      // 关键：要等 **Host 回包合并完成**再读，否则读到的是本地乐观值——
+      // 那样连「Host 白名单不放行该字段」都测不出来（实测过：丢字段时这条照样绿）。
+      await until(() => {
+        const ps = ((global.__sl_test_state__ || {}).config?.positions) || [];
+        const x = ps.find((v) => v.code === "sh600519") || {};
+        return !!x.openedAt;
+      }, 4000);
+      const posNow0 = ((global.__sl_test_state__ || {}).config?.positions || []).find((x) => x.code === "sh600519") || {};
+      // 直接读 Host 落盘文件：这是「字段真被持久化」的唯一硬证据。
+      // 只读本地 state 的话，Host 白名单丢字段时本地乐观值仍带着它 → 断言空转（实测过）。
+      const onDisk = (() => {
+        try {
+          const j = JSON.parse(readFileSync(process.env.DSH_STOCK_LEEK_CONFIG, "utf8"));
+          return (j.positions || []).find((x) => x.code === "sh600519") || {};
+        } catch (e) {
+          return { __err: String(e && e.message) };
+        }
+      })();
+      check("openedAt 已真正落盘（Host 白名单放行）", !!onDisk.openedAt, onDisk);
+      const q0 = (global.__sl_test_state__ || {}).quotes?.["sh600519"] || {};
+      const dayOf = (qq) => {
+        const tt = String(qq.time || "");
+        return /^\d{14}$/.test(tt) ? tt.slice(0, 4) + "-" + tt.slice(4, 6) + "-" + tt.slice(6, 8) : "";
+      };
+      const expectDay = dayOf(q0);
+      check("首次填股数后落下了 openedAt", !!posNow0.openedAt, { openedAt: posNow0.openedAt, qty: posNow0.qty });
+      check("openedAt 用的是行情日期（与 quoteDate 同口径）",
+        !expectDay || posNow0.openedAt === expectDay, { openedAt: posNow0.openedAt, quoteDay: expectDay });
+
+      // 再改一次股数：openedAt 不能被刷成新值（否则每次编辑都变成"今天建仓"）
+      // 注意股数要**改回原值 100**：后面的买卖用例都基于「100 股、成本 1000」这条基线，
+      // 改了不复位会把它们全带红（踩过）。
+      const beforeOpened = posNow0.openedAt;
+      contextMenu(posRow(ovNode));
+      ovNode = ov.render({}); renderTree(ovNode);
+      const editMi2 = findMenuItem(ovNode, "编辑成本");
+      if (editMi2) {
+        click(editMi2);
+        dismissMenu();
+        ovNode = ov.render({}); renderTree(ovNode);
+        findNode(ovNode, (n) => n.type === "input" && String(n.props.placeholder || "").indexOf("如 100") >= 0)
+          .props.onChange({ target: { value: "150" } });
+        ovNode = ov.render({}); renderTree(ovNode);
+        click(findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "保存"));
+        await wait(600);
+        ovNode = ov.render({}); renderTree(ovNode);
+        // 复位回 100
+        contextMenu(posRow(ovNode));
+        ovNode = ov.render({}); renderTree(ovNode);
+        const editMi3 = findMenuItem(ovNode, "编辑成本");
+        if (editMi3) {
+          click(editMi3);
+          dismissMenu();
+          ovNode = ov.render({}); renderTree(ovNode);
+          findNode(ovNode, (n) => n.type === "input" && String(n.props.placeholder || "").indexOf("如 100") >= 0)
+            .props.onChange({ target: { value: "100" } });
+          ovNode = ov.render({}); renderTree(ovNode);
+          click(findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "保存"));
+          await wait(600);
+          ovNode = ov.render({}); renderTree(ovNode);
+        }
+      }
+      const posNow1 = ((global.__sl_test_state__ || {}).config?.positions || []).find((x) => x.code === "sh600519") || {};
+      check("再次编辑股数不会刷新 openedAt", posNow1.openedAt === beforeOpened, { before: beforeOpened, after: posNow1.openedAt });
+      check("股数已复位到基线 100", posNow1.qty === 100, posNow1.qty);
     }
   }
 }

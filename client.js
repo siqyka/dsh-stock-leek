@@ -1487,11 +1487,31 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         return cfg;
       });
     }
+    /**
+     * 更新持仓（成本/股数等）。
+     *
+     * 记下 `openedAt` = 建仓当天的**行情日期**，供 todayPnl 区分
+     * 「今天刚建的仓」与「昨天就持有、今天没动」——前者今日盈亏要按成本算，
+     * 否则会凭空多出「昨天就持有」的浮盈（实测：成本 52.435/现价 52.390/昨收 52.310，
+     * 界面显示 +80，真实是 −45）。
+     *
+     * **只在真发生"从空仓变成有仓"的那一刻写入**（prevQty 为 0 → nextQty > 0）。
+     * 刻意不给已存在的老持仓补记：它们的建仓日无从推断，硬补会把「昨天就持有」
+     * 误判成「今天建的」，让今日盈亏从昨收口径突变成成本口径、数字凭空跳变。
+     * 老持仓保持旧口径，用户重新建仓（删掉再加）才会启用新口径。
+     * 已有 openedAt 一律不覆盖——否则每次改股数都会把建仓日刷成今天。
+     * 口径与 quoteDate 一致（行情日期而非本地日期，天然跳过周末）。
+     */
     function updatePosition(code, patch) {
       updateConfig((cfg) => {
         const p = cfgFind(cfg.positions, code);
         if (!p) return null;
+        const prevQty = p.qty || 0;
         Object.assign(p, patch);
+        const nextQty = p.qty || 0;
+        if (!p.openedAt && prevQty <= 0 && nextQty > 0) {
+          p.openedAt = quoteDate(state.quotes[code]);
+        }
         return cfg;
       });
     }
@@ -1699,6 +1719,11 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
      *   今日盈亏 = 当前持仓×现价 + 今日卖出金额 − 今日买入金额 − 昨日持仓×昨收
      *   其中 昨日持仓 = 当前持仓(qty) − 今日净变动(Σ今日 txns.qty)
      * 无今日变动时退化为 (现价 − 昨收) × qty。qty 视为「当前持仓」，与成本/股数录入一致。
+     *
+     * 例外：**今天才建立的持仓**（openedAt === 今日）按成本算 (现价−成本)×qty。
+     * 因为直接填成本+股数建仓没有 txns，光看「无当日变动」分不清
+     * 「昨天就持有今天没动」和「今天刚买」；按昨收算会给新仓凭空加一段浮盈。
+     * lib/shared.js 的内联副本，两端由 test/shared-drift.mjs 对拍。
      */
     function todayPnl(p, q) {
       if (!q || !Number.isFinite(q.price)) return 0;
@@ -1707,7 +1732,12 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       const today = quoteDate(q);
       const txns = (p.txns || []).filter((t) => t.date === today);
       const qty = p.qty || 0;
-      if (txns.length === 0) return yest !== null ? (now - yest) * qty : 0;
+      if (txns.length === 0) {
+        const openedToday = p.openedAt === today;
+        const cost = Number.isFinite(p.cost) ? p.cost : null;
+        if (openedToday && cost !== null && cost > 0) return (now - cost) * qty;
+        return yest !== null ? (now - yest) * qty : 0;
+      }
       let net = 0, buyAmt = 0, sellAmt = 0;
       for (const t of txns) {
         net += t.qty;

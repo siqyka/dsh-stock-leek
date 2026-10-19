@@ -173,6 +173,9 @@ function sanitizeItem(raw, withPosition) {
     out.cost = Number.isFinite(cost) && cost > 0 ? Math.round(cost * 10000) / 10000 : 0;
     out.qty = Number.isFinite(qty) && qty > 0 ? Math.round(qty) : 0;
     if (typeof raw.todayRef === "number" && Number.isFinite(raw.todayRef)) out.todayRef = raw.todayRef;
+    // 建仓当天的行情日期（YYYY-MM-DD）：todayPnl 靠它区分「今天刚建的仓」与
+    // 「昨天就持有、今天没动」。白名单重建**必须放行**，否则每次保存都被丢掉。
+    if (typeof raw.openedAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.openedAt)) out.openedAt = raw.openedAt;
     // 变动记录（买入 qty>0 / 卖出 qty<0）：今日收益据此计算，可多条
     if (Array.isArray(raw.txns)) {
       const txns = [];
