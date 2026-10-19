@@ -308,6 +308,23 @@ window.__ModuleLoader__.load({
 .sl-stats{display:flex;flex-wrap:wrap;gap:4px 12px;color:var(--sl-dim);font-size:11px}
 .sl-stats b{color:var(--sl-text);font-weight:600}
 .sl-chartbox{padding:2px 6px}
+/* 五档盘口：卖盘在上、买盘在下（价格自上而下递减，与券商软件一致） */
+.sl-ob{display:flex;flex-direction:column;gap:1px;padding:6px 8px 8px;margin:0 6px 8px;border:1px solid var(--sl-border-soft);border-radius:8px;background:var(--sl-bg2)}
+.sl-ob-head{display:flex;align-items:center;gap:8px;font-size:10px;color:var(--sl-muted);margin-bottom:3px}
+.sl-ob-row{position:relative;display:flex;align-items:center;gap:8px;font-size:11px;padding:2px 4px;border-radius:4px;font-variant-numeric:tabular-nums;overflow:hidden}
+.sl-ob-row:hover{background:var(--sl-hover)}
+.sl-ob-lv{flex:none;width:22px;color:var(--sl-muted);font-size:10px}
+.sl-ob-price{flex:none;width:74px;text-align:right}
+.sl-ob-qty{flex:none;width:58px;text-align:right;color:var(--sl-dim)}
+/* 横条：绝对定位铺在行底，宽度按该档量占十档最大量的比例 */
+.sl-ob-bar{position:absolute;left:0;top:0;bottom:0;width:100%;pointer-events:none;display:flex;justify-content:flex-end;opacity:.16}
+.sl-ob-bar i{display:block;height:100%;border-radius:4px 0 0 4px}
+.sl-ob-bid .sl-ob-price{color:var(--sl-up)}
+.sl-ob-bid .sl-ob-bar i{background:var(--sl-up)}
+.sl-ob-ask .sl-ob-price{color:var(--sl-down)}
+.sl-ob-ask .sl-ob-bar i{background:var(--sl-down)}
+/* 中间那行现价：把卖盘与买盘分开 */
+.sl-ob-mid{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:var(--sl-muted);padding:3px 4px;margin:2px 0;border-top:1px dashed var(--sl-border-soft);border-bottom:1px dashed var(--sl-border-soft);font-variant-numeric:tabular-nums}
 .sl-toast{position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:10000;background:var(--sl-bg);border:1px solid var(--sl-border);border-radius:8px;padding:6px 14px;box-shadow:var(--sl-shadow);pointer-events:none;white-space:nowrap;color:var(--sl-text)}
 /* 右键菜单 */
 .sl-menu{position:fixed;z-index:10001;min-width:168px;max-width:240px;padding:4px;display:flex;flex-direction:column;gap:1px;background:var(--sl-bg);border:1px solid var(--sl-border);border-radius:8px;box-shadow:var(--sl-shadow);pointer-events:auto}
@@ -3663,7 +3680,60 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               : null),
         ),
         h("div", { className: "sl-chartbox" }, chart),
+        // 五档盘口：跟行情快照一起来，不额外请求；放在图下方，避免挤压 K 线主视图
+        h(OrderBook, { q }),
       );
+    }
+
+    /**
+     * 五档买卖盘（Order Book）。
+     *
+     * 数据来自行情快照本身的 `q.book`（腾讯同一份响应里就有买一~买五/卖一~卖五），
+     * 不额外发请求，跟随现有刷新间隔一起更新。
+     *
+     * 展示顺序：**卖五~卖一在上、买一~买五在下**（价格自上而下递减），
+     * 与券商软件的盘口一致；中间那行是现价。
+     * 每档的横条按「该档挂单量 / 十档最大量」画，用来一眼看出哪边压得重。
+     */
+    function OrderBook(props) {
+      const q = props.q;
+      const book = q && q.book;
+      if (!book || ((book.bids || []).length === 0 && (book.asks || []).length === 0)) {
+        return h("div", { className: "sl-empty", style: { padding: "6px 8px" } }, "该股暂无五档盘口数据（停牌、集合竞价前，或港美股不提供）");
+      }
+      const bids = book.bids || [];
+      const asks = book.asks || [];
+      const maxQty = Math.max(1, ...bids.map((x) => x.qty), ...asks.map((x) => x.qty));
+      // 委比 = (买量 − 卖量) / (买量 + 卖量)，衡量盘口多空压力
+      const sumB = bids.reduce((a, x) => a + x.qty, 0);
+      const sumA = asks.reduce((a, x) => a + x.qty, 0);
+      const ratio = sumB + sumA > 0 ? ((sumB - sumA) / (sumB + sumA)) * 100 : null;
+      const row = (side, lv, x) => {
+        const isBid = side === "bid";
+        const tip = (isBid ? "买" : "卖") + lv + " " + fmtPrice(x.price) + "\n挂单 " + fmtQty(x.qty, q.code) + "（" + x.qty + " 股）";
+        return h("div", { key: side + lv, className: "sl-ob-row " + (isBid ? "sl-ob-bid" : "sl-ob-ask"), "data-sltip": tip },
+          h("span", { className: "sl-ob-lv" }, (isBid ? "买" : "卖") + lv),
+          h("span", { className: "sl-ob-price" }, fmtPrice(x.price)),
+          h("span", { className: "sl-ob-qty" }, fmtQty(x.qty, q.code)),
+          h("span", { className: "sl-ob-bar" }, h("i", { style: { width: Math.max(2, Math.round((x.qty / maxQty) * 100)) + "%" } })));
+      };
+      // 卖盘倒序：卖五在最上，卖一贴近现价
+      const askRows = asks.map((x, i) => row("ask", i + 1, x)).reverse();
+      return h("div", { className: "sl-ob" },
+        h("div", { className: "sl-ob-head" },
+          h("span", null, "五档盘口"),
+          h("span", { style: { flex: 1 } }),
+          ratio !== null
+            ? h("span", {
+                className: ratio > 0 ? "sl-up" : ratio < 0 ? "sl-down" : "sl-flat",
+                "data-sltip": "委比 = (买五档总量 − 卖五档总量) ÷ 两者之和\n买 " + sumB + " 股 / 卖 " + sumA + " 股",
+              }, "委比 " + (ratio > 0 ? "+" : "") + ratio.toFixed(1) + "%")
+            : null),
+        asks.length ? askRows : null,
+        h("div", { className: "sl-ob-mid" },
+          h("span", null, "现价"),
+          h("b", { style: { color: q.percent > 0 ? "var(--sl-up)" : q.percent < 0 ? "var(--sl-down)" : "var(--sl-flat)" } }, fmtPrice(q.price))),
+        bids.length ? bids.map((x, i) => row("bid", i + 1, x)) : null);
     }
 
     /**

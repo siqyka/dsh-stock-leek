@@ -84,6 +84,33 @@ check("quotes rows>=5", (r.json.rows || []).length >= 5, r.json.error);
 const names = (r.json.rows || []).map((x) => x.name).join(" / ");
 console.log("       ", names);
 
+// 2b. 五档盘口：买一~买五 / 卖一~卖五
+// 断言要点：字段真的被解析出来、价格有序（买盘递减、卖盘递增）、
+// 且**量的单位是股**（Hands→shares 换算过，否则界面上"挂 9 手"会被读成 9 股）。
+{
+  const aShare = (r.json.rows || []).find((x) => /^(sh|sz|bj)/.test(x.code) && x.book);
+  check("A 股行情带五档盘口 book", !!aShare, (r.json.rows || []).map((x) => x.code));
+  if (aShare) {
+    const bids = aShare.book.bids || [];
+    const asks = aShare.book.asks || [];
+    check("买盘/卖盘各最多五档", bids.length <= 5 && asks.length <= 5, { bids: bids.length, asks: asks.length });
+    check("五档每档含 price/qty 且为正",
+      [...bids, ...asks].every((x) => x.price > 0 && x.qty > 0 && Number.isFinite(x.qty)),
+      [...bids, ...asks].slice(0, 3));
+    // 买一盘价应低于卖一盘价（不穿越），且买盘从买一往下递减
+    const bidDesc = bids.every((x, i) => i === 0 || bids[i - 1].price >= x.price);
+    const askAsc = asks.every((x, i) => i === 0 || asks[i - 1].price <= x.price);
+    check("买盘价格自上而下递减", bidDesc, bids.map((x) => x.price));
+    check("卖盘价格自上而下递增", askAsc, asks.map((x) => x.price));
+    check("买一价 < 卖一价（盘口不交叉）",
+      bids.length === 0 || asks.length === 0 || bids[0].price <= asks[0].price,
+      { bid1: bids[0] && bids[0].price, ask1: asks[0] && asks[0].price });
+    // 量的单位：A 股的挂单量是「手」的整数倍 → ×100 后必然是 100 的整数倍
+    check("挂单量已从「手」换算成「股」（100 的整数倍）",
+      [...bids, ...asks].every((x) => x.qty % 100 === 0), [...bids, ...asks].map((x) => x.qty));
+  }
+}
+
 // 3. minute
 r = await get("/dsh-stock-leek/minute?code=sh000001");
 check("minute points", (r.json.points || []).length > 10, r.json.error);

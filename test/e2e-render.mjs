@@ -711,6 +711,61 @@ ovText = textOf(ovNode).join(" ");
 check("详情含分时/K线切换", /分时/.test(ovText) && /日K/.test(ovText), ovText.slice(0, 240));
 check("详情含指标", /今开|昨收|最高/.test(ovText), ovText.slice(0, 240));
 check("详情已屏蔽「🤖 分析」入口", ovText.indexOf("分析") < 0 && !findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]).indexOf("分析") >= 0), ovText.slice(0, 240));
+
+// 五档盘口：详情页应画出买卖两列，且**卖盘在上、买盘在下**（与券商软件一致）
+{
+  const ob = findNode(ovNode, (n) => String((n.props && n.props.className) || "") === "sl-ob");
+  check("详情页有五档盘口区块", !!ob, ovText.slice(0, 240));
+  if (ob) {
+    const rowsText = [];
+    (function walk(n) {
+      if (!n || typeof n !== "object") return;
+      if (Array.isArray(n)) { n.forEach(walk); return; }
+      const cls = String((n.props && n.props.className) || "");
+      if (cls.indexOf("sl-ob-row") >= 0) {
+        const seg = [];
+        (function inner(x) {
+          // 字符串判断必须在"非对象就返回"之前，否则文本会被静默丢掉（踩过）
+          if (typeof x === "string" || typeof x === "number") { seg.push(String(x)); return; }
+          if (!x || typeof x !== "object") return;
+          if (Array.isArray(x)) { x.forEach(inner); return; }
+          if (typeof x.type === "function") { inner(x.__rendered); return; }
+          // h() 的文本子节点在 children；但元素也可能把文本放在 props.children
+          if (x.children) x.children.forEach(inner);
+          else if (x.props && x.props.children !== undefined) inner(x.props.children);
+        })(n);
+        rowsText.push({ ask: cls.indexOf("sl-ob-ask") >= 0, bid: cls.indexOf("sl-ob-bid") >= 0, text: seg.join(" ") });
+      }
+      if (typeof n.type === "function") { walk(n.__rendered); return; }
+      if (n.children) n.children.forEach(walk);
+    })(ovNode);
+    check("盘口渲染出档位行（买卖各自成列）", rowsText.length >= 2, rowsText.length);
+    check("盘口标注买/卖档位", rowsText.some((r) => /买/.test(r.text)) || rowsText.some((r) => /卖/.test(r.text)), rowsText.slice(0, 3));
+    // 关键顺序：卖盘行必须排在买盘行之前（DOM 顺序 = 视觉顺序）
+    const firstAsk = rowsText.findIndex((r) => r.ask);
+    const firstBid = rowsText.findIndex((r) => r.bid);
+    check("卖盘排在买盘之前（卖五…卖一 / 现价 / 买一…买五）",
+      firstAsk >= 0 && firstBid >= 0 && firstAsk < firstBid, { firstAsk, firstBid });
+    // **卖盘内部要倒序**：卖五在最上、卖一贴近现价。
+    // 只验"卖在买之前"是不够的——去掉 .reverse() 那条照样绿（实测空转过一次）。
+    const askLv = rowsText.filter((r) => r.ask).map((r) => {
+      const m = /卖(\d)/.exec(r.text);
+      return m ? Number(m[1]) : null;
+    });
+    check("卖盘自上而下是 卖五→卖一（内部倒序）",
+      askLv.length >= 2 && askLv.every((v, i) => v !== null && (i === 0 || askLv[i - 1] >= v)) && askLv[0] > askLv[askLv.length - 1],
+      askLv);
+    // 买盘内部正序：买一在最上、买五在最下
+    const bidLv = rowsText.filter((r) => r.bid).map((r) => {
+      const m = /买(\d)/.exec(r.text);
+      return m ? Number(m[1]) : null;
+    });
+    check("买盘自上而下是 买一→买五（内部正序）",
+      bidLv.length >= 2 && bidLv.every((v, i) => v !== null && (i === 0 || bidLv[i - 1] <= v)) && bidLv[0] < bidLv[bidLv.length - 1],
+      bidLv);
+    check("中间有「现价」分隔行", /现价/.test(textOf(ob).join(" ")), textOf(ob).join(" ").slice(0, 120));
+  }
+}
 // 切到日K
 const dayBtn = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "日K");
 click(dayBtn);

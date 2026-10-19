@@ -13,7 +13,7 @@
 Host（index.js，cordis 插件，依赖 webServer）
   ├─ /config  GET/POST  读写配置（含首屏行情快照、版本号、损坏告警）
   ├─ /stream  SSE 行情推送（多标签页共用一次拉取）
-  ├─ /quotes  批量实时行情（qt.gtimg.cn，GBK，1.5s TTL + 单飞去重）
+  ├─ /quotes  批量实时行情（qt.gtimg.cn，GBK，1.5s TTL + 单飞去重；含五档买卖盘）
   ├─ /minute  分时   /kline 日/周/月K(前复权)   /search 全市场搜索
   └─ /probe   数据源连通性自检
         ▼

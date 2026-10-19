@@ -842,8 +842,40 @@ function parseQuoteLine(key, raw) {
     limitUp: num(f[47]) ?? null,
     limitDown: num(f[48]) ?? null,
     time: String(f[30] || "").trim(),
+    // 五档买卖盘：买一~买五在 f[9..18]，卖一~卖五在 f[19..28]，price/qty 交替。
+    // 量的单位是**手**（1 手 = 100 股），这里 ×100 换成「股」，与持仓口径一致，
+    // 否则界面上"挂 9 手"会被误读成 9 股。
+    // 停牌/无挂单时该档可能是 0 或空 → 过滤掉，避免渲染出一排 0.00。
+    book: parseOrderBook(f),
     live: true,
   };
+}
+
+/**
+ * 解析腾讯的五档买卖盘。
+ *
+ * 字段布局（price, qty 交替，共 20 个）：
+ *   [9]/[10]  买一价/量   [11]/[12] 买二 … [17]/[18] 买五
+ *   [19]/[20] 卖一价/量  [21]/[22] 卖二 … [27]/[28] 卖五
+ *
+ * 量的单位是手 → 统一换成股（×100），与持仓/成交口径一致。
+ * 价格为 0 或量缺失的档位直接丢掉：停牌、集合竞价前、港美部分标的会给出 0。
+ */
+function parseOrderBook(f) {
+  const side = (start) => {
+    const out = [];
+    for (let i = 0; i < 5; i++) {
+      const price = num(f[start + i * 2]);
+      const lots = num(f[start + i * 2 + 1]);
+      if (price === null || price <= 0 || lots === null || lots <= 0) continue;
+      out.push({ price: round(price, 4), qty: Math.round(lots * 100) });
+    }
+    return out;
+  };
+  const bids = side(9);
+  const asks = side(19);
+  if (bids.length === 0 && asks.length === 0) return null;
+  return { bids, asks };
 }
 
 function round(v, d) {
