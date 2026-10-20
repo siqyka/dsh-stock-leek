@@ -3646,16 +3646,51 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       for (const p of MA_ALL) maOn[p] = maList.indexOf(p) >= 0;
       const pos = cfg ? cfgFind(cfg.positions, code) : null; // 当前股票的持仓（用于成本线）
       const q = s.quotes[code];
+      /**
+       * K 线刷新用 tick：与盈亏曲线同一套 `curveRefreshTick`（按 pollMs 分桶）。
+       *
+       * 为什么必须让 K 线跟着行情走：原来 effect 只依赖 `[code, period]`，
+       * 也就是**切到日K 拉一次就再也不更新**。于是盘前打开日K 的人会一直看到
+       * 「最后一根是昨天」——盘中今天那根永远不出现（用户报的正是这个）。
+       * 日K 缓存也有 60s TTL，但光靠它不够：不重新发请求就永远拿不到新的。
+       */
+      const curPollMs = cfg && Number.isFinite(cfg.pollMs) ? cfg.pollMs : 5000;
+      const klineTick = curveRefreshTick(s.updatedAt, curPollMs);
       useEffect(() => {
         let alive = true;
-        setMinute(null); setKline(null); setCandle(null);
+        // 只有切股票/切周期时才清空并显示"加载中"；单纯因 tick 重拉时**保留旧图**，
+        // 否则每次刷新都会闪一下空白（盘中每几秒闪一次非常难看）。
         if (period === "minute") {
+          setMinute(null); setCandle(null);
           api("/minute", { code }).then((r) => { if (alive) setMinute(r); }).catch(() => { if (alive) setMinute({ points: [], error: "获取失败" }); });
         } else {
+          setKline(null); setCandle(null);
           api("/kline", { code, period, count: 120 }).then((r) => { if (alive) setKline(r); }).catch(() => { if (alive) setKline({ candles: [], error: "获取失败" }); });
         }
         return () => { alive = false; };
       }, [code, period]);
+      // 单独的「静默刷新」effect：跟随 tick 重拉，**不清空**当前图（不闪）
+      // 依赖里带上 code/period：否则切股票后闭包还拿着旧 code，
+      // 会把上一只票的数据写进当前视图（tick 恰好没变时就会发生）。
+      useEffect(() => {
+        let alive = true;
+        // 守卫写在体内（不用 `if (!klineTick) return undefined` 提前返回）：
+        // 提前返回会让这个 effect 不注册 cleanup，容易和别的 effect 槽位混淆。
+        if (klineTick) {
+          const isMin = period === "minute";
+          const done = (r) => {
+            if (!alive || !r) return;
+            if (isMin) { if (Array.isArray(r.points)) setMinute(r); }
+            else if (Array.isArray(r.candles)) setKline(r);
+          };
+          if (isMin) {
+            api("/minute", { code }).then(done).catch(() => {});
+          } else {
+            api("/kline", { code, period, count: 120 }).then(done).catch(() => {});
+          }
+        }
+        return () => { alive = false; };
+      }, [klineTick, code, period]);
       const col = q ? (q.percent > 0 ? "var(--sl-up)" : q.percent < 0 ? "var(--sl-down)" : "var(--sl-flat)") : "var(--sl-flat)";
       const chart =
         period === "minute"

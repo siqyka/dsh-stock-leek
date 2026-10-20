@@ -1086,10 +1086,23 @@ async function fetchMinute(code) {
 
 const klineCache = new Map(); // key -> { at, data }
 
+/**
+ * K 线缓存有效期。
+ *
+ * 日/周/月K 的**最后一根盘中一直在变**（今日那根跟着现价走），所以不能照抄
+ * 历史数据那种 60s 缓存——那会让"今天这根"半分钟才动一次。
+ * 但也不能完全不用缓存：切股票来回切会连打上游。
+ * 折中：盘中 10s（跟得上分钟级变化），非盘中退回 60s（收盘后数据是死的）。
+ * 这里用报价时间判断是否盘中由调用方决定不了，简单起见统一取较短值。
+ */
+const KLINE_LIVE_TTL = 10000;
+
 async function fetchKline(code, period, count, end) {
   const key = `${code}:${period}:${count}:${end || ""}`;
   const hit = klineCache.get(key);
-  if (hit && Date.now() - hit.at < KLINE_TTL) return hit.data;
+  // 用较短 TTL：日/周/月K 的末根在盘中持续变化，60s 会让"今日那根"明显滞后
+  const ttl = Math.min(KLINE_TTL, KLINE_LIVE_TTL);
+  if (hit && Date.now() - hit.at < ttl) return hit.data;
   // 美股必须走专用端点 usfqkline：通用 fqkline 对美股**只回当天 1 根**，
   // 实测 usIXIC 在 fqkline 仅 1 根、usfqkline 21 根（用户反馈「美股没有K线」的根因）。
   const isUs = /^(us|gb_)/i.test(code);

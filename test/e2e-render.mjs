@@ -838,6 +838,67 @@ click(dayBtn);
 ovNode = ov.render({});
 errs = renderTree(ovNode);
 check("日K 渲染无错误", errs.length === 0, errs[0] && (errs[0].error.stack || errs[0].error));
+
+// 日K 必须**跟着行情 tick 重拉**，否则「今天那根」永远不出现。
+// 回归：effect 原来只依赖 [code, period] → 切到日K 拉一次就再也不更新，
+// 盘前打开的人会一直看到"最后一根是昨天"（用户报的正是这个）。
+//
+// 用 fetch 替身**伪造 updatedAt** 精确跨过 tick 边界来验（与盈亏曲线用例同一手法）：
+// 光点 ⟳ 靠真实时间戳，有约 1/N 概率恰好落在同一个桶里，断言会随机红。
+{
+  const st0 = global.__sl_test_state__ || {};
+  const poll0 = Number((st0.config && st0.config.pollMs)) || 5000;
+  // 构造两个明确跨桶的 updatedAt：past 与 future 落在不同 tick 窗口
+  const base = Math.floor(Date.now() / 60000) * 60000 + 30000; // 锚在一分钟中间
+  const pastAt = base - 10 * poll0;
+  const futureAt = base + 10 * poll0;
+  let phase = "past";
+  let klineCalls = 0;
+  const prevFetch = global.fetch;
+  const spy = async (url, opts) => {
+    const u = String(url);
+    if (u.indexOf("/kline") >= 0) klineCalls++;
+    const r = await prevFetch(u.startsWith("http") ? u : ORIGIN + u, opts);
+    if (/\/quotes/.test(u)) {
+      const j = await r.clone().json();
+      j.updatedAt = phase === "past" ? pastAt : futureAt;
+      return jsonResponse(j, r.status);
+    }
+    return r;
+  };
+  global.window.fetch = spy;
+  global.fetch = spy;
+  const rf = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "⟳");
+  check("日K 用例能触发刷新（前置）", !!rf);
+  if (rf) {
+    // 第 0 拍：落到 past tick（不做断言，只为把状态摆好）
+    phase = "past";
+    rf.props.onClick({});
+    await wait(500);
+    ovNode = ov.render({}); renderTree(ovNode);
+    await wait(300);
+    ovNode = ov.render({}); renderTree(ovNode);
+    // 记下 past 拍的 tick，供断言核对（证明两拍确实跨桶）
+    const pastTick = Math.floor(Number((global.__sl_test_state__ || {}).updatedAt || 0) / poll0);
+    // 第 1 拍：跨桶 → 必须重拉 K 线
+    phase = "future";
+    klineCalls = 0;
+    const rf2 = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "⟳");
+    if (rf2) rf2.props.onClick({});
+    // 注意：mini-React 的 effect 在 renderTree 时才排空（见 harness 的 pendingEffects）。
+    // 只轮询 klineCalls 而不重新渲染，effect 永远排不出去 —— 断言必然假红（实测踩过）。
+    await until(() => {
+      ovNode = ov.render({}); renderTree(ovNode);
+      return klineCalls > 0;
+    }, 5000);
+    const futTick = Math.floor(Number((global.__sl_test_state__ || {}).updatedAt || 0) / poll0);
+    check("两拍确实跨过 tick（前置）", pastTick !== futTick, { pastTick, futTick });
+    check("日K 跟随行情 tick 重新拉取（今日那根才会更新）", klineCalls > 0, { klineCalls, poll0, pastTick, futTick });
+  }
+  global.window.fetch = prevFetch;
+  global.fetch = prevFetch;
+  ovNode = ov.render({}); renderTree(ovNode);
+}
 // 等 MA 数值标注真的算出来（原来睡 1000ms）。
 // 判据要用「MA5 <数字>」这种带数值的形状——只匹配 /MA5|MA10/ 会命中常驻的切换按钮，
 // 条件立刻成立、实际 K 线还没加载完，后面的数值断言就会红（踩过）。
