@@ -198,6 +198,30 @@ check("config ma 非数组回落默认", JSON.stringify(r.json.config.ma) === JS
   check("pnlCurve 非布尔回落默认", r.json.config.pnlCurve === true, r.json.config.pnlCurve);
 }
 
+// 6a3. 五档盘口的两个展示偏好（布局 / 挂单量口径）
+//
+// 这层最容易漏：sanitizeConfig 是白名单重建，不显式放行就会**静默丢掉**，
+// 表现为"切了按钮、下次保存又弹回默认"（ma / alerts / openedAt 都栽过）。
+// 显式覆盖：默认值 → 可写 → 已持久化 → 脏值回落。
+{
+  const baseCfg = (await get("/dsh-stock-leek/config?quotes=0")).json.config;
+  check("默认五档是左右布局", baseCfg.bookLayout === "cols", baseCfg.bookLayout);
+  check("默认五档按手数显示", baseCfg.bookUnit === "lots", baseCfg.bookUnit);
+
+  r = await post("/dsh-stock-leek/config", { config: { ...baseCfg, bookLayout: "rows", bookUnit: "amount" } });
+  check("bookLayout 可写为 rows", r.json.config.bookLayout === "rows", r.json.config.bookLayout);
+  check("bookUnit 可写为 amount", r.json.config.bookUnit === "amount", r.json.config.bookUnit);
+
+  r = await get("/dsh-stock-leek/config?quotes=0");
+  check("bookLayout 已持久化", r.json.config.bookLayout === "rows", r.json.config.bookLayout);
+  check("bookUnit 已持久化", r.json.config.bookUnit === "amount", r.json.config.bookUnit);
+
+  // 脏值必须回落默认，不能把界面卡在非法状态
+  r = await post("/dsh-stock-leek/config", { config: { ...baseCfg, bookLayout: "diagonal", bookUnit: 123 } });
+  check("bookLayout 非法值回落默认 cols", r.json.config.bookLayout === "cols", r.json.config.bookLayout);
+  check("bookUnit 非法值回落默认 lots", r.json.config.bookUnit === "lots", r.json.config.bookUnit);
+}
+
 // 6b. 备份与损坏恢复
 {
   const { readFileSync, writeFileSync, existsSync, rmSync } = await import("node:fs");

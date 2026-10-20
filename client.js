@@ -3751,7 +3751,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         ),
         h("div", { className: "sl-chartbox" }, chart),
         // 五档盘口：跟行情快照一起来，不额外请求；放在图下方，避免挤压 K 线主视图
-        h(OrderBook, { q }),
+        h(OrderBook, { q, cfg }),
       );
     }
 
@@ -3770,9 +3770,19 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
     function OrderBook(props) {
       const q = props.q;
       const book = q && q.book;
-      // 两个纯展示偏好，放本地 useState 就够（不必进配置、也不跨股票同步）
-      const [unit, setUnit] = useState("lots"); // lots | amount
-      const [layout, setLayout] = useState("cols"); // cols=左右 | rows=上下
+      /**
+       * 布局 / 挂单量口径都存进全局配置（cfg.bookLayout / cfg.bookUnit），
+       * 所以切一次就跨股票、跨重开保持。与 pnlCurve 同一套做法：
+       * 读走 cfg（带默认值兜底），写走 updateConfig（会落盘 + 跨标签页广播）。
+       *
+       * 必须只存在配置里、**不要再用本地 useState**：
+       * 两处状态并存时，配置回填会把本地值覆盖掉，表现为"点了按钮又弹回去"。
+       */
+      const cfgNow = (props.cfg) || {};
+      const unit = cfgNow.bookUnit === "amount" ? "amount" : "lots";
+      const layout = cfgNow.bookLayout === "rows" ? "rows" : "cols";
+      const setUnit = (v) => updateConfig((c) => { c.bookUnit = v; return c; });
+      const setLayout = (v) => updateConfig((c) => { c.bookLayout = v; return c; });
       if (!book || ((book.bids || []).length === 0 && (book.asks || []).length === 0)) {
         return h("div", { className: "sl-empty", style: { padding: "6px 8px" } }, "该股暂无五档盘口数据（停牌、集合竞价前，或港美股不提供）");
       }

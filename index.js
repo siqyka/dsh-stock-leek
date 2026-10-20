@@ -145,6 +145,10 @@ function defaultConfig() {
     alerts: [],
     /** 持仓页「今日盈亏走势」曲线是否展开（false=收起；用户点按后记住） */
     pnlCurve: true,
+    /** 五档盘口布局：cols=左右（左卖右买）/ rows=上下（卖5→卖1 / 现价 / 买1→买5） */
+    bookLayout: "cols",
+    /** 五档盘口挂单量口径：lots=手数（1手=100股）/ amount=金额（价格×股数） */
+    bookUnit: "lots",
     /** K 线图默认显示的均线周期 */
     ma: [5, 10, 20],
     /** 已暂停的市场（多选开关；被暂停的市场不刷新行情、不评估预警、指数栏不因它展开） */
@@ -273,6 +277,10 @@ function sanitizeConfig(raw) {
       .filter((k) => MARKET_KEYS.includes(k) && !seen.has(k) && seen.add(k));
   }
   if (typeof raw.pnlCurve === "boolean") cfg.pnlCurve = raw.pnlCurve;
+  // 五档盘口的两个展示偏好（布局 / 挂单量口径）。
+  // 白名单重建**必须放行**，否则用户切了按钮、下次保存就被丢掉变回默认。
+  if (raw.bookLayout === "cols" || raw.bookLayout === "rows") cfg.bookLayout = raw.bookLayout;
+  if (raw.bookUnit === "lots" || raw.bookUnit === "amount") cfg.bookUnit = raw.bookUnit;
   // 均线周期：只接受 MA_ALL 中出现的值，去重保序，最多 4 条
   if (Array.isArray(raw.ma)) {
     const seen = new Set();

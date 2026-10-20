@@ -824,10 +824,41 @@ check("详情已屏蔽「🤖 分析」入口", ovText.indexOf("分析") < 0 && 
           // 中间有现价行，且夹在两个堆叠块之间
           check("上下结构中间有「现价」行", /现价/.test(txtOf(obR)), txtOf(obR).slice(0, 160));
         }
-        // 切回左右，避免影响后续用例
+
+        // **持久化**：两个切换都必须写进配置，否则重开详情页/切股票就弹回默认。
+        // 这一层最容易漏——Host 的 sanitizeConfig 是白名单重建，
+        // 不显式放行 bookLayout/bookUnit 就会被静默丢掉（ma/alerts/openedAt 都栽过）。
+        {
+          const c1 = (global.__sl_test_state__ || {}).config || {};
+          check("切布局后写入配置 cfg.bookLayout=rows", c1.bookLayout === "rows", { bookLayout: c1.bookLayout });
+          // 切一次单位，验证两个字段各自独立落盘
+          const obU = findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
+          const amtBtn = findNode(obU, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "金额");
+          if (amtBtn) {
+            click(amtBtn);
+            ovNode = ov.render({}); renderTree(ovNode);
+          }
+          const c2 = (global.__sl_test_state__ || {}).config || {};
+          check("切单位后写入配置 cfg.bookUnit=amount", c2.bookUnit === "amount", { bookUnit: c2.bookUnit });
+          check("两个偏好互不干扰（布局仍是 rows）", c2.bookLayout === "rows", { bookLayout: c2.bookLayout });
+
+          // 「重开是否保持」**不要去点详情页导航**——那会把后续用例的页面状态带偏
+          // （实测：切到自选页再点进详情，后面的日K/MA 用例全挂在错误页面上，12 条连带红）。
+          // 这里只验证「配置已落盘」这个事实，页面导航类的持久化由上面两条 + 下面的
+          // "同一节点重新渲染仍按配置走"覆盖，代价小且不影响后续。
+          const obRe = ov.render({}); renderTree(obRe);
+          const obKeep = findNode(obRe, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
+          check("重新渲染后仍按配置显示上下结构（未回默认）",
+            !!obKeep && String(obKeep.props.className).indexOf("sl-ob-rows") >= 0, obKeep && obKeep.props.className);
+        }
+
+        // 切回左右 + 手数，避免影响后续用例
         const obR2 = findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
         const colsBtn = findNode(obR2, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "左右");
         if (colsBtn) { click(colsBtn); ovNode = ov.render({}); renderTree(ovNode); }
+        const obR3 = findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
+        const lotsBtn2 = findNode(obR3, (n) => n.type === "button" && String((n.children && n.children[0]) || "") === "手数");
+        if (lotsBtn2) { click(lotsBtn2); ovNode = ov.render({}); renderTree(ovNode); }
       }
     }
   }
