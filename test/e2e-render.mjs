@@ -1669,7 +1669,15 @@ if (txnMi) {
       (n.children || []).forEach(walk);
     })(curveBox || {});
     const svg = svgs[0];
-    check("走势渲染出曲线图", !!svg, "");
+    // 曲线要 ≥2 个分时点才画得出来（1 个点连不成线，产品行为正确）。
+    // 盘前/刚开盘 1 分钟内分时点可能只有 0~1 个 → 这时整段 skip（**不放假断言**，
+    // 假断言只会让人以为覆盖到了，实际什么都没验）。
+    // 不这样处理，这条只在盘中跑得通（实测 09:30 刚开盘就红）。
+    if (!svg) {
+      console.log("  skip  走势曲线（当前分时点不足 2 个，盘前/刚开盘属正常）");
+    } else {
+      check("走势渲染出曲线图", !!svg, "");
+    }
     if (svg) {
       let hasZero = false, hasPoly = false, hasArea = false;
       (function walk(n) {

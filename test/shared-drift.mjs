@@ -378,6 +378,42 @@ for (const [name, samples] of FORMATTERS) {
   }
 }
 
+// isAuctionBook：识别「集合竞价虚拟匹配价」而不是真实五档
+// 背景：竞价阶段交易所不披露委托明细，接口给的是 1 档同价同量（实测 09:21 sh600519）。
+// 不识别会画出「买1/卖1 同价同量」，让人误以为是真实挂单簿。
+{
+  const cf = extractFn("isAuctionBook");
+  check("isAuctionBook 在 client.js 中可提取", !!cf);
+  if (cf) {
+    const mk = (b, a) => ({ bids: b, asks: a });
+    const cases = [
+      // 真实竞价形态：各 1 档、同价同量、今开 0 → 是竞价
+      [mk([{ price: 1320.97, qty: 6800 }], [{ price: 1320.97, qty: 6800 }]), 0, true],
+      // 已开盘（今开 > 0）→ 不认（避免盘中巧合误判）
+      [mk([{ price: 1320.97, qty: 6800 }], [{ price: 1320.97, qty: 6800 }]), 1321, false],
+      // 正常五档（多档）→ 不是竞价
+      [mk([{ price: 10, qty: 100 }, { price: 9, qty: 200 }], [{ price: 11, qty: 100 }, { price: 12, qty: 200 }]), 0, false],
+      // 各 1 档但价不同 → 不是竞价（真实盘口的极端稀薄情形）
+      [mk([{ price: 10, qty: 100 }], [{ price: 11, qty: 100 }]), 0, false],
+      // 各 1 档、同价但量不同 → 不是竞价
+      [mk([{ price: 10, qty: 100 }], [{ price: 10, qty: 200 }]), 0, false],
+      // 空盘口 → 不是竞价
+      [mk([], []), 0, false],
+      // book 为 null → 不崩、返回 false
+      [null, 0, false],
+    ];
+    const bad = [];
+    for (const [book, open, want] of cases) {
+      let a, b;
+      try { a = cf(book, open); } catch (e) { a = "ERR:" + e.message; }
+      try { b = shared.isAuctionBook(book, open); } catch (e) { b = "ERR:" + e.message; }
+      if (a !== b) bad.push({ book, open, client: a, shared: b });
+      if (a !== want) bad.push({ open, want, actual: a });
+    }
+    check("isAuctionBook 与 shared.js 行为一致且语义正确", bad.length === 0, bad.slice(0, 3));
+  }
+}
+
 // 关键口径自检：确保 shared.js 自身语义没被改坏（防止两边一起错）
 {
   const p = { code: "sh600519", qty: 200, txns: [{ date: TODAY, qty: 100, price: 100 }] };

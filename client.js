@@ -351,6 +351,13 @@ window.__ModuleLoader__.load({
 .sl-ob-rows .sl-ob-qty{flex:1}
 .sl-ob-rows .sl-ob-bar{justify-content:flex-end}
 .sl-ob-rows .sl-ob-bar i{border-radius:4px 0 0 4px}
+/* ---- 集合竞价：没有真实盘口，只显示虚拟匹配价/可匹配量 ---- */
+.sl-ob-auction-row{display:flex;align-items:center;gap:8px;font-size:11px;padding:4px;border-radius:5px;background:var(--sl-bg);font-variant-numeric:tabular-nums}
+.sl-ob-auction-tag{flex:none;font-size:10px;color:var(--sl-warn);border:1px solid var(--sl-warn);border-radius:4px;padding:0 4px}
+.sl-ob-auction-px{flex:none;font-weight:600}
+.sl-ob-auction-qty{flex:none;color:var(--sl-dim)}
+.sl-ob-auction-hint{flex:none;font-size:10px;color:var(--sl-muted)}
+.sl-ob-auction-note{font-size:10px;color:var(--sl-muted);padding:2px 4px 0}
 /* 中间现价行：把上下两半分开 */
 .sl-ob-mid{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:var(--sl-muted);padding:3px 4px;margin:2px 0;border-top:1px dashed var(--sl-border-soft);border-bottom:1px dashed var(--sl-border-soft);font-variant-numeric:tabular-nums}
 .sl-toast{position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:10000;background:var(--sl-bg);border:1px solid var(--sl-border);border-radius:8px;padding:6px 14px;box-shadow:var(--sl-shadow);pointer-events:none;white-space:nowrap;color:var(--sl-text)}
@@ -3719,9 +3726,11 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
      * 数据来自行情快照本身的 `q.book`（腾讯同一份响应里就有买一~买五/卖一~卖五），
      * 不额外发请求，跟随现有刷新间隔一起更新。
      *
-     * 展示顺序：**卖五~卖一在上、买一~买五在下**（价格自上而下递减），
-     * 与券商软件的盘口一致；中间那行是现价。
-     * 每档的横条按「该档挂单量 / 十档最大量」画，用来一眼看出哪边压得重。
+     * **集合竞价时段（9:15–9:25 / 14:57–15:00）没有真实盘口**：沪深两市在竞价阶段
+     * 不披露委托明细，腾讯这时给的是「虚拟匹配价 + 可匹配量」，表现为买一与卖一
+     * **同价同量、且只有一档**（实测 09:21 的 sh600519：买卖都只有 1320.97×68）。
+     * 直接照着画会让人误以为是真实挂单簿，所以这种形态改标成「集合竞价」并只显示
+     * 这一行匹配价/匹配量 —— 说清楚它是什么，比画一格假盘口有用。
      */
     function OrderBook(props) {
       const q = props.q;
@@ -3734,6 +3743,23 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       }
       const bids = book.bids || [];
       const asks = book.asks || [];
+      /**
+       * 是否处于「集合竞价」形态。lib/shared.js 的内联副本，两端由 drift 对拍。
+       *
+       * 判据：只有一档 + 买卖同价同量 + 今开仍为 0。
+       * 竞价阶段交易所不披露委托明细，腾讯给的是虚拟匹配价 + 可匹配量
+       * （实测 09:21 的 sh600519：买卖都只有 1320.97×68、今开 0.00）。
+       * 今开的排除条件用来避开盘中恰好同价同量的巧合。
+       */
+      function isAuctionBook(book, open) {
+        const bs = (book && book.bids) || [];
+        const as = (book && book.asks) || [];
+        if (bs.length !== 1 || as.length !== 1) return false;
+        if (bs[0].price !== as[0].price) return false;
+        if (bs[0].qty !== as[0].qty) return false;
+        return !(Number(open) > 0);
+      }
+      const isAuction = isAuctionBook(book, q.open);
       const amountOf = (x) => x.price * x.qty;
       // 横条基准：按当前展示口径取最大值，切换单位时条长也一起变
       const metric = (x) => (unit === "lots" ? x.qty / 100 : amountOf(x));
@@ -3789,6 +3815,25 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               "data-sltip": "委比 = (买五档总量 − 卖五档总量) ÷ 两者之和\n买 " + sumB + " 股 / 卖 " + sumA + " 股",
             }, "委比 " + (ratio > 0 ? "+" : "") + ratio.toFixed(1) + "%")
           : null);
+
+      // **集合竞价**：没有真实盘口，只说清楚"虚拟匹配价 + 可匹配量"是什么。
+      // 画成买一/卖一各一行同价同量会让人误以为是真实挂单簿（实测就是这么返回的）。
+      if (isAuction) {
+        const m = bids[0];
+        return h("div", { className: "sl-ob sl-ob-auction" },
+          head,
+          h("div", {
+            className: "sl-ob-auction-row",
+            "data-sltip": "集合竞价阶段（9:15–9:25 / 14:57–15:00）交易所不披露委托明细。\n"
+              + "这里显示的是腾讯给出的**虚拟匹配价**与**可匹配量**，不是真实挂单簿。",
+          },
+            h("span", { className: "sl-ob-auction-tag" }, "集合竞价"),
+            h("span", { className: "sl-ob-auction-px" }, fmtPrice(m.price)),
+            h("span", { className: "sl-ob-auction-qty" }, unit === "lots" ? Math.round(m.qty / 100) + "手" : fmtMoney(amountOf(m), "")),
+            h("span", { style: { flex: 1 } }),
+            h("span", { className: "sl-ob-auction-hint" }, "虚拟匹配价 · 非真实挂单")),
+          h("div", { className: "sl-ob-auction-note" }, "开盘后自动切换为五档盘口"));
+      }
 
       if (layout === "rows") {
         // **上下结构**（券商软件惯例）：卖5→卖1 在上、现价居中、买1→买5 在下。

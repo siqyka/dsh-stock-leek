@@ -112,9 +112,45 @@ console.log("       ", names);
 }
 
 // 3. minute
+// 注意：**盘前/非交易日分时点会很少**（还没开盘，腾讯只给 1 行甚至空），
+// 所以不能写死"必须 > 10 条"——那会让这条断言只在盘中跑得通（实测盘前必红）。
+// 改成断"结构正确 + 时间戳递增 + points 是数组"，再单独区分盘中/盘外：
+//   盘中：至少 2 条（有数据流动）；
+//   盘外：允许 0~N 条，但仍必须是数组且 prevClose 有效。
 r = await get("/dsh-stock-leek/minute?code=sh000001");
-check("minute points", (r.json.points || []).length > 10, r.json.error);
-check("minute prevClose", typeof r.json.prevClose === "number");
+{
+  const pts = r.json.points;
+  // 用「盘中已开盘几分钟」推算期望点数，而不是写死 > 10：
+  // 开盘前 5 分钟只有 5 个点左右，写死 10 会让这条在 9:30–9:40 之间必红（实测踩过）。
+  const info = (() => {
+    const bj = new Date(Date.now() + 8 * 3600 * 1000);
+    const mins = bj.getUTCHours() * 60 + bj.getUTCMinutes();
+    const wd = bj.getUTCDay();
+    const isWeekday = wd >= 1 && wd <= 5;
+    const am = mins >= 570 && mins <= 690;
+    const pm = mins >= 780 && mins <= 900;
+    // 当日已交易分钟数（开盘后累计）
+    let elapsed = 0;
+    if (isWeekday) {
+      if (mins > 570) elapsed += Math.min(mins, 690) - 570;
+      if (mins > 780) elapsed += Math.min(mins, 900) - 780;
+    }
+    return { isWeekday, open: am || pm, elapsed: Math.max(0, elapsed) };
+  })();
+  check("minute points 是数组", Array.isArray(pts), typeof pts);
+  const n = (pts || []).length;
+  if (info.open && info.elapsed >= 5) {
+    // 盘中且已开盘 ≥5 分钟：点数应roughly等于已开盘分钟数（允许首尾各差 1~2）
+    check("盘中分时点数与已开盘分钟数相符（±3）", n >= info.elapsed - 3, { got: n, elapsed: info.elapsed });
+  } else {
+    console.log("  skip  盘中分时点数（当前非交易时段或刚开盘不足 5 分钟，点数少属正常）");
+    check("点数不超当日已交易分钟数+2", n <= info.elapsed + 2, { got: n, elapsed: info.elapsed });
+  }
+  // 有数据时时间戳必须单调递增（与时段无关，任何时段都该成立）
+  const ts = (pts || []).map((p) => String(p.t || ""));
+  check("分时时间戳单调不减", ts.every((v, i) => i === 0 || ts[i - 1] <= v), ts.slice(0, 4));
+  check("minute prevClose", typeof r.json.prevClose === "number", r.json.prevClose);
+}
 
 // 4. kline
 r = await get("/dsh-stock-leek/kline?code=sh600519&period=day&count=60");
