@@ -55,6 +55,36 @@ lib/shared.js（纯函数，Host 与测试共用）
 
 这条依赖的是宿主内部布局，**宿主升级后要重新确认**：在浏览器里看该行是否仍是 flex、`ContextMeter` 是否仍与槽位同级。若不成立，退路是改回默认顺序（与本插件其它功能无关，不会连带损坏）。
 
+## 指数栏关掉之后，入口在哪
+
+指数栏可以收起（`cfg.barVisible=false`）。但它的**所有**操作入口都长在它自己身上：
+悬浮窗（大盘/自选/持仓/设置）是从指数栏点开的，设置页在悬浮窗里，手动刷新 ⟳ 也在指数栏上。
+所以一收起，界面上就没剩任何入口 —— 只能手改配置文件。
+
+兜底入口放在宿主的「插件」页：侧栏「插件 → @shiqyka/dsh-stock-leek」，那里有一张
+「指数栏」配置卡片，带开关。那个页面永远可达。
+
+**用的是 `plugins.bundle.config`，不是 `plugins.detail.actions`。** 宿主对插件页声明的槽位分两类：
+
+| 槽位 | 类型 | 定位参数 | 渲染位置 |
+|---|---|---|---|
+| `plugins.detail.actions` | **list** | `id` | 页头，开关/卸载按钮旁边 |
+| `plugins.detail.badge` | **list** | `id` | 标题旁，版本标签之后 |
+| `plugins.detail.section` | **list** | `id` | 页面自身内容之下 |
+| `plugins.bundle.config` | **keyed** | `key` = 包名 | 描述与组件行之间（当作配置区排版） |
+| `plugins.row.config` | **keyed** | `key` = `<包名>#<行id>` | 该行自己的配置页 |
+| `plugins.item` | **list** | `id`（+ `label`） | 内置插件配置分组 |
+
+列表类槽位是**所有插件共用**的，条目会对每个 subject 各调一次 —— 往那里注册东西必须按
+subject 收敛（对别人的插件返回 null），否则按钮会出现在别人的页面上。
+
+选 `plugins.bundle.config` 的理由：它是"这个插件自己的配置区"，语义正好；
+keyed 槽位的 `key` **必须一字不差等于包名** —— 页面用它决定"要不要显示配置区"，
+写错就静默不显示（有断言守着）。
+
+注册时照 `dsh-qoder-connect` 的写法，**单独 try/catch**：宿主 slot API 若变了只丢这一块，
+不连累 index-bar / 悬浮窗 / 预警那些注册。
+
 ## 标识符命名
 
 | 类别 | 值 |

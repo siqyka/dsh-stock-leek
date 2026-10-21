@@ -223,13 +223,25 @@ const slots = {}; // key -> [registrations]
 const ctx = {
   slots: {
     inject: (key, cb) => { const r = cb(); (slots[key] = slots[key] || []).push(r); return () => {}; },
-    register: (meta, render) => ({ name: meta.name, id: meta.id, render }),
+    // 必须带上 `key`：宿主有两种槽位（见 slot-contract）——
+    //   list  用 id    （如 shell.overlay / plugins.detail.actions）
+    //   keyed 用 key   （如 plugins.bundle.config，key 就是包名）
+    // 早先这里只留 id，keyed 槽位的注册在测试里等于被吞掉，
+    // 断言「按包名找到了」永远失败（踩过）。
+    register: (meta, render) => ({ name: meta.name, id: meta.id, key: meta.key, render }),
   },
   get: () => undefined,
   effect: (fn) => fn(),
 };
 clientMod.apply(ctx);
-function findReg(key, id) { return (slots[key] || []).find((r) => r.id === id); }
+/**
+ * 找注册：优先按 id，其次按 key。
+ * keyed 槽位（plugins.bundle.config 等）注册时没有 id、只有 key，
+ * 只按 id 找会永远落空。
+ */
+function findReg(key, idOrKey) {
+  return (slots[key] || []).find((r) => r.id === idOrKey || r.key === idOrKey);
+}
 
 // ---------- 渲染辅助 ----------
 const HOOK_STORE = new Map();
@@ -3059,6 +3071,54 @@ if (txnMi) {
   global.document.title = "DSH";
   stubNotification("default");
   ovNode = ov.render({}); renderTree(ovNode);
+}
+
+// ---------- 插件页里的「指数栏」配置卡片（plugins.bundle.config）----------
+// 指数栏隐藏后界面上没有别的入口能打开它（悬浮窗和设置都在它里面），
+// 所以宿主的「插件」页里留了一张配置卡片。那个页面永远可达。
+//
+// 宿主对两个槽位的定义不同：plugins.detail.actions 是 list（用 id），
+// plugins.bundle.config 是 keyed（用 key=包名）。这里用的是后者。
+{
+  const cardReg = findReg("plugins.bundle.config", "@shiqyka/dsh-stock-leek");
+  check("插件页注册了指数栏配置卡片（keyed by 包名）", !!cardReg,
+    (slots["plugins.bundle.config"] || []).map((r) => r.id || r.key));
+  // key 必须一字不差等于包名，否则宿主的配置账本不会把这一块画出来
+  check("配置卡片的 key 等于包名", !!cardReg && cardReg.key === "@shiqyka/dsh-stock-leek",
+    cardReg && cardReg.key);
+
+  if (cardReg) {
+    const renderCard = () => {
+      const n = cardReg.render({});
+      renderTree(n);
+      return n;
+    };
+    const switchOf = (node) => findNode(node, (n) => n.type === "button"
+      && String((n.props && n.props.className) || "").indexOf("sl-cfgswitch") >= 0);
+
+    const card = renderCard();
+    const sw = switchOf(card);
+    check("配置卡片显示出开关", !!sw, textOf(card).join(" ").slice(-140));
+    check("卡片文案说明指数栏用途", /指数栏/.test(textOf(card).join(" ")), textOf(card).join(" ").slice(0, 140));
+
+    if (sw) {
+      const before = !!(global.__sl_test_state__ || {}).config?.barVisible;
+      // 开关的 aria-checked 必须与配置一致（无障碍 + 也便于断言）
+      check("开关状态与 barVisible 一致",
+        String(sw.props["aria-checked"]) === String(before), { aria: sw.props["aria-checked"], before });
+
+      click(sw);
+      await wait(120);
+      const after = !!(global.__sl_test_state__ || {}).config?.barVisible;
+      check("点配置卡片里的开关会翻转 barVisible", after === !before, { before, after });
+
+      // 复位，不影响后续用例
+      const sw2 = switchOf(renderCard());
+      if (sw2) { click(sw2); await wait(120); }
+      check("再点一次恢复原状态", !!(global.__sl_test_state__ || {}).config?.barVisible === before,
+        { want: before, got: !!(global.__sl_test_state__ || {}).config?.barVisible });
+    }
+  }
 }
 
 // ---------- 列表封顶：交易记录与预警规则都按 10 行出滚动条 ----------

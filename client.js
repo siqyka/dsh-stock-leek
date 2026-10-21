@@ -377,6 +377,23 @@ window.__ModuleLoader__.load({
 .sl-ind-on{color:var(--sl-accent)}
 .sl-ind-off{color:var(--sl-muted)}
 .sl-pos-txt{text-align:right;font-weight:600;font-variant-numeric:tabular-nums;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ── 插件页里的「指数栏」配置卡片（plugins.bundle.config）──
+   宿主那个页面跟随主题，所以只用变量、不写死颜色；深色主题下不会变白块。 */
+.sl-cfgcard{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:12px 0;border-top:1px solid var(--sl-border)}
+.sl-cfgcard-main{display:flex;flex-direction:column;gap:3px;min-width:0}
+.sl-cfgcard-title{font-size:13px;font-weight:600;color:var(--sl-text)}
+.sl-cfgcard-desc{font-size:12px;color:var(--sl-muted);line-height:1.45}
+.sl-cfgcard-desc b{color:var(--sl-text);font-weight:600}
+.sl-cfgswitch{flex:none;display:inline-flex;align-items:center;gap:8px;font-size:12px;
+  color:var(--sl-muted);cursor:pointer;user-select:none;background:none;border:0;padding:0;font-family:inherit}
+.sl-cfgswitch:hover{color:var(--sl-text)}
+.sl-cfgswitch-rail{position:relative;width:36px;height:20px;border-radius:999px;flex:none;
+  background:var(--sl-border);transition:background .15s}
+.sl-cfgswitch.on .sl-cfgswitch-rail{background:var(--sl-accent)}
+.sl-cfgswitch-knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
+  background:var(--sl-bg);transition:transform .15s}
+.sl-cfgswitch.on .sl-cfgswitch-knob{transform:translateX(16px)}
 `;
     const styleTag = document.createElement("style");
     styleTag.textContent = CSS;
@@ -3524,6 +3541,83 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       return rect;
     }
 
+    /**
+     * 插件页里的「指数栏」配置卡片。
+     *
+     * ## 为什么需要它
+     *
+     * 指数栏能被收起来（`cfg.barVisible=false`），但它的**所有**操作入口都长在
+     * 它自己身上：悬浮窗（大盘/自选/持仓/设置）是从指数栏点开的，设置页在悬浮窗里，
+     * 手动刷新 ⟳ 也在指数栏上。所以一收起，界面上就没剩任何入口 —— 只能手改配置文件。
+     * 这张卡片挂在宿主「插件」页里，那个页面永远可达，等于给指数栏留了兜底开关。
+     *
+     * ## 为什么用 plugins.bundle.config（而不是 detail.actions）
+     *
+     * 宿主对两个槽位的定义不同（见 slot-contract）：
+     *   - `plugins.detail.actions` = **list**，用 id，渲染在页头（开关/卸载旁边）
+     *   - `plugins.bundle.config`  = **keyed**，用 key=包名，渲染在**描述与组件行之间**
+     * 后者是"这个插件自己的配置区"，语义正好，而且宿主会把它当成配置区块来排版，
+     * 不必自己处理与页面按钮挤在一行的样式。
+     *
+     * key 必须**一字不差**等于包名：页面用它判断"要不要显示配置区"。
+     */
+    const PLUGIN_PAGE_SLOT = "plugins.bundle.config";
+    const PLUGIN_PAGE_KEY = "@shiqyka/dsh-stock-leek";
+
+    /**
+     * @param props 宿主注入的 `{ t, config, ... }`（本卡片只用到 store）。
+     */
+    function IndexBarConfigCard() {
+      const s = useStore();
+      const cfg = s.config;
+      // 配置还没拉回来时先不画，否则会闪一下「关闭」再变「开启」
+      if (!cfg) return null;
+
+      const shown = cfg.barVisible !== false;
+      /**
+       * 打开时顺手把放置方式切回 floating：
+       * dock 模式渲染在 conversation.composer.dock，而宿主只在**已有对话**里渲染
+       * 那个槽位。用户若停在新会话页，切到 dock 会"点了开启却什么都没出现"。
+       */
+      const toggle = () => {
+        updateConfig((c) => {
+          c.barVisible = !(c.barVisible !== false);
+          return c;
+        });
+        if (!shown && state.barPlacement === "dock") setBarPlacement("floating");
+      };
+
+      return h(
+        "div",
+        { className: "sl-cfgcard" },
+        h(
+          "div",
+          { className: "sl-cfgcard-main" },
+          h("div", { className: "sl-cfgcard-title" }, "指数栏"),
+          h(
+            "div",
+            { className: "sl-cfgcard-desc" },
+            shown
+              ? "对话输入框左下角的大盘指数条。关闭后可从本页重新开启。"
+              : h("span", null, h("b", null, "已关闭。"), "开启后会出现在对话输入框左下角。"),
+          ),
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            className: "sl-cfgswitch" + (shown ? " on" : ""),
+            role: "switch",
+            "aria-checked": shown ? "true" : "false",
+            "data-sltip": shown ? "点击关闭指数栏" : "点击开启指数栏",
+            onClick: toggle,
+          },
+          h("span", { className: "sl-cfgswitch-rail" }, h("span", { className: "sl-cfgswitch-knob" })),
+          shown ? "已开启" : "已关闭",
+        ),
+      );
+    }
+
     const ALERT_POPUP_MS = 10000;
     function AlertPopup() {
       const s = useStore();
@@ -4568,6 +4662,25 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek.alert-popup", order: 1000 }, () => withBoundary(h(AlertPopup))));
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek.floating-bar", order: -10 }, () => withBoundary(h(FloatingIndexBar))));
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek" }, (props) => withBoundary(h(Overlay, props))));
+
+      /**
+       * 插件页里的「指数栏」配置卡片 —— 指数栏隐藏后的兜底入口。
+       *
+       * 照 dsh-qoder-connect 的写法（它用的就是这个 keyed 槽位）：
+       *   - `key` 而不是 `id`：keyed slot 用包名做键
+       *   - **单独的 try/catch**：宿主 slot API 若变了，只丢这一块，
+       *     不会连累 index-bar / 悬浮窗 / 预警那些注册
+       *   - 外面再包一层 ErrorBoundary：卡片渲染抛错也只降级成小卡片
+       */
+      try {
+        ctx.slots.inject(PLUGIN_PAGE_SLOT, () => ctx.slots.register(
+          { name: PLUGIN_PAGE_SLOT, key: PLUGIN_PAGE_KEY },
+          (props) => withBoundary(h(IndexBarConfigCard, props)),
+        ));
+      } catch (e) {
+        // 不抛出去：宿主版本差异不该让整个插件挂掉
+        try { console.error("[dsh-stock-leek] 插件页配置卡片注册失败：", e); } catch { /* ignore */ }
+      }
     }
 
     exports.apply = apply;
