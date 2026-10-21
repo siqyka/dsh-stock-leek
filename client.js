@@ -1,3 +1,5 @@
+/* 此文件由 build.mjs 从 src/client/ 生成，请勿直接编辑。 */
+/* 修改源码后运行：npm run build（校验用 npm run build:check） */
 /**
  * dsh-stock-leek — 浏览器端（client.js）
  *

@@ -28,12 +28,54 @@ lib/shared.js（纯函数，Host 与测试共用）
 | 路径 | 用途 |
 |---|---|
 | `index.js` | Host 插件主体：webServer 路由、腾讯行情解析与编码、配置持久化、SSE 广播 |
-| `client.js` | Client 插件主体：`__ModuleLoader__` 工厂，挂载两个槽位并实现全部 UI |
+| `src/client/*.js` | **Client 源码**：按职责切成 23 个片段，由 `build.mjs` 拼成 `client.js` |
+| `client.js` | Client 产物（`__ModuleLoader__` 工厂），**生成物，勿直接编辑** |
+| `build.mjs` | 构建：把 `src/client/` 按文件名数字序拼回单文件；`--check` 只校验不写 |
 | `lib/shared.js` | 无副作用纯函数：格式化、代码显示、盈亏口径、常量。Host 与测试直接 import |
-| `test/` | 五个套件，全部 `node` 直接跑，零 npm 依赖 |
+| `test/` | 八个套件，全部 `node` 直接跑，零 npm 依赖 |
 | `docs/` | 本目录：架构、配置、行情通道等细节文档 |
 
 **两个入口文件刻意留在根目录**：`package.json` 的 `exports` 与 `dsh.client` 声明按路径引用它们，DSH 打包时也依赖这个约定。
+
+### 为什么 client 源码要拆、产物却是单文件
+
+DSH 的客户端加载器规定 factory 内的 `require` 只接受裸包名（见下文 §1），所以 `client.js` **不能**拆成多个文件互相 require —— 产物必须是单文件。
+
+但「产物单文件」不等于「源码单文件」。`src/client/` 把它按职责切开，`build.mjs` 在构建期拼回：
+
+```
+src/client/
+  00-boot.js            文件头 + __ModuleLoader__.load + factory 开头 + require('react')
+  10-css.js             全部样式（裸 CSS 字符串 + 注入 <style>）
+  20-format.js          常量、本地存储键、格式化、市场时段判定
+  25-alert-model.js     预警类型与清洗
+  30-store.js           指数栏展开判断、全局 store
+  35-config.js          配置持久化、多标签页同步
+  40-stream.js          行情通道（SSE / 轮询）
+  45-alerts.js          预警通知、弹窗队列、alert-stream
+  50-ui-utils.js        初始化、拖拽排序、列表容量
+  55-crud.js            自选/持仓/预警增删改
+  60-pnl.js             成本与盈亏（todayPnl / costBasis / replay / 交易流水）
+  65-search.js          悬浮窗开关、搜索框
+  70-charts.js          分时 / 盈亏曲线 / K线
+  75-overlay-parts.js   菜单图标、右键菜单、面板测量、编辑框、提示层
+  80-views-market.js    大盘 / 自选 / 行情行 / 持仓
+  82-views-txn.js       交易记录面板与二级页
+  84-views-settings.js  设置页 / 预警页 / 加预警对话框
+  86-alert-popup.js     对话区测量、预警弹窗
+  88-detail.js          个股详情页 + 五档盘口
+  90-overlay.js         数据新鲜度徽标、悬浮窗主体
+  92-earnings.js        收益胶囊、盈亏汇总、标题彩蛋
+  94-bar.js             指数栏（dock + floating 锚定）
+  99-tail.js            插件主体：inject / apply / exports
+```
+
+拼接是**纯文本**的：片段之间共享同一个 `factory` 作用域，不写 `require`/`export`，就像它们本来就在一个文件里。
+
+**两条硬规矩**：
+
+1. **只改 `src/client/`，然后 `npm run build`**。`client.js` 是生成物，直接改它会在下次 build 时被覆盖。
+2. **`npm test` 里挂了 `build.mjs --check`**：改了源码忘了 build 会直接红（并指出首个差异行），不会等到浏览器里才暴露。`verify-split.mjs` 是拆分迁移期的一次性校验（证明产物与拆分前逐字节等价），依赖 `client.js.orig-bak`，之后可用 `npm run test:split` 单独跑。
 
 ## dock 槽位在宿主体内的位置
 

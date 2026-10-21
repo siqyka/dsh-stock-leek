@@ -25,6 +25,9 @@ dist/
 *.tgz
 *.tar.gz
 
+# 拆分迁移期的一次性基准备份（client.js 的权威来源是 src/client/，不是这个备份）
+client.js.orig-bak
+
 # ── 编辑器 / 系统 ──────────────────────────────────────────────────
 .vscode/
 .idea/

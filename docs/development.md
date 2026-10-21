@@ -1,9 +1,22 @@
 # 开发指南
 
+## 改 client 代码：先改 src/client/，再 build
+
+`client.js` 是**生成物**，源码在 `src/client/`（23 个片段，见 [architecture.md](architecture.md#为什么-client-源码要拆产物却是单文件)）。
+
+```bash
+npm run build        # src/client/ → client.js
+npm run build:check  # 只校验：client.js 是否与源码同步（不写文件）
+```
+
+`npm test` 第一步就是 `build.mjs --check`。**改了 src 忘了 build 会直接红**，并指出首个差异行 —— 不会等到浏览器里才发现。
+
+> 直接编辑 `client.js` 会在下次 build 时被覆盖。若确实需要绕过（调试用），改完记得把改动搬回 `src/client/`。
+
 ## 跑测试
 
 ```bash
-npm test                      # 八个套件全跑
+npm test                      # 八个套件全跑（含 build --check）
 node test/plugin-contract.mjs # 插件装载契约（package.json ↔ patch ↔ bundle id）
 node test/shared-drift.mjs    # 纯函数一致性 + 关键函数性质对拍
 node test/config-isolation.mjs# 配置路径隔离守卫自检

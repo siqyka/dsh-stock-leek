@@ -110,10 +110,24 @@ lib/shared.js（纯函数，Host 与测试共用）
 ```
 dsh-stock-leek/
 ├── index.js          # Host：webServer 路由 + 腾讯行情解析 + 配置持久化 + SSE 推送
-├── client.js         # Client：__ModuleLoader__，左下角指数栏 + 悬浮窗
+├── client.js         # Client **产物**（由 src/client/ 生成，勿直接编辑）
+├── build.mjs         # 构建：src/client/ → client.js（--check 只校验）
 ├── cordis.patch.yml  # bundle patch（插入 host 插件行）
 ├── package.json      # dsh.bundle + dsh.client 声明
 ├── LICENSE           # MIT 协议正文
+├── src/
+│   └── client/       # Client **源码**：按职责切成 23 个片段
+│       ├── 00-boot.js       #   文件头 + __ModuleLoader__.load
+│       ├── 10-css.js        #   全部样式
+│       ├── 20-format.js     #   常量 / 格式化 / 市场时段
+│       ├── 30-store.js      #   全局 store
+│       ├── 35-config.js     #   配置持久化 + 多标签页同步
+│       ├── 40-stream.js     #   行情通道（SSE / 轮询）
+│       ├── 45-alerts.js     #   预警通知与弹窗
+│       ├── 60-pnl.js        #   成本与盈亏
+│       ├── 70-charts.js     #   分时 / 盈亏曲线 / K线
+│       ├── 80-views-*.js    #   各视图
+│       └── 99-tail.js       #   inject / apply / exports
 ├── lib/              # 可复用代码
 │   └── shared.js     #   纯函数：格式化 + 盈亏口径（Host/测试共用）
 ├── docs/             # 详细文档
