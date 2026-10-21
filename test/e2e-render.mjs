@@ -3135,17 +3135,29 @@ if (txnMi) {
     // 要有可见的框：卡片根节点必须带带边框的类（用户明确要求"画个框"）
     const box = findNode(card, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-cfgbox") >= 0);
     check("配置区画出了独立的框（sl-cfgbox）", !!box, box && box.props.className);
-    // 状态徽标：一眼看出开没开
+    // 状态只出现在**开关旁边**一处，标题和提示里不再复述
+    // （用户明确要求："状态只显示在按钮边上就行，标题和提示边上的状态都去掉"）
     const badge = findNode(card, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-cfgbox-state") >= 0);
-    check("框里有状态徽标（运行中 / 已关闭）", !!badge && /运行中|已关闭/.test(textOf(badge).join(" ")),
-      badge && textOf(badge).join(" "));
+    check("标题旁不再有状态徽标", !badge, badge && textOf(badge).join(" "));
+    // 提示文案里也不能出现状态词，否则等于第三处状态
+    const descText = (() => {
+      const d = findNode(card, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-cfgbox-desc") >= 0);
+      return d ? textOf(d).join("") : "";
+    })();
+    check("提示文案里不再复述状态（运行中/已关闭/已开启）",
+      descText.length > 0 && !/运行中|已关闭|已开启/.test(descText), descText);
 
     if (sw) {
       const before = !!(global.__sl_test_state__ || {}).config?.barVisible;
-      // 开关旁边要有状态文字（截图里那个开关右边就带「运行中」）
-      const label = String((sw.children && sw.children[1]) || "");
+      // 状态文字必须是一条**独立的 span**，且排在轨道**之前**（用户要求放左边）
+      const kids = sw.children || [];
+      const labelIdx = kids.findIndex((k) => String((k && k.props && k.props.className) || "").indexOf("sl-cfgswitch-label") >= 0);
+      const trackIdx = kids.findIndex((k) => String((k && k.props && k.props.className) || "").indexOf("sl-cfgswitch-track") >= 0);
+      check("状态文字在轨道左边（DOM 顺序：文字 → 轨道）",
+        labelIdx >= 0 && trackIdx >= 0 && labelIdx < trackIdx, { labelIdx, trackIdx });
+      const labelText = labelIdx >= 0 ? textOf(kids[labelIdx]).join("") : "";
       check("开关旁边有状态文字（已开启 / 已关闭）",
-        before ? label === "已开启" : label === "已关闭", { label, before });
+        before ? labelText === "已开启" : labelText === "已关闭", { labelText, before });
       check("开关状态与 barVisible 一致（aria-checked）",
         String(sw.props["aria-checked"]) === String(before), { aria: sw.props["aria-checked"], before });
 

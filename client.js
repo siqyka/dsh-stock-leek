@@ -425,9 +425,6 @@ window.__ModuleLoader__.load({
 .sl-cfgbox-main{display:flex;flex-direction:column;gap:5px;min-width:0;flex:1 1 auto}
 .sl-cfgbox-head{display:flex;align-items:center;gap:8px}
 .sl-cfgbox-title{font-size:13px;font-weight:600;color:var(--slc-title)}
-.sl-cfgbox-state{font-size:11px;line-height:16px;padding:0 7px;border-radius:999px;
-  border:1px solid var(--slc-border);color:var(--slc-muted);white-space:nowrap}
-.sl-cfgbox-state.on{color:var(--slc-accent);border-color:var(--slc-accent)}
 .sl-cfgbox-desc{font-size:12px;color:var(--slc-muted);line-height:1.5}
 .sl-cfgbox-desc b{color:var(--slc-title);font-weight:600}
 
@@ -442,6 +439,9 @@ window.__ModuleLoader__.load({
   padding:0;border:0;background:none;font-family:inherit;font-size:12px;
   color:var(--slc-muted);cursor:pointer;user-select:none;white-space:nowrap}
 .sl-cfgswitch:hover{color:var(--slc-title)}
+/* 状态文字：在轨道**左边**（顺序由 DOM 决定，这里只定样式） */
+.sl-cfgswitch-label{font-size:12px;line-height:20px;color:inherit}
+.sl-cfgswitch.on .sl-cfgswitch-label{color:var(--slc-accent)}
 /* 轨道：36×20 胶囊，padding 2px 让滑块正好贴边 */
 .sl-cfgswitch-track{position:relative;flex:0 0 auto;box-sizing:border-box;
   width:36px;height:20px;padding:2px;border-radius:999px;
@@ -3655,24 +3655,22 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         h(
           "div",
           { className: "sl-cfgbox-main" },
-          h(
-            "div",
-            { className: "sl-cfgbox-head" },
-            h("span", { className: "sl-cfgbox-title" }, "指数栏"),
-            // 状态徽标：一眼看出现在开没开，不必读描述
-            h("span", { className: "sl-cfgbox-state" + (shown ? " on" : "") }, shown ? "运行中" : "已关闭"),
-          ),
+          // 标题只写名字：状态统一放在右侧开关旁边，一处即可
+          h("div", { className: "sl-cfgbox-head" },
+            h("span", { className: "sl-cfgbox-title" }, "指数栏")),
+          // 描述说明**在哪 / 有什么用**，不复述开关状态
           h(
             "div",
             { className: "sl-cfgbox-desc" },
-            shown
-              ? "显示在对话输入框左下角。"
-              : h("span", null, h("b", null, "已关闭。"), "打开开关即可重新显示到对话输入框左下角。"),
+            "显示在对话输入框左下角，可随时关闭。",
           ),
         ),
         /**
          * 胶囊开关 —— 与宿主列表行（用户截图右下角那个）同款规格：
-         * 36×20 轨道 + 16×16 圆点 + 右侧状态文字。
+         * 36×20 轨道 + 16×16 圆点。
+         *
+         * 状态文字放在**轨道左边**（用户指定），所以这里先渲染文字、再渲染轨道；
+         * 容器是 inline-flex + gap:8px，顺序即视觉顺序。
          *
          * 用 role="switch" + aria-checked：语义就是开关，
          * 键盘 Space/Enter 可直接切换，读屏念「开关，已开启/已关闭」。
@@ -3687,9 +3685,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             "data-sltip": shown ? "点击关闭指数栏" : "点击开启指数栏",
             onClick: toggle,
           },
+          h("span", { className: "sl-cfgswitch-label" }, shown ? "已开启" : "已关闭"),
           h("span", { className: "sl-cfgswitch-track", "aria-hidden": "true" },
             h("span", { className: "sl-cfgswitch-thumb" })),
-          shown ? "已开启" : "已关闭",
         ),
       );
     }
