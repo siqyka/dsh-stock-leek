@@ -323,9 +323,25 @@ function attachRefs(node) {
   if (node.__rendered) attachRefs(node.__rendered);
   if (node.children) for (const c of node.children) attachRefs(c);
 }
+/**
+ * 数当前渲染树里有几张预警弹窗卡片（class 含 sl-alert-pop）。
+ *
+ * 为什么需要它：多标签去重的断言不能只看"系统通知没构造"——
+ * 应用内弹窗才是主通道，曾经就是因为它在去重之前无条件执行，
+ * 开多个标签页时会重复弹（而通知那条断言照样绿，掩盖了问题）。
+ */
+function countAlertPopups(node, seen = new Set()) {
+  if (!node || typeof node !== "object" || seen.has(node)) return 0;
+  seen.add(node);
+  if (Array.isArray(node)) return node.reduce((a, n) => a + countAlertPopups(n, seen), 0);
+  let n = 0;
+  if (node.props && String(node.props.className || "").split(" ").indexOf("sl-alert-pop") >= 0) n++;
+  if (node.__rendered) n += countAlertPopups(node.__rendered, seen);
+  if (node.children) n += countAlertPopups(node.children, seen);
+  return n;
+}
 function textOf(node, acc = []) {
-  if (node === null || node === undefined) return acc;
-  if (typeof node === "string" || typeof node === "number") { acc.push(String(node)); return acc; }
+  if (node === null || node === undefined) return acc;  if (typeof node === "string" || typeof node === "number") { acc.push(String(node)); return acc; }
   if (Array.isArray(node)) { for (const n of node) textOf(n, acc); return acc; }
   if (typeof node.type === "function") {
     // 组件节点：只走渲染产物（children 是传给组件的插槽，已由 __rendered 覆盖）
@@ -3032,10 +3048,32 @@ if (txnMi) {
     check("恢复可见后预警流仍在", global.__esOpen("/alert-stream"));
   }
 
-  // 8) 多标签页去重：navigator.locks 抢不到时不弹
+  // 8) 多标签页去重：navigator.locks 抢不到时**什么通道都不该走**
+  //
+  // 回归：曾经只在「隐藏 + 已授权系统通知」时才对系统通知去重，而应用内弹窗
+  // （pushAlertPopup）是无条件执行的。于是开 N 个标签页时同一条预警会弹 N 次，
+  // 用户看到的就是「一天触发了好多次」—— 而 Host 账本其实只记了一次。
+  // 所以这条必须同时断言「通知没构造」和「弹窗没入队」，只断言前者会漏掉真问题。
   {
     stubNotification("granted");
     setHidden(true);
+    // 先把已有弹窗清空，确保下面数到的是本次新增
+    const clearBtn = findNode(ovNode, (n) => n.type === "button" && /全部关闭/.test(String((n.children && n.children[0]) || "")));
+    if (clearBtn) { click(clearBtn); ovNode = ov.render({}); renderTree(ovNode); }
+    // 弹窗在**独立 slot** 上（dsh-stock-leek.alert-popup），不在 ovNode 里 —— 
+    // 一开始数 ovNode 拿到恒 0，断言因此空转（踩过一次）。
+    const popBox = () => {
+      const reg = findReg("shell.overlay", "dsh-stock-leek.alert-popup");
+      return reg ? reg.render({}) : null;
+    };
+    // 先把弹窗队列清干净：前面用例可能留了 3 条（达到 ALERT_POPUP_MAX），
+    // 新事件会走"溢出叠加"分支而不新增卡片，断言就数不出来（踩过）。
+    globalThis.__sl_dismiss_all_popups__ && globalThis.__sl_dismiss_all_popups__();
+    await wait(20);
+    // 判据用**本事件专属的唯一名称**，而不是弹窗总数：
+    // slot 里会残留前面用例触发的弹窗，总量天然不相等（踩过：before=0 / after=3 永远红）。
+    const uniq = "锁测试标的" + Date.now();
+    const hasUniq = (node) => textOf(node).join(" ").indexOf(uniq) >= 0;
     // Node 24 的 global.navigator 是只读 getter，直接赋值会抛 TypeError → 用 defineProperty
     const navDesc = Object.getOwnPropertyDescriptor(globalThis, "navigator");
     Object.defineProperty(globalThis, "navigator", {
@@ -3047,9 +3085,19 @@ if (txnMi) {
     Counting.permission = "granted";
     global.Notification = Counting;
     global.window.Notification = Counting;
-    await globalThis.__sl_notify_test__({ ruleId: "n5", at: Date.now() + 4, code: "sh600519", name: "贵州茅台", type: "pct_up", value: 3, price: 1700 });
+    try {
+      await globalThis.__sl_notify_test__({ ruleId: "n5", at: Date.now() + 4, code: "sh600519", name: uniq, type: "pct_up", value: 3, price: 1700 });
+    } catch (e) {
+    }
     await wait(40);
     check("抢不到锁时不重复弹通知（多标签去重）", constructed === 0, constructed);
+    const popNode2 = popBox();
+    if (popNode2) renderTree(popNode2);
+    // 判据：队列已在上面清空 → 本事件不该新增**任何**卡片。
+    // 用"数卡片"而不是"找唯一名称"：卡片数是清空后的绝对量，读起来也更直观。
+    const popCount = countAlertPopups(popNode2);
+    check("抢不到锁时也不弹应用内弹窗（去重必须覆盖所有通道）",
+      popCount === 0, { count: popCount, text: textOf(popNode2).join(" ").slice(-180) });
     if (navDesc) Object.defineProperty(globalThis, "navigator", navDesc);
     else delete globalThis.navigator;
   }
