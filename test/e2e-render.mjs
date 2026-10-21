@@ -3102,6 +3102,25 @@ if (txnMi) {
     check("配置卡片显示出按钮", !!sw, cardText.slice(-140));
     check("卡片文案说明指数栏用途", /指数栏/.test(cardText), cardText.slice(0, 140));
 
+    // **样式自包含**：插件页渲染在宿主的 DOM 里，不在 .sl-root 内部，
+    // 所以这块 CSS 一旦引用了 sl-* 主题变量就会整条失效 ——
+    // 表现是"没有边框、按钮变透明"，而且**测试不看样式的话完全发现不了**（踩过一次）。
+    // 这里直接扫源码：这段 CSS 里不允许出现 var(--sl-*)。
+    {
+      const css = readFileSync("client.js", "utf8"); // 测试从仓库根运行
+      const from = css.indexOf("/* ── 插件页里的「指数栏」配置卡片");
+      const to = css.indexOf("\u0060;", from);
+      const block = from >= 0 && to > from ? css.slice(from, to) : "";
+      const leaked = [...block.matchAll(/var\(--sl-[a-z-]+\)/g)].map((m) => m[0]);
+      check("插件页卡片的 CSS 不依赖 .sl-root 的主题变量（否则框和按钮都不显示）",
+        block.length > 0 && leaked.length === 0, { found: leaked });
+      // 自带变量必须真的定义在 .sl-cfgbox 上
+      const boxRule = block.match(/\.sl-cfgbox\{[\s\S]*?\}/);
+      check("卡片自带变量定义（--slc-*），不依赖外部作用域",
+        !!boxRule && (boxRule[0].match(/--slc-[a-z]+:/g) || []).length >= 4,
+        boxRule ? (boxRule[0].match(/--slc-[a-z]+:/g) || []).length : 0);
+    }
+
     // 要有可见的框：卡片根节点必须带带边框的类（用户明确要求"画个框"）
     const box = findNode(card, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-cfgbox") >= 0);
     check("配置区画出了独立的框（sl-cfgbox）", !!box, box && box.props.className);

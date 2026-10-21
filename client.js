@@ -378,28 +378,65 @@ window.__ModuleLoader__.load({
 .sl-ind-off{color:var(--sl-muted)}
 .sl-pos-txt{text-align:right;font-weight:600;font-variant-numeric:tabular-nums;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* ── 插件页里的「指数栏」配置卡片（plugins.bundle.config）──
-   宿主那个页面跟随主题，所以只用变量、不写死颜色；深色主题下不会变白块。
-   卡片用**实线框**把它和宿主的描述/组件行分开，避免看起来像一句普通说明文字。 */
-.sl-cfgbox{margin:14px 0;padding:14px 16px;border:1px solid var(--sl-border);border-radius:10px;
-  background:var(--sl-bg);display:flex;align-items:center;justify-content:space-between;gap:16px}
-.sl-cfgbox-main{display:flex;flex-direction:column;gap:4px;min-width:0}
+ * 注意：这里不能引用 sl-* 主题变量。那些变量挂在 .sl-root 上（悬浮窗自己的根），
+ * 而本卡片渲染在宿主的插件页 DOM 里，根本不在 .sl-root 内部 ——
+ * 变量取不到值，边框那条声明会整条失效、按钮背景也变透明，
+ * 表现就是「没有框、按钮是个干瘪方框」。
+ * 所以这里自带一套变量（在 .sl-cfgbox 上定义），不依赖任何外部作用域。
+ */
+.sl-cfgbox{
+  /* 自带变量，不依赖 .sl-root —— 见上面的说明 */
+  --slc-border:#d8dee9;
+  --slc-bg:#fafbfc;
+  --slc-title:#1f2430;
+  --slc-muted:#6b7280;
+  --slc-accent:#2f6fed;
+
+  box-sizing:border-box;
+  width:100%;
+  margin:2px 0;
+  padding:14px 16px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  border:1px solid var(--slc-border);
+  border-radius:10px;
+  background:var(--slc-bg);
+}
+/* 深色主题：宿主挂主题标记的方式不统一，这里同时兼容 data-theme=dark 与 .dark/.sl-dark 三种 */
+[data-theme="dark"] .sl-cfgbox,
+.dark .sl-cfgbox,
+.sl-dark .sl-cfgbox{
+  --slc-border:#39404e;
+  --slc-bg:#1b2029;
+  --slc-title:#e5e7eb;
+  --slc-muted:#9ca3af;
+  --slc-accent:#4c8dff;
+}
+.sl-cfgbox-main{display:flex;flex-direction:column;gap:5px;min-width:0;flex:1 1 auto}
 .sl-cfgbox-head{display:flex;align-items:center;gap:8px}
-.sl-cfgbox-title{font-size:13px;font-weight:600;color:var(--sl-text)}
-.sl-cfgbox-state{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--sl-border);
-  color:var(--sl-muted);white-space:nowrap}
-.sl-cfgbox-state.on{color:var(--sl-accent);border-color:var(--sl-accent-border);background:var(--sl-accent-soft)}
-.sl-cfgbox-desc{font-size:12px;color:var(--sl-muted);line-height:1.5}
-.sl-cfgbox-desc b{color:var(--sl-text);font-weight:600}
-/* 明确的按钮（不是隐形文字）：形状、边框、悬停反馈都按按钮做 */
-.sl-cfgbtn{flex:none;height:30px;padding:0 14px;border-radius:8px;font-size:12.5px;font-weight:600;
-  font-family:inherit;cursor:pointer;white-space:nowrap;
-  border:1px solid var(--sl-accent-border);background:var(--sl-accent);color:#fff;
-  transition:filter .12s,border-color .12s,color .12s,background .12s}
+.sl-cfgbox-title{font-size:13px;font-weight:600;color:var(--slc-title)}
+.sl-cfgbox-state{font-size:11px;line-height:16px;padding:0 7px;border-radius:999px;
+  border:1px solid var(--slc-border);color:var(--slc-muted);white-space:nowrap}
+.sl-cfgbox-state.on{color:var(--slc-accent);border-color:var(--slc-accent)}
+.sl-cfgbox-desc{font-size:12px;color:var(--slc-muted);line-height:1.5}
+.sl-cfgbox-desc b{color:var(--slc-title);font-weight:600}
+/* 按钮：形状/边框/反馈都按真按钮做，不依赖任何外部变量 */
+.sl-cfgbtn{flex:0 0 auto;height:30px;padding:0 16px;border-radius:8px;
+  font-family:inherit;font-size:12.5px;font-weight:600;line-height:28px;
+  cursor:pointer;white-space:nowrap;
+  border:1px solid var(--slc-accent);
+  background:var(--slc-accent);color:#fff;
+  transition:filter .12s,background .12s,color .12s,border-color .12s}
 .sl-cfgbtn:hover{filter:brightness(1.08)}
-.sl-cfgbtn:active{filter:brightness(.94)}
-/* 已开启时按钮变成"关闭"这种次要操作：退成描边样式，避免用户误以为还要点 */
-.sl-cfgbtn.off{background:transparent;color:var(--sl-muted);border-color:var(--sl-border)}
-.sl-cfgbtn.off:hover{color:var(--sl-text);border-color:var(--sl-accent-border)}
+.sl-cfgbtn:active{filter:brightness(.92)}
+/* 已开启 → 按钮表示"关闭"这个次要操作，退成描边，避免误以为还要再点 */
+.sl-cfgbtn.off{background:transparent;color:var(--slc-muted);border-color:var(--slc-border)}
+.sl-cfgbtn.off:hover{color:var(--slc-title);border-color:var(--slc-accent);filter:none}
+
+/* 宿主把本卡片包在一个 flex 列容器里（gap 12px），这里把纵向 margin 收掉避免叠加 */
+.sl-cfgbox + .sl-cfgbox{margin-top:8px}
 `;
     const styleTag = document.createElement("style");
     styleTag.textContent = CSS;
