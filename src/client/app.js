@@ -4,6 +4,7 @@
      * Client plugin body：
      *  - conversation.composer.dock → 对话输入框下方指数栏（左下角）
      *  - shell.overlay              → 行情悬浮窗
+     *  - plugins.detail.actions     → 本插件详情页的「指数栏开关」（兜底入口）
      * @param ctx - client root context。
      */
     function apply(ctx) {
@@ -18,6 +19,19 @@
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek.alert-popup", order: 1000 }, () => withBoundary(h(AlertPopup))));
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek.floating-bar", order: -10 }, () => withBoundary(h(FloatingIndexBar))));
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek" }, (props) => withBoundary(h(Overlay, props))));
+      /**
+       * 插件详情页的兜底开关。
+       *
+       * 指数栏被隐藏后，界面上再没有别的入口能打开它（悬浮窗和设置都在它里面）——
+       * 这一条挂在侧栏「插件 → 本插件」的页头，那个页面永远可达。
+       *
+       * order 取 -10：排在页面自己的「开关 / 卸载」之前（宿主文档写明 actions
+       * 槽位本来就是渲染在它们之前的，这里再往前一点，避免和宿主的按钮挤在一起）。
+       */
+      ctx.slots.inject("plugins.detail.actions", () => ctx.slots.register(
+        { name: "plugins.detail.actions", id: "dsh-stock-leek.bar-toggle", order: -10 },
+        (props) => withBoundary(h(PluginBarToggle, props)),
+      ));
     }
 
     exports.apply = apply;

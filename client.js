@@ -379,7 +379,20 @@ window.__ModuleLoader__.load({
 .sl-ind-on{color:var(--sl-accent)}
 .sl-ind-off{color:var(--sl-muted)}
 .sl-pos-txt{text-align:right;font-weight:600;font-variant-numeric:tabular-nums;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── 插件详情页的指数栏开关（兜底入口）─────────────────────────────
+   宿主那个页面是浅色/深色跟随主题的，所以这里用中性配色 + 自身的强调色，
+   不硬编码白底黑字（否则深色主题下会变成一块刺眼的白条）。 */
+.sl-pdtoggle{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;margin-right:8px;
+  border:1px solid var(--sl-border);border-radius:8px;background:var(--sl-bg);color:var(--sl-muted);
+  font-size:12px;font-family:inherit;cursor:pointer;transition:border-color .12s,color .12s}
+.sl-pdtoggle:hover{border-color:var(--sl-accent-border);color:var(--sl-text)}
+.sl-pdtoggle-on{color:var(--sl-accent);border-color:var(--sl-accent-border)}
+.sl-pdtoggle-dot{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.55;flex:none}
+.sl-pdtoggle-on .sl-pdtoggle-dot{opacity:1}
+
 `;
+
     const styleTag = document.createElement("style");
     styleTag.textContent = CSS;
     document.head.appendChild(styleTag);
@@ -4573,12 +4586,74 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
 
     // ================================================================ 插件主体
     /** Required services: slots（布局挂载点）。 */
+    /**
+     * 插件详情页的「指数栏开关」控件。
+     *
+     * 为什么要这个：指数栏可以被收起来（`cfg.barVisible=false`），收起后
+     * **界面上就没有任何入口能再打开它** —— 悬浮窗和设置都在指数栏里面，
+     * 指数栏一藏，用户就只能手改配置文件了（用户实测反馈）。
+     * 这个控件挂在宿主插件页的 `plugins.detail.actions` 槽位上，
+     * 那个页面永远可达（侧栏「插件」），等于给指数栏留了一个**永不消失的开关**。
+     *
+     * 宿主契约（见 DSH 宿主文档「Detail page extension points」）：
+     * - `plugins.detail.actions` 渲染在**页头**，位于页面自己的开关和卸载之前；
+     * - 每个条目都带 `subject`：`{kind:'bundle',pkg}` / `{kind:'row',pkg,row}` / `{kind:'item',id}`；
+     * - 对无话可说的 subject 必须返回 null（否则会在别人的插件页上出现我们的按钮）。
+     *
+     * 本插件的详情页是 `kind:'item'`（宿主 render 时用 `data-plugin-item-detail`），
+     * 所以只认 id === 本包名 的那一个。
+     */
+    const PLUGIN_PKG = "@shiqyka/dsh-stock-leek";
+
+    function PluginBarToggle(props) {
+      const subject = props && props.subject;
+      const s = useStore();
+      const cfg = s.config;
+      // 只在**本插件自己的**详情页出现：别人的 bundle/row/item 页一律不显示。
+      if (!subject || subject.kind !== "item" || subject.id !== PLUGIN_PKG) return null;
+      // 配置还没拉回来时先不画（否则会闪一下「隐藏」再变「显示」）
+      if (!cfg) return null;
+
+      const shown = cfg.barVisible !== false;
+      /**
+       * 开关动作走 updateConfig 而不是本地 state：
+       * 指数栏的显隐是**配置项**（`cfg.barVisible`），要和设置页里那个
+       * 「对话左下角指数栏 显示/隐藏」共用同一份状态，否则两处会各说各话。
+       *
+       * 打开时顺手把放置方式切回 floating：dock 模式下指数栏渲染在
+       * `conversation.composer.dock`，而那个槽位只在**已有对话**里渲染
+       * （新会话页宿主不渲染该槽位）。若用户此刻正停在新会话页，
+       * 切到 dock 会呈现"点了显示却什么都没出现"——切回 floating 才一定能看到。
+       */
+      const toggle = () => {
+        updateConfig((c) => {
+          c.barVisible = !(c.barVisible !== false);
+          return c;
+        });
+        if (!shown && state.barPlacement === "dock") setBarPlacement("floating");
+      };
+
+      return h(
+        "button",
+        {
+          className: "sl-pdtoggle" + (shown ? " sl-pdtoggle-on" : ""),
+          type: "button",
+          "data-sltip": shown
+            ? "指数栏当前显示在对话左下角\n点击隐藏（隐藏后可随时回到本页重新打开）"
+            : "指数栏当前已隐藏\n点击重新显示在对话左下角",
+          onClick: toggle,
+        },
+        h("span", { className: "sl-pdtoggle-dot", "aria-hidden": "true" }),
+        shown ? "指数栏：显示中" : "指数栏：已隐藏",
+      );
+    }
     const inject = ["slots"];
 
     /**
      * Client plugin body：
      *  - conversation.composer.dock → 对话输入框下方指数栏（左下角）
      *  - shell.overlay              → 行情悬浮窗
+     *  - plugins.detail.actions     → 本插件详情页的「指数栏开关」（兜底入口）
      * @param ctx - client root context。
      */
     function apply(ctx) {
@@ -4593,6 +4668,19 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek.alert-popup", order: 1000 }, () => withBoundary(h(AlertPopup))));
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek.floating-bar", order: -10 }, () => withBoundary(h(FloatingIndexBar))));
       ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "dsh-stock-leek" }, (props) => withBoundary(h(Overlay, props))));
+      /**
+       * 插件详情页的兜底开关。
+       *
+       * 指数栏被隐藏后，界面上再没有别的入口能打开它（悬浮窗和设置都在它里面）——
+       * 这一条挂在侧栏「插件 → 本插件」的页头，那个页面永远可达。
+       *
+       * order 取 -10：排在页面自己的「开关 / 卸载」之前（宿主文档写明 actions
+       * 槽位本来就是渲染在它们之前的，这里再往前一点，避免和宿主的按钮挤在一起）。
+       */
+      ctx.slots.inject("plugins.detail.actions", () => ctx.slots.register(
+        { name: "plugins.detail.actions", id: "dsh-stock-leek.bar-toggle", order: -10 },
+        (props) => withBoundary(h(PluginBarToggle, props)),
+      ));
     }
 
     exports.apply = apply;

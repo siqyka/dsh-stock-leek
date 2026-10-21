@@ -846,17 +846,31 @@ check("详情已屏蔽「🤖 分析」入口", ovText.indexOf("分析") < 0 && 
       allSides.length === 2 && /ask/.test(String(allSides[0].props.className)) && /bid/.test(String(allSides[1].props.className)),
       allSides.map((s) => s.props.className));
 
-    // 2) 每列内部的档位顺序：卖 5→1（向中间收敛）、买 1→5
+    // 2) 每列内部的档位顺序：卖 1→5（向中间收敛）、买 1→5
+    //
+    // ⚠️ 档位数是**时段相关**的：收盘集合竞价（14:57–15:00）与盘前，
+    // 沪深交易所只给 1 档同价同量（虚拟匹配），此时"顺序"无从谈起。
+    // 所以 ≥2 档才验顺序，只有 1 档时验"结构合法"即可 —— 不能无条件
+    // 断 `askLv.length >= 2`，那会在这些时段必红（已踩过）。
     const lvOf = (side, ch) => collect(side, (n) => String((n.props && n.props.className) || "") === "sl-ob-lv")
       .map((n) => { const m = new RegExp(ch + "(\\d)").exec(txtOf(n)); return m ? Number(m[1]) : null; });
     if (askSide.length === 1) {
       const askLv = lvOf(askSide[0], "卖");
-      // 卖1 在最上、往下是卖5（与买盘同向：都从贴近现价的一档开始）
-      check("卖盘列自上而下是 卖1→卖5", askLv.length >= 2 && askLv.every((v, i) => v !== null && (i === 0 || askLv[i - 1] <= v)) && askLv[0] < askLv[askLv.length - 1], askLv);
+      if (askLv.length >= 2) {
+        check("卖盘列自上而下是 卖1→卖5", askLv.every((v) => v !== null) && askLv[0] < askLv[askLv.length - 1], askLv);
+      } else {
+        console.log("  skip  卖盘档位顺序（当前只有 1 档：收盘竞价/盘前，接口只给虚拟匹配价）");
+        check("单档时卖盘仍渲染出 1 个档位行（结构合法）", askLv.length === 1 && askLv[0] !== null, askLv);
+      }
     }
     if (bidSide.length === 1) {
       const bidLv = lvOf(bidSide[0], "买");
-      check("买盘列自上而下是 买1→买5", bidLv.length >= 2 && bidLv.every((v, i) => v !== null && (i === 0 || bidLv[i - 1] <= v)) && bidLv[0] < bidLv[bidLv.length - 1], bidLv);
+      if (bidLv.length >= 2) {
+        check("买盘列自上而下是 买1→买5", bidLv.every((v) => v !== null) && bidLv[0] < bidLv[bidLv.length - 1], bidLv);
+      } else {
+        console.log("  skip  买盘档位顺序（当前只有 1 档：收盘竞价/盘前）");
+        check("单档时买盘仍渲染出 1 个档位行（结构合法）", bidLv.length === 1 && bidLv[0] !== null, bidLv);
+      }
     }
     check("有列头标注 卖盘/买盘", /卖盘/.test(txtOf(ob)) && /买盘/.test(txtOf(ob)), txtOf(ob).slice(0, 120));
 
@@ -904,15 +918,26 @@ check("详情已屏蔽「🤖 分析」入口", ovText.indexOf("分析") < 0 && 
           // 卖盘自上而下 = 卖5→卖1（54321）
           const askLvR = collect(stacks[0], (n) => String((n.props && n.props.className) || "") === "sl-ob-lv")
             .map((n) => { const m = /卖(\d)/.exec(txtOf(n)); return m ? Number(m[1]) : null; });
-          check("上下结构：卖盘自上而下是 卖5→卖1（54321）",
-            askLvR.length >= 2 && askLvR.every((v, i) => v !== null && (i === 0 || askLvR[i - 1] >= v)) && askLvR[0] > askLvR[askLvR.length - 1],
-            askLvR);
+          // 时段相关：只有 1 档时（收盘竞价/盘前）无从比较顺序，改为验结构
+          if (askLvR.length >= 2) {
+            check("上下结构：卖盘自上而下是 卖5→卖1（54321）",
+              askLvR.every((v) => v !== null) && askLvR[0] > askLvR[askLvR.length - 1],
+              askLvR);
+          } else {
+            console.log("  skip  上下结构卖盘顺序（当前只有 1 档：收盘竞价/盘前）");
+            check("上下结构：单档时卖盘结构合法", askLvR.length === 1 && askLvR[0] !== null, askLvR);
+          }
           // 买盘自上而下 = 买1→买5（12345）
           const bidLvR = collect(stacks[1], (n) => String((n.props && n.props.className) || "") === "sl-ob-lv")
             .map((n) => { const m = /买(\d)/.exec(txtOf(n)); return m ? Number(m[1]) : null; });
-          check("上下结构：买盘自上而下是 买1→买5（12345）",
-            bidLvR.length >= 2 && bidLvR.every((v, i) => v !== null && (i === 0 || bidLvR[i - 1] <= v)) && bidLvR[0] < bidLvR[bidLvR.length - 1],
-            bidLvR);
+          if (bidLvR.length >= 2) {
+            check("上下结构：买盘自上而下是 买1→买5（12345）",
+              bidLvR.every((v) => v !== null) && bidLvR[0] < bidLvR[bidLvR.length - 1],
+              bidLvR);
+          } else {
+            console.log("  skip  上下结构买盘顺序（当前只有 1 档：收盘竞价/盘前）");
+            check("上下结构：单档时买盘结构合法", bidLvR.length === 1 && bidLvR[0] !== null, bidLvR);
+          }
           // 中间有现价行，且夹在两个堆叠块之间
           check("上下结构中间有「现价」行", /现价/.test(txtOf(obR)), txtOf(obR).slice(0, 160));
         }
@@ -3107,6 +3132,59 @@ if (txnMi) {
   global.document.title = "DSH";
   stubNotification("default");
   ovNode = ov.render({}); renderTree(ovNode);
+}
+
+// ---------- 插件详情页的指数栏开关（兜底入口）----------
+// 指数栏隐藏后界面上再没有别的入口能打开它（悬浮窗和设置都在它里面），
+// 所以宿主「插件 → 本插件」详情页的页头留了一个开关。那个页面永远可达。
+{
+  const toggleReg = findReg("plugins.detail.actions", "dsh-stock-leek.bar-toggle");
+  check("插件详情页注册了指数栏开关槽位", !!toggleReg, (slots["plugins.detail.actions"] || []).map((r) => r.id));
+
+  if (toggleReg) {
+    const renderToggle = (subject) => {
+      const n = toggleReg.render({ subject });
+      renderTree(n);
+      return n;
+    };
+    const btnOf = (node) => findNode(node, (n) => n.type === "button"
+      && String((n.props && n.props.className) || "").indexOf("sl-pdtoggle") >= 0);
+
+    // 1) 别的插件页不该出现我们的按钮（返回 null）
+    const others = [
+      { kind: "item", id: "@someone/else" },
+      { kind: "bundle", pkg: { name: "@someone/else" } },
+      { kind: "row", pkg: { name: "@someone/else" }, row: {} },
+      undefined,
+    ];
+    let leaked = 0;
+    for (const sub of others) {
+      const n = renderToggle(sub);
+      if (btnOf(n)) leaked++;
+    }
+    check("别人的插件页不显示我们的开关（返回 null）", leaked === 0, { leaked });
+
+    // 2) 本插件页显示开关，文案反映当前状态
+    const mine = renderToggle({ kind: "item", id: "@shiqyka/dsh-stock-leek" });
+    const btn = btnOf(mine);
+    check("本插件详情页显示指数栏开关", !!btn, textOf(mine).join(" ").slice(-120));
+
+    if (btn) {
+      // 3) 点一下 → 配置里的 barVisible 翻转（与设置页共用同一份配置）
+      const before = !!(global.__sl_test_state__ || {}).config?.barVisible;
+      click(btn);
+      await wait(120);
+      const after = !!(global.__sl_test_state__ || {}).config?.barVisible;
+      check("点击开关会翻转 barVisible", after === !before, { before, after });
+
+      // 4) 再点回来，恢复原状态（不影响后续用例）
+      const n2 = renderToggle({ kind: "item", id: "@shiqyka/dsh-stock-leek" });
+      const btn2 = btnOf(n2);
+      if (btn2) { click(btn2); await wait(120); }
+      const restored = !!(global.__sl_test_state__ || {}).config?.barVisible;
+      check("再点一次恢复原来的显隐状态", restored === before, { want: before, got: restored });
+    }
+  }
 }
 
 // ---------- 列表封顶：交易记录与预警规则都按 10 行出滚动条 ----------

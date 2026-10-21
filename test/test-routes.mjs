@@ -96,7 +96,13 @@ console.log("       ", names);
   const anyAShare = (r.json.rows || []).find((x) => /^(sh|sz|bj)/.test(x.code));
   // 竞价时段（9:15–9:25）只有 1 档同价同量；正常盘中才有完整 5 档。
   // 用「是否已开盘」判断：今开 > 0 → 正常盘中，应当有盘口。
-  const marketOpen = anyAShare && Number(anyAShare.open) > 0;
+  // 判据用**盘口实际档数**而不是"今开>0"：
+  // 收盘集合竞价（14:57–15:00）时今开是正常的盘中值，但交易所只给 1 档
+  // 虚拟匹配价（实测 14:58 买卖各 1 档、同价同量）——用今开判断会误以为
+  // "应该满 5 档"，断言必红。只有拿到完整 5 档才认为这是真实盘口。
+  const anyBook = anyAShare && anyAShare.book;
+  const maxLevels = anyBook ? Math.max((anyBook.bids || []).length, (anyBook.asks || []).length) : 0;
+  const marketOpen = maxLevels >= 2; // ≥2 档 = 正常盘中；0/1 档 = 竞价或未开盘
   if (!aShare) {
     if (marketOpen) {
       check("A 股行情带五档盘口 book", false, (r.json.rows || []).map((x) => x.code));

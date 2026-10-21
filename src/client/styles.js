@@ -326,7 +326,20 @@
 .sl-ind-on{color:var(--sl-accent)}
 .sl-ind-off{color:var(--sl-muted)}
 .sl-pos-txt{text-align:right;font-weight:600;font-variant-numeric:tabular-nums;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── 插件详情页的指数栏开关（兜底入口）─────────────────────────────
+   宿主那个页面是浅色/深色跟随主题的，所以这里用中性配色 + 自身的强调色，
+   不硬编码白底黑字（否则深色主题下会变成一块刺眼的白条）。 */
+.sl-pdtoggle{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;margin-right:8px;
+  border:1px solid var(--sl-border);border-radius:8px;background:var(--sl-bg);color:var(--sl-muted);
+  font-size:12px;font-family:inherit;cursor:pointer;transition:border-color .12s,color .12s}
+.sl-pdtoggle:hover{border-color:var(--sl-accent-border);color:var(--sl-text)}
+.sl-pdtoggle-on{color:var(--sl-accent);border-color:var(--sl-accent-border)}
+.sl-pdtoggle-dot{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.55;flex:none}
+.sl-pdtoggle-on .sl-pdtoggle-dot{opacity:1}
+
 `;
+
     const styleTag = document.createElement("style");
     styleTag.textContent = CSS;
     document.head.appendChild(styleTag);

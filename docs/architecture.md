@@ -37,6 +37,22 @@ lib/shared.js（纯函数，Host 与测试共用）
 
 **两个入口文件刻意留在根目录**：`package.json` 的 `exports` 与 `dsh.client` 声明按路径引用它们，DSH 打包时也依赖这个约定。
 
+### 指数栏被隐藏后，入口在哪
+
+指数栏可以被收起（`cfg.barVisible=false`）。**收起之后界面上就没有任何入口能再打开它** ——
+悬浮窗（大盘/自选/持仓/设置）和设置页都在指数栏**里面**，指数栏一藏，用户只能手改配置文件。
+
+所以除了设置页里的开关，还有一条**永不消失**的入口：侧栏「插件 → 本插件」详情页的页头，
+通过宿主的 `plugins.detail.actions` 槽位注入（见 `src/client/plugin-page.js`）。
+那个页面永远可达，等于给指数栏留了一个兜底开关。
+
+宿主契约要紧的两点：
+
+- 三个详情页槽位：`plugins.detail.actions`（页头控件）/ `plugins.detail.badge`（标题旁标签）/ `plugins.detail.section`（页面下方区块）；
+- 每个条目都带 `subject`：`{kind:'bundle',pkg}` / `{kind:'row',pkg,row}` / `{kind:'item',id}`。
+  本插件自己的详情页是 `kind:'item'`，**必须对其它 subject 返回 null**，否则会在别人的插件页上
+  凭空多出我们的按钮（有断言守着）。
+
 ### 为什么 client 源码要拆、产物却是单文件
 
 DSH 的客户端加载器规定 factory 内的 `require` 只接受裸包名（见下文 §1），所以 `client.js` **不能**拆成多个文件互相 require —— 产物必须是单文件。
@@ -72,6 +88,9 @@ src/client/
   ── 悬浮窗与指数栏 ──────────────────────────────────────
   floating.js       数据新鲜度徽标 / 悬浮窗主体 / 收益胶囊 / 标题彩蛋
   index-bar.js      指数栏（dock + floating 两种放置，含锚定测量）
+
+  ── 插件详情页 ──────────────────────────────────────────
+  plugin-page.js    插件详情页的「指数栏开关」（指数栏隐藏后的兜底入口）
 
   ── 插件主体 ────────────────────────────────────────────
   app.js            inject / apply / exports

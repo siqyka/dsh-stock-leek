@@ -68,6 +68,7 @@ const ORDER = [
   "detail.js",      // 预警弹窗 / 详情页 / 五档
   "floating.js",    // 悬浮窗 / 收益胶囊 / 标题彩蛋
   "index-bar.js",   // 指数栏（dock / floating）
+  "plugin-page.js", // 插件详情页的指数栏开关（兜底入口）
   "app.js",         // inject / apply / exports
 ];
 
