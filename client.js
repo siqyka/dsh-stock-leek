@@ -378,22 +378,28 @@ window.__ModuleLoader__.load({
 .sl-ind-off{color:var(--sl-muted)}
 .sl-pos-txt{text-align:right;font-weight:600;font-variant-numeric:tabular-nums;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* ── 插件页里的「指数栏」配置卡片（plugins.bundle.config）──
-   宿主那个页面跟随主题，所以只用变量、不写死颜色；深色主题下不会变白块。 */
-.sl-cfgcard{display:flex;align-items:center;justify-content:space-between;gap:16px;
-  padding:12px 0;border-top:1px solid var(--sl-border)}
-.sl-cfgcard-main{display:flex;flex-direction:column;gap:3px;min-width:0}
-.sl-cfgcard-title{font-size:13px;font-weight:600;color:var(--sl-text)}
-.sl-cfgcard-desc{font-size:12px;color:var(--sl-muted);line-height:1.45}
-.sl-cfgcard-desc b{color:var(--sl-text);font-weight:600}
-.sl-cfgswitch{flex:none;display:inline-flex;align-items:center;gap:8px;font-size:12px;
-  color:var(--sl-muted);cursor:pointer;user-select:none;background:none;border:0;padding:0;font-family:inherit}
-.sl-cfgswitch:hover{color:var(--sl-text)}
-.sl-cfgswitch-rail{position:relative;width:36px;height:20px;border-radius:999px;flex:none;
-  background:var(--sl-border);transition:background .15s}
-.sl-cfgswitch.on .sl-cfgswitch-rail{background:var(--sl-accent)}
-.sl-cfgswitch-knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
-  background:var(--sl-bg);transition:transform .15s}
-.sl-cfgswitch.on .sl-cfgswitch-knob{transform:translateX(16px)}
+   宿主那个页面跟随主题，所以只用变量、不写死颜色；深色主题下不会变白块。
+   卡片用**实线框**把它和宿主的描述/组件行分开，避免看起来像一句普通说明文字。 */
+.sl-cfgbox{margin:14px 0;padding:14px 16px;border:1px solid var(--sl-border);border-radius:10px;
+  background:var(--sl-bg);display:flex;align-items:center;justify-content:space-between;gap:16px}
+.sl-cfgbox-main{display:flex;flex-direction:column;gap:4px;min-width:0}
+.sl-cfgbox-head{display:flex;align-items:center;gap:8px}
+.sl-cfgbox-title{font-size:13px;font-weight:600;color:var(--sl-text)}
+.sl-cfgbox-state{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--sl-border);
+  color:var(--sl-muted);white-space:nowrap}
+.sl-cfgbox-state.on{color:var(--sl-accent);border-color:var(--sl-accent-border);background:var(--sl-accent-soft)}
+.sl-cfgbox-desc{font-size:12px;color:var(--sl-muted);line-height:1.5}
+.sl-cfgbox-desc b{color:var(--sl-text);font-weight:600}
+/* 明确的按钮（不是隐形文字）：形状、边框、悬停反馈都按按钮做 */
+.sl-cfgbtn{flex:none;height:30px;padding:0 14px;border-radius:8px;font-size:12.5px;font-weight:600;
+  font-family:inherit;cursor:pointer;white-space:nowrap;
+  border:1px solid var(--sl-accent-border);background:var(--sl-accent);color:#fff;
+  transition:filter .12s,border-color .12s,color .12s,background .12s}
+.sl-cfgbtn:hover{filter:brightness(1.08)}
+.sl-cfgbtn:active{filter:brightness(.94)}
+/* 已开启时按钮变成"关闭"这种次要操作：退成描边样式，避免用户误以为还要点 */
+.sl-cfgbtn.off{background:transparent;color:var(--sl-muted);border-color:var(--sl-border)}
+.sl-cfgbtn.off:hover{color:var(--sl-text);border-color:var(--sl-accent-border)}
 `;
     const styleTag = document.createElement("style");
     styleTag.textContent = CSS;
@@ -3589,31 +3595,40 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
 
       return h(
         "div",
-        { className: "sl-cfgcard" },
+        { className: "sl-cfgbox" },
         h(
           "div",
-          { className: "sl-cfgcard-main" },
-          h("div", { className: "sl-cfgcard-title" }, "指数栏"),
+          { className: "sl-cfgbox-main" },
           h(
             "div",
-            { className: "sl-cfgcard-desc" },
+            { className: "sl-cfgbox-head" },
+            h("span", { className: "sl-cfgbox-title" }, "指数栏"),
+            // 状态徽标：一眼看出现在开没开，不必读描述
+            h("span", { className: "sl-cfgbox-state" + (shown ? " on" : "") }, shown ? "运行中" : "已关闭"),
+          ),
+          h(
+            "div",
+            { className: "sl-cfgbox-desc" },
             shown
-              ? "对话输入框左下角的大盘指数条。关闭后可从本页重新开启。"
-              : h("span", null, h("b", null, "已关闭。"), "开启后会出现在对话输入框左下角。"),
+              ? "显示在对话输入框左下角。点右侧按钮可关闭。"
+              : h("span", null, h("b", null, "已关闭。"), "点右侧按钮重新显示到对话输入框左下角。"),
           ),
         ),
+        /**
+         * 明确的**按钮**（原来是个隐形的文字开关，不好点也不好认）。
+         * 未开启时是主按钮（实心、写「开启指数栏」）；已开启时退成描边次要样式
+         * （写「关闭」）—— 避免用户误以为"已开启"还需要点一下。
+         */
         h(
           "button",
           {
             type: "button",
-            className: "sl-cfgswitch" + (shown ? " on" : ""),
-            role: "switch",
-            "aria-checked": shown ? "true" : "false",
+            className: "sl-cfgbtn" + (shown ? " off" : ""),
+            "aria-pressed": shown ? "true" : "false",
             "data-sltip": shown ? "点击关闭指数栏" : "点击开启指数栏",
             onClick: toggle,
           },
-          h("span", { className: "sl-cfgswitch-rail" }, h("span", { className: "sl-cfgswitch-knob" })),
-          shown ? "已开启" : "已关闭",
+          shown ? "关闭" : "开启指数栏",
         ),
       );
     }

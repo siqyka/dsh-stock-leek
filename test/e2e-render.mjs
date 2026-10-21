@@ -3093,19 +3093,31 @@ if (txnMi) {
       renderTree(n);
       return n;
     };
-    const switchOf = (node) => findNode(node, (n) => n.type === "button"
-      && String((n.props && n.props.className) || "").indexOf("sl-cfgswitch") >= 0);
+    const btnOf = (node) => findNode(node, (n) => n.type === "button"
+      && String((n.props && n.props.className) || "").indexOf("sl-cfgbtn") >= 0);
 
     const card = renderCard();
-    const sw = switchOf(card);
-    check("配置卡片显示出开关", !!sw, textOf(card).join(" ").slice(-140));
-    check("卡片文案说明指数栏用途", /指数栏/.test(textOf(card).join(" ")), textOf(card).join(" ").slice(0, 140));
+    const sw = btnOf(card);
+    const cardText = textOf(card).join(" ");
+    check("配置卡片显示出按钮", !!sw, cardText.slice(-140));
+    check("卡片文案说明指数栏用途", /指数栏/.test(cardText), cardText.slice(0, 140));
+
+    // 要有可见的框：卡片根节点必须带带边框的类（用户明确要求"画个框"）
+    const box = findNode(card, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-cfgbox") >= 0);
+    check("配置区画出了独立的框（sl-cfgbox）", !!box, box && box.props.className);
+    // 状态徽标：一眼看出开没开
+    const badge = findNode(card, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-cfgbox-state") >= 0);
+    check("框里有状态徽标（运行中 / 已关闭）", !!badge && /运行中|已关闭/.test(textOf(badge).join(" ")),
+      badge && textOf(badge).join(" "));
 
     if (sw) {
       const before = !!(global.__sl_test_state__ || {}).config?.barVisible;
-      // 开关的 aria-checked 必须与配置一致（无障碍 + 也便于断言）
-      check("开关状态与 barVisible 一致",
-        String(sw.props["aria-checked"]) === String(before), { aria: sw.props["aria-checked"], before });
+      // 按钮文案必须**说出动作**：未开启时是「开启指数栏」，已开启时是「关闭」
+      const label = String((sw.children && sw.children[0]) || "");
+      check("按钮文案与状态相符（说出动作，不是状态词）",
+        before ? label === "关闭" : label === "开启指数栏", { label, before });
+      check("按钮状态与 barVisible 一致（aria-pressed）",
+        String(sw.props["aria-pressed"]) === String(before), { aria: sw.props["aria-pressed"], before });
 
       click(sw);
       await wait(120);
@@ -3113,7 +3125,7 @@ if (txnMi) {
       check("点配置卡片里的开关会翻转 barVisible", after === !before, { before, after });
 
       // 复位，不影响后续用例
-      const sw2 = switchOf(renderCard());
+      const sw2 = btnOf(renderCard());
       if (sw2) { click(sw2); await wait(120); }
       check("再点一次恢复原状态", !!(global.__sl_test_state__ || {}).config?.barVisible === before,
         { want: before, got: !!(global.__sl_test_state__ || {}).config?.barVisible });
