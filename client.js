@@ -391,6 +391,10 @@ window.__ModuleLoader__.load({
   --slc-title:#1f2430;
   --slc-muted:#6b7280;
   --slc-accent:#2f6fed;
+  /* 开关三色：关=灰轨、开=深色轨（宿主那个开关在浅色主题下是黑胶囊）、滑块=白 */
+  --slc-switch-off:#c9d0da;
+  --slc-switch-on:#1f2430;
+  --slc-switch-knob:#ffffff;
 
   box-sizing:border-box;
   width:100%;
@@ -413,6 +417,10 @@ window.__ModuleLoader__.load({
   --slc-title:#e5e7eb;
   --slc-muted:#9ca3af;
   --slc-accent:#4c8dff;
+  /* 深色下反过来：开=浅色轨，否则黑轨在黑底上看不见 */
+  --slc-switch-off:#4a5162;
+  --slc-switch-on:#e5e7eb;
+  --slc-switch-knob:#1b2029;
 }
 .sl-cfgbox-main{display:flex;flex-direction:column;gap:5px;min-width:0;flex:1 1 auto}
 .sl-cfgbox-head{display:flex;align-items:center;gap:8px}
@@ -422,18 +430,29 @@ window.__ModuleLoader__.load({
 .sl-cfgbox-state.on{color:var(--slc-accent);border-color:var(--slc-accent)}
 .sl-cfgbox-desc{font-size:12px;color:var(--slc-muted);line-height:1.5}
 .sl-cfgbox-desc b{color:var(--slc-title);font-weight:600}
-/* 按钮：形状/边框/反馈都按真按钮做，不依赖任何外部变量 */
-.sl-cfgbtn{flex:0 0 auto;height:30px;padding:0 16px;border-radius:8px;
-  font-family:inherit;font-size:12.5px;font-weight:600;line-height:28px;
-  cursor:pointer;white-space:nowrap;
-  border:1px solid var(--slc-accent);
-  background:var(--slc-accent);color:#fff;
-  transition:filter .12s,background .12s,color .12s,border-color .12s}
-.sl-cfgbtn:hover{filter:brightness(1.08)}
-.sl-cfgbtn:active{filter:brightness(.92)}
-/* 已开启 → 按钮表示"关闭"这个次要操作，退成描边，避免误以为还要再点 */
-.sl-cfgbtn.off{background:transparent;color:var(--slc-muted);border-color:var(--slc-border)}
-.sl-cfgbtn.off:hover{color:var(--slc-title);border-color:var(--slc-accent);filter:none}
+
+/* ── 开关：照宿主列表行那个胶囊开关的规格复刻 ──
+ * 宿主实现（ui-plugin-manager 的 row switch）：
+ *   width:36px; height:20px; padding:2px; border-radius:999px;
+ *   关 = border-l3 底色；开 = business-primary 底色；滑块 16×16 圆点，translate 16px
+ * 这里用自带的 --slc-* 变量等价实现，**不依赖宿主 CSS 变量**（那些在宿主 DOM 里能取到，
+ * 但一旦宿主改版就崩；自带变量更稳）。
+ */
+.sl-cfgswitch{flex:0 0 auto;display:inline-flex;align-items:center;gap:8px;
+  padding:0;border:0;background:none;font-family:inherit;font-size:12px;
+  color:var(--slc-muted);cursor:pointer;user-select:none;white-space:nowrap}
+.sl-cfgswitch:hover{color:var(--slc-title)}
+/* 轨道：36×20 胶囊，padding 2px 让滑块正好贴边 */
+.sl-cfgswitch-track{position:relative;flex:0 0 auto;box-sizing:border-box;
+  width:36px;height:20px;padding:2px;border-radius:999px;
+  background:var(--slc-switch-off);
+  transition:background-color .12s ease-in-out}
+.sl-cfgswitch.on .sl-cfgswitch-track{background:var(--slc-switch-on)}
+/* 滑块：16×16 圆形，开启时右移 16px（36 - 2*2 - 16 = 16） */
+.sl-cfgswitch-thumb{display:block;width:16px;height:16px;border-radius:50%;
+  background:var(--slc-switch-knob);
+  transition:transform .12s ease-in-out}
+.sl-cfgswitch.on .sl-cfgswitch-thumb{transform:translateX(16px)}
 
 /* 宿主把本卡片包在一个 flex 列容器里（gap 12px），这里把纵向 margin 收掉避免叠加 */
 .sl-cfgbox + .sl-cfgbox{margin-top:8px}
@@ -3647,25 +3666,30 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             "div",
             { className: "sl-cfgbox-desc" },
             shown
-              ? "显示在对话输入框左下角。点右侧按钮可关闭。"
-              : h("span", null, h("b", null, "已关闭。"), "点右侧按钮重新显示到对话输入框左下角。"),
+              ? "显示在对话输入框左下角。"
+              : h("span", null, h("b", null, "已关闭。"), "打开开关即可重新显示到对话输入框左下角。"),
           ),
         ),
         /**
-         * 明确的**按钮**（原来是个隐形的文字开关，不好点也不好认）。
-         * 未开启时是主按钮（实心、写「开启指数栏」）；已开启时退成描边次要样式
-         * （写「关闭」）—— 避免用户误以为"已开启"还需要点一下。
+         * 胶囊开关 —— 与宿主列表行（用户截图右下角那个）同款规格：
+         * 36×20 轨道 + 16×16 圆点 + 右侧状态文字。
+         *
+         * 用 role="switch" + aria-checked：语义就是开关，
+         * 键盘 Space/Enter 可直接切换，读屏念「开关，已开启/已关闭」。
          */
         h(
           "button",
           {
             type: "button",
-            className: "sl-cfgbtn" + (shown ? " off" : ""),
-            "aria-pressed": shown ? "true" : "false",
+            role: "switch",
+            "aria-checked": shown ? "true" : "false",
+            className: "sl-cfgswitch" + (shown ? " on" : ""),
             "data-sltip": shown ? "点击关闭指数栏" : "点击开启指数栏",
             onClick: toggle,
           },
-          shown ? "关闭" : "开启指数栏",
+          h("span", { className: "sl-cfgswitch-track", "aria-hidden": "true" },
+            h("span", { className: "sl-cfgswitch-thumb" })),
+          shown ? "已开启" : "已关闭",
         ),
       );
     }

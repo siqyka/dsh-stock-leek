@@ -3094,13 +3094,24 @@ if (txnMi) {
       return n;
     };
     const btnOf = (node) => findNode(node, (n) => n.type === "button"
-      && String((n.props && n.props.className) || "").indexOf("sl-cfgbtn") >= 0);
+      && String((n.props && n.props.className) || "").indexOf("sl-cfgswitch") >= 0);
 
     const card = renderCard();
     const sw = btnOf(card);
     const cardText = textOf(card).join(" ");
-    check("配置卡片显示出按钮", !!sw, cardText.slice(-140));
+    check("配置卡片显示出开关", !!sw, cardText.slice(-140));
     check("卡片文案说明指数栏用途", /指数栏/.test(cardText), cardText.slice(0, 140));
+
+    // 开关必须是**胶囊轨道 + 圆形滑块**（用户要的是截图里宿主那种），
+    // 不是普通按钮 —— 光有 className 不够，得真有 track/thumb 两个元素。
+    if (sw) {
+      const track = findNode(sw, (n) => String((n.props && n.props.className) || "").indexOf("sl-cfgswitch-track") >= 0);
+      const thumb = findNode(sw, (n) => String((n.props && n.props.className) || "").indexOf("sl-cfgswitch-thumb") >= 0);
+      check("开关是胶囊轨道 + 圆形滑块（照宿主同款）", !!track && !!thumb, { track: !!track, thumb: !!thumb });
+      check("开关带开关语义（role=switch + aria-checked）",
+        sw.props.role === "switch" && typeof sw.props["aria-checked"] === "string",
+        { role: sw.props.role, checked: sw.props["aria-checked"] });
+    }
 
     // **样式自包含**：插件页渲染在宿主的 DOM 里，不在 .sl-root 内部，
     // 所以这块 CSS 一旦引用了 sl-* 主题变量就会整条失效 ——
@@ -3131,12 +3142,12 @@ if (txnMi) {
 
     if (sw) {
       const before = !!(global.__sl_test_state__ || {}).config?.barVisible;
-      // 按钮文案必须**说出动作**：未开启时是「开启指数栏」，已开启时是「关闭」
-      const label = String((sw.children && sw.children[0]) || "");
-      check("按钮文案与状态相符（说出动作，不是状态词）",
-        before ? label === "关闭" : label === "开启指数栏", { label, before });
-      check("按钮状态与 barVisible 一致（aria-pressed）",
-        String(sw.props["aria-pressed"]) === String(before), { aria: sw.props["aria-pressed"], before });
+      // 开关旁边要有状态文字（截图里那个开关右边就带「运行中」）
+      const label = String((sw.children && sw.children[1]) || "");
+      check("开关旁边有状态文字（已开启 / 已关闭）",
+        before ? label === "已开启" : label === "已关闭", { label, before });
+      check("开关状态与 barVisible 一致（aria-checked）",
+        String(sw.props["aria-checked"]) === String(before), { aria: sw.props["aria-checked"], before });
 
       click(sw);
       await wait(120);

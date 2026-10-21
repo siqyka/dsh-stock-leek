@@ -16,6 +16,24 @@ node test/e2e-render.mjs      # 渲染层（指数栏/悬浮窗/详情/持仓/�
 
 零 npm 依赖，直接 `node` 跑。测试会请求腾讯/东财真实行情接口，**需联网**。
 
+## 复刻宿主的控件时，去 asar 里量真实尺寸，别靠肉眼估
+
+用户要求「做成截图里那种按钮」，指的就是宿主列表行那个胶囊开关。与其目测，
+不如直接从 `app.asar` 里把它编译后的 CSS 挖出来：
+
+    ._switch_1ik0f_5 {
+      width:36px; height:20px; padding:2px;
+      border-radius:999px; corner-shape:round;
+      background:var(--dsw-alias-border-l3); cursor:pointer;
+    }
+
+照这组数字复刻（36×20 轨道、2px 内边距 → 滑块 16×16、位移 16px），
+出来的东西才和宿主完全一致，而不是"差不多大"。
+
+挖法：在 asar 文本里搜类名特征（`switch`/`toggle`/`controlTrack`），
+注意**别用带 `[^{}]*` 的宽泛正则做大范围扫描** —— 在几百 MB 的文本上会回溯到卡死
+（本轮踩过，跑了两分钟没出结果，只能 kill）。
+
 ## 渲染到宿主页面的组件，样式必须自带变量
 
 本插件的 CSS 变量全部定义在 `.sl-root` 上（悬浮窗自己的根节点）。而
