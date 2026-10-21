@@ -4326,10 +4326,20 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
 
     /**
      * 测量对话输入区（composer seat）几何，作为悬浮栏「自动锚定」的默认位置。
-     * composer 常驻底部（不随消息滚动），故轮询 + resize 重测即可；找不到时回退视口左下角。
+     * composer 常驻底部（不随消息滚动），故轮询 + resize 重测即可。
+     *
+     * **找不到 composer 时不能跳到「视口最左边」**——插件、远程工作区这类面板
+     * 根本没有对话输入区（不是新会话页那种"有输入框但没消息"的情况，是真的整块 UI 被替换），
+     * 于是每 400ms 的测量都会走兜底分支，悬浮栏就从原来的位置猛地塌到 x=16（用户报的"跑到最左侧"）。
+     *
+     * 正确行为是**粘住上一次的有效位置**：看不到 composer 就当作"没变化"，
+     * 让栏留在原地（面板关掉、对话回来的那一帧自然又跟上新的输入区）。
+     * 只有从头到尾**一次都没测到过** composer 时才用兜底坐标（此时本来也没有对话区可对齐）。
      */
     function useComposerAnchor() {
       const [rect, setRect] = useState(null);
+      // 上一次"真的量到了 composer"的结果。用 ref 存，避免进依赖反复重建定时器。
+      const lastGoodRef = useRef(null);
       useEffect(() => {
         let alive = true;
         let last = null;
@@ -4341,9 +4351,16 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             const r = seat.getBoundingClientRect();
             if (r.width > 0 && r.height > 0) {
               next = { left: r.left + 10, bottom: Math.max(8, window.innerHeight - r.bottom + 6), width: Math.max(200, r.width - 20), found: true };
+              lastGoodRef.current = next;
             }
           }
-          if (!next) next = { left: 16, bottom: 14, width: Math.min(560, Math.max(220, window.innerWidth - 32)), found: false };
+          if (!next) {
+            // 量不到 composer：优先粘住上次的有效位置（不跳），否则才用视口兜底
+            const prev = lastGoodRef.current;
+            next = prev
+              ? { ...prev, found: false }
+              : { left: 16, bottom: 14, width: Math.min(560, Math.max(220, window.innerWidth - 32)), found: false };
+          }
           if (!last || Math.abs(next.left - last.left) > 1 || Math.abs(next.bottom - last.bottom) > 1 || Math.abs(next.width - last.width) > 1) {
             last = next;
             setRect(next);

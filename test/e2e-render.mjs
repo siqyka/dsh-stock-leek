@@ -544,6 +544,72 @@ if (gear) {
   check("双击回到自动锚定（bottom 恢复）", typeof bstyle.bottom === "number" && bstyle.top === undefined, JSON.stringify(bstyle).slice(0, 150));
 }
 
+// 回归：插件 / 远程工作区这类面板打开时，**悬浮栏不能塌到视口最左侧**。
+//
+// 这些面板没有对话输入区（整块 UI 被替换），composer 探测必然落空。
+// 修复前那段代码直接回退 `{left:16,...}`，于是栏从输入区位置（这里 seat 在 left=240）
+// 猛地跳到 x=16 —— 用户看到的"跑到最左侧"就是这个。
+// 正确行为：量不到 composer 时**粘住上一次的有效位置**，原地不动。
+//
+// ⚠️ useComposerAnchor 的 effect 依赖是 []（挂载时测一次 + 内部 400ms 轮询），
+// 而 harness 的 hook 状态按「树路径#组件名」跨渲染复用，所以反复 render 同一棵树
+// **不会重跑 effect**。必须清掉该组件的 hook 缓存来模拟"重新挂载"，否则探测分支
+// 永远走不到、断言空转（实测第一次就踩了：forceSeat 开着 left 仍是 16）。
+{
+  const resetFloatBar = () => {
+    for (const k of [...HOOK_STORE.keys()]) if (/#(FloatingIndexBar|IndexBar)$/.test(k)) HOOK_STORE.delete(k);
+  };
+  // 先关掉可能残留的手动位置，保证走自动锚定分支
+  try { global.localStorage.removeItem("sl.bar.pos.v1"); } catch { /* ignore */ }
+
+  // 1) 有 composer：量出真实锚定位置（seat left=240 → 锚定 left = 240+10 = 250）
+  global.__forceSeat = true;
+  resetFloatBar();
+  let withSeatNode = floatReg.render({});
+  renderTree(withSeatNode);
+  await wait(120);
+  withSeatNode = floatReg.render({});
+  renderTree(withSeatNode);
+  const seatStyle = rootStyleOf(withSeatNode);
+  console.log("   有 composer 时 left:", seatStyle.left);
+  check("有 composer 时锚定到输入区左侧（left 明显大于兜底的 16）",
+    typeof seatStyle.left === "number" && seatStyle.left > 100, JSON.stringify(seatStyle).slice(0, 140));
+
+  // 2) 切到插件/远程工作区面板：composer 消失，位置必须粘住。
+  //    **不能 resetFloatBar()** —— 那会连 lastGoodRef 一起清掉，等于"全新挂载"，
+  //    自然没有历史位置可粘，测出来必然是兜底的 16（第一版就栽在这）。
+  //    这里保持同一挂载实例，靠组件内部 400ms 轮询重新测量。
+  global.__forceSeat = false;
+  let noSeatStyle = null;
+  for (let i = 0; i < 5; i++) {
+    await wait(200);
+    const n = floatReg.render({});
+    renderTree(n);
+    noSeatStyle = rootStyleOf(n);
+  }
+  console.log("   composer 消失后 left:", noSeatStyle.left);
+  check("composer 消失后不塌到最左侧 16（这就是用户报的 bug）", noSeatStyle.left !== 16, noSeatStyle.left);
+  check("composer 消失后悬浮栏位置未跳变",
+    typeof noSeatStyle.left === "number" && Math.abs(noSeatStyle.left - seatStyle.left) <= 2,
+    { before: seatStyle.left, after: noSeatStyle.left });
+
+  // 3) 面板关掉、对话回来：必须重新跟上（粘性不能退化成"再也不更新"）
+  global.__forceSeat = true;
+  resetFloatBar();
+  let backStyle = null;
+  for (let i = 0; i < 3; i++) {
+    await wait(120);
+    const n = floatReg.render({});
+    renderTree(n);
+    backStyle = rootStyleOf(n);
+  }
+  check("对话回来后重新跟上输入区（粘性不是永久冻结）",
+    typeof backStyle.left === "number" && Math.abs(backStyle.left - seatStyle.left) <= 2,
+    { want: seatStyle.left, got: backStyle.left });
+  global.__forceSeat = false;
+  resetFloatBar();
+}
+
 // 回归：窗口缩小 → 悬浮栏贴边可见；窗口放大 → 回到用户原来的位置。
 // 反面教训：曾把钳制结果回写 localStorage，导致"放大缩小放大后位置回不去"。
 {
