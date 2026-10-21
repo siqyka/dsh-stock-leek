@@ -170,3 +170,150 @@
     }
     // ==== 预警：规则清洗（与 lib/shared.js 同名副本，shared-drift 对拍锁定）====
     // UI 建规则时本地先用它校验/钳制，Host 侧 sanitizeConfig 是最终防线。
+    const ALERT_TYPES = [
+      "price_above", "price_below", "cost_above", "cost_below",
+      "pct_up", "pct_down", "limit_near", "speed_up",
+    ];
+    function sanitizeAlert(raw) {
+      if (!raw || typeof raw !== "object") return null;
+      if (typeof raw.id !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(raw.id)) return null;
+      const code = typeof raw.code === "string" ? raw.code.trim() : "";
+      if (!/^[A-Za-z0-9_.$-]{1,16}$/.test(code)) return null;
+      if (!ALERT_TYPES.includes(raw.type)) return null;
+      if (raw.type === "limit_near" && !/^(sh|sz|bj)/i.test(code)) return null;
+      const value = Number(raw.value);
+      if (!Number.isFinite(value) || value < 0) return null;
+      const out = {
+        id: raw.id,
+        code,
+        type: raw.type,
+        value: Math.min(1e8, Math.round(value * 10000) / 10000),
+      };
+      // 没有 enabled：规则存在即参与评估，要停就删（与 lib/shared.js 同款，勿单边修改）
+      if (typeof raw.name === "string" && raw.name.trim()) out.name = raw.name.trim().slice(0, 40);
+      if (Number.isFinite(Number(raw.createdAt))) out.createdAt = Math.round(Number(raw.createdAt));
+      return out;
+    }
+    function sanitizeAlerts(raw) {
+      if (!Array.isArray(raw)) return [];
+      const seen = new Set();
+      const out = [];
+      for (const r of raw) {
+        const v = sanitizeAlert(r);
+        if (!v || seen.has(v.id)) continue;
+        seen.add(v.id);
+        out.push(v);
+        if (out.length >= 50) break;
+      }
+      return out;
+    }
+    // ==== 行情时间戳 → 市场本地交易日（与 lib/shared.js 一致）====
+    // 三市场格式不同：A股 14 位数字 / 美股 "Y-M-D H:M:S" / 港股 "Y/M/D H:M:S"。
+    // 只认 14 位会让美股、港股规则永远 no-day 不触发（实测踩过）。
+    function quoteDayFor(q) {
+      const t = String((q && q.time) || "").trim();
+      if (/^\d{14}$/.test(t)) return t.slice(0, 8);
+      const digits = t.replace(/[^\d]/g, "");
+      if (digits.length >= 8 && /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/.test(t)) {
+        return digits.slice(0, 8);
+      }
+      return null;
+    }
+    // ==== 市场开关（与 lib/shared.js 一致；shared-drift 对拍锁定）====
+    // 用户要求：A股/港股/美股三个开关可多选；被暂停的市场不刷新行情、
+    // 指数栏也不因它展开。未知市场（无前缀）不受开关影响，按启用处理。
+    function marketKeyOf(code) {
+      const c = String(code || "").toLowerCase();
+      if (/^(sh|sz|bj)/.test(c)) return "cn";
+      if (/^hk/.test(c)) return "hk";
+      if (/^(us|gb_)/.test(c)) return "us";
+      return null;
+    }
+    function marketPaused(code, paused) {
+      if (!Array.isArray(paused) || paused.length === 0) return false;
+      const key = marketKeyOf(code);
+      return key !== null && paused.includes(key);
+    }
+    function withoutPausedMarkets(codes, paused) {
+      const arr = Array.isArray(codes) ? codes : [];
+      if (!Array.isArray(paused) || paused.length === 0) return arr;
+      return arr.filter((c) => !marketPaused(c, paused));
+    }
+    /**
+     * 指数栏此刻该不该展开（**不含手动覆盖**，只回答"按时段该不该"）。
+     *
+     * 非交易时段只留「状态点 + 设置」，把桌面让出来。
+     *
+     * **午休不收起**：判据取整个交易日的跨度（首个开盘 − 缓冲 ~ 最后收盘 + 缓冲），
+     * 而不是逐时段匹配。否则 A 股每天 11:30–13:00 栏会消失两个半小时。
+     *
+     * **市场开关参与判断**（用户要求）：被暂停的市场视为"永不展开"——
+     * 它的行情都停了，展开一个显示定格数字的栏没有意义。
+     */
+    function shouldExpandBar(code, now) {
+      now = now || marketNow();
+      const c = String(code || "").toLowerCase();
+      if (marketPaused(c, state.config && state.config.pausedMarkets)) return false; // 开关关掉 → 不参与展开
+      const wd = now.getDay();
+      if (wd === 0 || wd === 6) return false; // 周末一律收起
+      const ws = marketWindows(c);
+      if (!ws.length) return false; // 未知市场：保守收起
+      const t = marketMinutes(c, now);
+      const openAt = ws[0][0];
+      const closeAt = ws[ws.length - 1][1];
+      return t >= openAt - BAR_LEAD_MIN && t <= closeAt + BAR_LAG_MIN;
+    }
+    /**
+     * 指数栏当前实际是否展开：手动覆盖优先于时段判断。
+     * `barForce` 跨交易日自动失效——否则昨天临收盘手动收起，今天开盘也不展。
+     */
+    function barExpandedNow(s, cfg) {
+      const items = barItems(s, cfg);
+      const auto = items.length === 0 ? true : items.some((x) => shouldExpandBar(x.idx.code));
+      const day = items.length && items[0].q ? quoteDate(items[0].q) : "";
+      const force = state.barForceDay === day ? state.barForce : null;
+      return { expanded: force === null ? auto : force, auto: auto, force: force };
+    }
+    /** 指数栏上排的指数（含没行情的） */
+    function barItems(s, cfg) {
+      return cfg.barIndices.map((code) => ({ idx: cfgFind(cfg.indices, code) || { code, name: displayCode(code) }, q: s.quotes[code] })).filter((x) => x.idx);
+    }
+    /**
+     * 点状态点切换展开/收起：当前展开 → 收起，当前收起 → 展开。
+     *
+     * 手动选择会一直生效到**下一个交易日**（barForceDay 过期即失效），
+     * 所以"临收盘手动收起"不会粘住明天开盘。不做"再点一下退回自动"——
+     * 那样点出来的状态和自动状态永远观测不到同一种情形，反而更难预期。
+     */
+    function toggleBarExpand(s, cfg) {
+      const now = barExpandedNow(s, cfg);
+      const items = barItems(s, cfg);
+      const day = items.length && items[0].q ? quoteDate(items[0].q) : "";
+      setState({ barForce: !now.expanded, barForceDay: day });
+    }
+
+    async function api(path, params) {
+      const qs = new URLSearchParams();
+      if (params) {
+        for (const [k, v] of Object.entries(params)) {
+          if (v === undefined || v === null) continue;
+          qs.set(k, typeof v === "object" ? JSON.stringify(v) : String(v));
+        }
+      }
+      const q = qs.toString();
+      const res = await fetch(BASE + path + (q ? "?" + q : ""), { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    }
+    async function apiPost(path, body) {
+      const res = await fetch(BASE + path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    }
+
+    // ================================================================ store（配置 + 行情 + 轮询，dock 与悬浮窗共享）

@@ -116,19 +116,22 @@ dsh-stock-leek/
 ├── package.json      # dsh.bundle + dsh.client 声明
 ├── LICENSE           # MIT 协议正文
 ├── src/
-│   └── client/       # Client **源码**：按职责切成 23 个片段
-│       ├── 00-boot.js       #   文件头 + __ModuleLoader__.load
-│       ├── 10-css.js        #   全部样式
-│       ├── 20-format.js     #   常量 / 格式化 / 市场时段
-│       ├── 30-store.js      #   全局 store
-│       ├── 35-config.js     #   配置持久化 + 多标签页同步
-│       ├── 40-stream.js     #   行情通道（SSE / 轮询）
-│       ├── 45-alerts.js     #   预警通知与弹窗
-│       ├── 60-pnl.js        #   成本与盈亏
-│       ├── 70-charts.js     #   分时 / 盈亏曲线 / K线
-│       ├── 80-views-*.js    #   各视图
-│       └── 99-tail.js       #   inject / apply / exports
-├── lib/              # 可复用代码
+│   └── client/       # Client **源码**：按功能切成 15 个片段（顺序见 build.mjs 的 ORDER）
+│       ├── boot.js         #   文件头 + __ModuleLoader__.load
+│       ├── styles.js       #   全部样式
+│       ├── core.js         #   常量 / 格式化 / 市场时段 / 预警模型
+│       ├── store.js        #   store / 配置同步
+│       ├── streams.js      #   行情通道 / 预警通道
+│       ├── actions.js      #   初始化 / 拖拽 / 增删改
+│       ├── pnl.js          #   成本与盈亏 / 交易流水
+│       ├── charts.js       #   搜索 / 分时图 / K线图
+│       ├── parts.js        #   图标 / 右键菜单 / 提示层
+│       ├── views-list.js   #   大盘 / 自选 / 持仓
+│       ├── views-config.js #   交易记录 / 设置 / 预警
+│       ├── detail.js       #   预警弹窗 / 详情页 / 五档
+│       ├── floating.js     #   悬浮窗 / 收益 / 标题彩蛋
+│       ├── index-bar.js    #   指数栏
+│       └── app.js          #   inject / apply / exports├── lib/              # 可复用代码
 │   └── shared.js     #   纯函数：格式化 + 盈亏口径（Host/测试共用）
 ├── docs/             # 详细文档
 │   ├── architecture.md

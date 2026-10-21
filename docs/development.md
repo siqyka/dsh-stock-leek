@@ -2,7 +2,7 @@
 
 ## 改 client 代码：先改 src/client/，再 build
 
-`client.js` 是**生成物**，源码在 `src/client/`（23 个片段，见 [architecture.md](architecture.md#为什么-client-源码要拆产物却是单文件)）。
+`client.js` 是**生成物**，源码在 `src/client/`（15 个按功能命名的片段，见 [architecture.md](architecture.md#为什么-client-源码要拆产物却是单文件)）。
 
 ```bash
 npm run build        # src/client/ → client.js
@@ -11,6 +11,7 @@ npm run build:check  # 只校验：client.js 是否与源码同步（不写文�
 
 `npm test` 第一步就是 `build.mjs --check`。**改了 src 忘了 build 会直接红**，并指出首个差异行 —— 不会等到浏览器里才发现。
 
+> **新增片段必须在 `build.mjs` 的 `ORDER` 里登记位置。** 不登记的话 `build --check` 会直接报错（"有文件没登记进 ORDER"）—— 这条守卫是防"文件写了却静默没进产物"，那种情况代码完全不生效、却一切看起来正常，最难排查。
 > 直接编辑 `client.js` 会在下次 build 时被覆盖。若确实需要绕过（调试用），改完记得把改动搬回 `src/client/`。
 
 ## 跑测试

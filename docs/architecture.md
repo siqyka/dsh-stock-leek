@@ -28,9 +28,9 @@ lib/shared.js（纯函数，Host 与测试共用）
 | 路径 | 用途 |
 |---|---|
 | `index.js` | Host 插件主体：webServer 路由、腾讯行情解析与编码、配置持久化、SSE 广播 |
-| `src/client/*.js` | **Client 源码**：按职责切成 23 个片段，由 `build.mjs` 拼成 `client.js` |
+| `src/client/*.js` | **Client 源码**：按功能切成 15 个片段，由 `build.mjs` 拼成 `client.js` |
 | `client.js` | Client 产物（`__ModuleLoader__` 工厂），**生成物，勿直接编辑** |
-| `build.mjs` | 构建：把 `src/client/` 按文件名数字序拼回单文件；`--check` 只校验不写 |
+| `build.mjs` | 构建：按 `ORDER` 清单拼接 `src/client/`；`--check` 只校验不写 |
 | `lib/shared.js` | 无副作用纯函数：格式化、代码显示、盈亏口径、常量。Host 与测试直接 import |
 | `test/` | 八个套件，全部 `node` 直接跑，零 npm 依赖 |
 | `docs/` | 本目录：架构、配置、行情通道等细节文档 |
@@ -41,36 +41,52 @@ lib/shared.js（纯函数，Host 与测试共用）
 
 DSH 的客户端加载器规定 factory 内的 `require` 只接受裸包名（见下文 §1），所以 `client.js` **不能**拆成多个文件互相 require —— 产物必须是单文件。
 
-但「产物单文件」不等于「源码单文件」。`src/client/` 把它按职责切开，`build.mjs` 在构建期拼回：
+但「产物单文件」不等于「源码单文件」。`src/client/` 按**功能**切开，`build.mjs` 在构建期按 `ORDER` 清单拼回：
 
 ```
 src/client/
-  00-boot.js            文件头 + __ModuleLoader__.load + factory 开头 + require('react')
-  10-css.js             全部样式（裸 CSS 字符串 + 注入 <style>）
-  20-format.js          常量、本地存储键、格式化、市场时段判定
-  25-alert-model.js     预警类型与清洗
-  30-store.js           指数栏展开判断、全局 store
-  35-config.js          配置持久化、多标签页同步
-  40-stream.js          行情通道（SSE / 轮询）
-  45-alerts.js          预警通知、弹窗队列、alert-stream
-  50-ui-utils.js        初始化、拖拽排序、列表容量
-  55-crud.js            自选/持仓/预警增删改
-  60-pnl.js             成本与盈亏（todayPnl / costBasis / replay / 交易流水）
-  65-search.js          悬浮窗开关、搜索框
-  70-charts.js          分时 / 盈亏曲线 / K线
-  75-overlay-parts.js   菜单图标、右键菜单、面板测量、编辑框、提示层
-  80-views-market.js    大盘 / 自选 / 行情行 / 持仓
-  82-views-txn.js       交易记录面板与二级页
-  84-views-settings.js  设置页 / 预警页 / 加预警对话框
-  86-alert-popup.js     对话区测量、预警弹窗
-  88-detail.js          个股详情页 + 五档盘口
-  90-overlay.js         数据新鲜度徽标、悬浮窗主体
-  92-earnings.js        收益胶囊、盈亏汇总、标题彩蛋
-  94-bar.js             指数栏（dock + floating 锚定）
-  99-tail.js            插件主体：inject / apply / exports
+  ── 外壳 ────────────────────────────────────────────────
+  boot.js           文件头 + __ModuleLoader__.load + factory 开头 + require('react') + ErrorBoundary
+  styles.js         全部样式（裸 CSS 字符串 + 注入 <style>）
+
+  ── 纯函数层（无依赖，最先加载）──────────────────────────
+  core.js           常量 / 本地存储键 / 格式化 / 市场时段 / 预警模型 / 指数栏展开判断
+
+  ── 状态与网络 ──────────────────────────────────────────
+  store.js          全局 store / setState / 吐司 / 右键菜单 / 配置持久化 / 多标签页同步
+  streams.js        行情通道（SSE / 轮询）+ 预警通道（alert-stream / 通知 / 弹窗队列）
+
+  ── 领域逻辑 ────────────────────────────────────────────
+  actions.js        初始化 / 拖拽排序 / 列表容量 / 自选·持仓·预警的增删改
+  pnl.js            成本与盈亏 / 交易流水重算 / 清仓判定
+
+  ── 组件 ────────────────────────────────────────────────
+  charts.js         悬浮窗入口 / 搜索框 / 分时图 / K线图
+  parts.js          菜单图标 / 右键菜单 / 面板测量 / 编辑框 / 提示层
+
+  ── 视图 ────────────────────────────────────────────────
+  views-list.js     大盘 / 自选（含行情行）/ 持仓
+  views-config.js   交易记录 / 设置 / 预警（含加预警对话框）
+  detail.js         预警弹窗 / 个股详情页 / 五档盘口
+
+  ── 悬浮窗与指数栏 ──────────────────────────────────────
+  floating.js       数据新鲜度徽标 / 悬浮窗主体 / 收益胶囊 / 标题彩蛋
+  index-bar.js      指数栏（dock + floating 两种放置，含锚定测量）
+
+  ── 插件主体 ────────────────────────────────────────────
+  app.js            inject / apply / exports
 ```
 
-拼接是**纯文本**的：片段之间共享同一个 `factory` 作用域，不写 `require`/`export`，就像它们本来就在一个文件里。
+**文件名不带序号，顺序由 `build.mjs` 里的 `ORDER` 数组决定。** 为什么不靠字典序：拼接是**纯文本**的，所有片段共享同一个 `factory` 作用域，函数声明会提升但 `const`/`let` 不会 —— 「先定义后使用」只能靠显式顺序保证。
+
+`build.mjs` 对 `ORDER` 做**双向校验**，两个方向都会让构建失败：
+
+- `ORDER` 里列了但文件不存在 → 报错
+- 目录里有文件没登记进 `ORDER` → 报错
+
+后者尤其重要：不校验的话，新增片段会**静默不进产物**，代码写了却完全没生效，最难以排查。
+
+拼接是**纯文本**的：片段之间不写 `require`/`export`，就像它们本来就在一个文件里。
 
 **两条硬规矩**：
 

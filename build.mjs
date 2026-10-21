@@ -44,34 +44,60 @@ const GENERATED_NOTE = `/* 此文件由 build.mjs 从 src/client/ 生成，请�
 `;
 
 /**
- * 找出所有片段的真实执行位置。
+ * 片段加载顺序（**唯一权威**）。
  *
- * 产物里**不能**带上面那两行 banner 之外的东西 —— 特别是不能留拼接分隔标记，
- * 否则 `--check` 与产物永远差几行、也污染运行时体积。片段之间只加一个空行。
+ * 文件名只描述功能、不带序号，顺序完全由这张表决定。改顺序 = 改这里。
+ * 为什么必须有这张表：拼接是**纯文本**的，所有片段共享同一个 factory 作用域，
+ * 函数声明会提升但 `const`/`let` 不会 —— 所以「先定义后使用」只能靠顺序保证，
+ * 不能让文件系统按字典序猜。
+ *
+ * 分组顺序：外壳 → core 纯函数 → 状态与网络 → 领域动作 → 组件 → 视图 → 插件主体。
+ */
+const ORDER = [
+  "boot.js",        // 入口外壳、ErrorBoundary
+  "styles.js",      // 样式表
+  "core.js",        // 常量 / 格式化 / 市场时段 / 预警模型
+  "store.js",       // store / 吐司 / 菜单 / 配置同步
+  "streams.js",     // 行情通道 / 预警通道
+  "actions.js",     // 初始化 / 拖拽 / 增删改
+  "pnl.js",         // 成本与盈亏 / 交易流水
+  "charts.js",      // 搜索 / 分时图 / K线图
+  "parts.js",       // 图标 / 右键菜单 / 提示层
+  "views-list.js",  // 大盘 / 自选 / 持仓
+  "views-config.js",// 交易记录 / 设置 / 预警
+  "detail.js",      // 预警弹窗 / 详情页 / 五档
+  "floating.js",    // 悬浮窗 / 收益胶囊 / 标题彩蛋
+  "index-bar.js",   // 指数栏（dock / floating）
+  "app.js",         // inject / apply / exports
+];
+
+/**
+ * 按 ORDER 读出所有片段，并双向校验：
+ * - ORDER 里列的文件必须都存在
+ * - 目录里不能有 ORDER 没列的文件（防止新增片段忘了登记、静默没进产物）
  */
 function collectParts() {
   if (!existsSync(SRC_DIR)) {
     console.error(`✗ 找不到源码目录：${SRC_DIR}`);
     process.exit(1);
   }
-  const files = readdirSync(SRC_DIR)
-    .filter((f) => f.endsWith(".js"))
-    .sort((a, b) => {
-      // 前缀数字优先，其次字典序。这样 `70-views/` 里的文件也能按期望顺序。
-      const na = parseInt(a, 10);
-      const nb = parseInt(b, 10);
-      if (Number.isNaN(na) || Number.isNaN(nb)) return a < b ? -1 : a > b ? 1 : 0;
-      if (na !== nb) return na - nb;
-      return a < b ? -1 : a > b ? 1 : 0;
-    });
-  if (files.length === 0) {
-    console.error(`✗ ${SRC_DIR} 下没有任何 .js 片段`);
+  const onDisk = readdirSync(SRC_DIR).filter((f) => f.endsWith(".js"));
+
+  const missing = ORDER.filter((f) => onDisk.indexOf(f) < 0);
+  if (missing.length > 0) {
+    console.error("✗ ORDER 里列了但文件不存在：");
+    for (const f of missing) console.error(`    ${f}`);
     process.exit(1);
   }
-  return files.map((f) => {
-    const text = readFileSync(join(SRC_DIR, f), "utf8");
-    return { name: f, text };
-  });
+  const unlisted = onDisk.filter((f) => ORDER.indexOf(f) < 0);
+  if (unlisted.length > 0) {
+    console.error("✗ src/client/ 里有文件没登记进 build.mjs 的 ORDER：");
+    for (const f of unlisted) console.error(`    ${f}`);
+    console.error("  （新增片段必须在 ORDER 里指定位置，否则不会被打进产物）");
+    process.exit(1);
+  }
+
+  return ORDER.map((f) => ({ name: f, text: readFileSync(join(SRC_DIR, f), "utf8") }));
 }
 
 /** 拼出完整的 client.js 文本。 */

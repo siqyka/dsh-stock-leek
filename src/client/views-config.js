@@ -1,3 +1,98 @@
+    function TxnPanel(props) {
+      const { p, form, setForm, submitTxn, todayDate } = props;
+      const set = (k, v) => setForm((f) => Object.assign({}, f, { [k]: v }));
+      return h(
+        "div",
+        { className: "sl-txn-panel" },
+        h(
+          "div",
+          { className: "sl-txn-form" },
+          h("span", { className: "sl-seg sl-txn-seg" },
+            [["buy", "买入"], ["sell", "卖出"]].map(([v, t]) =>
+              h("button", { key: v, className: form.side === v ? "on" : "", onClick: () => set("side", v) }, t))),
+          h("input", { className: "sl-mini sl-txn-price", type: "number", step: "0.001", min: "0", placeholder: "价格", value: form.price, onChange: (e) => set("price", e.target.value) }),
+          h("input", { className: "sl-mini sl-txn-qty", type: "number", step: "100", min: "0", placeholder: "股数", value: form.qty, onChange: (e) => set("qty", e.target.value) }),
+          h("input", { className: "sl-mini sl-txn-date-input", type: "date", value: form.date || todayDate || "", onChange: (e) => set("date", e.target.value), "data-sltip": "成交日期（默认今日）" }),
+          h("button", { className: "sl-btn sl-txn-add", onClick: () => submitTxn(p) }, "＋记一笔"),
+        ),
+        h("div", { className: "sl-txn-hint" }, "成交明细见右键「📒 交易记录」"),
+      );
+    }
+
+    /**
+     * 交易记录二级页：只显示**被右键那只股票**的成交（最新在前）。
+     * 挂在持仓 tab 下（与预警挂在设置下同一套路），「← 返回」回持仓列表。
+     */
+    function TxnRecordsView(props) {
+      const s = useStore();
+      const cfg = s.config;
+      const panel = props.panel;
+      const listRef = useRef(null);
+      // 成交明细按 MAX_VISIBLE_ROWS 封顶（与大盘/自选/持仓同一套 10 行上限）。
+      // Hooks 不能放在 early return 之后，所以行数在这里用 cfg 安全取值。
+      const rowCount = (() => {
+        if (!cfg || !panel) return 0;
+        const pp = cfgFind(cfg.positions, panel.code);
+        return ((pp && pp.txns) || []).length;
+      })();
+      const rowCap = useListCap(listRef, rowCount);
+      if (!cfg || !panel) return h("div", { className: "sl-empty" }, "加载中…");
+      const p = cfgFind(cfg.positions, panel.code);
+      const q = s.quotes[panel.code];
+      const txns = ((p && p.txns) || []).slice().reverse(); // 最新在前
+      const today = quoteDate(q);
+      // 汇总：买入额 / 卖出额 / 净股数（净=0 说明已清仓）
+      let buyAmt = 0, sellAmt = 0, net = 0;
+      for (const t of txns) {
+        net += t.qty;
+        if (t.qty > 0) buyAmt += t.price * t.qty;
+        else sellAmt += t.price * -t.qty;
+      }
+      const todayTxns = txns.filter((t) => t.date === today);
+      return h(
+        "div",
+        { className: "sl-txnrec" },
+        h("div", { className: "sl-dhead" },
+          h("div", { className: "sl-dtop" },
+            h("button", { className: "sl-back", onClick: () => setState({ txnPanel: null }) }, "← 返回"),
+            h("span", { className: "sl-dname" }, "📒 交易记录：" + (panel.name || displayCode(panel.code)) + "（" + displayCode(panel.code) + "）"))),
+        txns.length === 0
+          ? h("div", { className: "sl-empty" }, "还没有交易记录。右键持仓行「记一笔交易」补录。")
+          : h(
+              react.Fragment,
+              null,
+              // 汇总条：买入/卖出成交额 + 净股数（清仓时净=0）
+              // 用 fmtSigned0 而非 fmtMoney：后者对 0 返回 "-"，汇总里"买 -"读不通
+              h("div", { className: "sl-txnrec-sum" },
+                h("span", { "data-sltip": "全部买入成交合计 " + fmtExact(buyAmt) + " 元" }, "买 ", h("b", { className: "sl-up" }, fmtSigned0(buyAmt))),
+                h("span", { "data-sltip": "全部卖出成交合计 " + fmtExact(sellAmt) + " 元" }, "卖 ", h("b", { className: "sl-down" }, fmtSigned0(sellAmt))),
+                h("span", { "data-sltip": "累计净买入股数（0 = 已清仓）" }, "净 ", h("b", null, net + " 股")),
+                h("span", { style: { flex: 1 } }),
+                h("span", { className: "sl-txnrec-cnt" }, txns.length + " 笔" + (todayTxns.length ? " · 今日 " + todayTxns.length + " 笔" : ""))),
+              h("div", { className: "sl-txnrec-head" },
+                h("span", null, "方向"), h("span", null, "日期"), h("span", null, "价格"), h("span", null, "股数"), h("span", null, "金额"), h("span", null, "")),
+              h("div", {
+                className: "sl-txnrec-list" + (rowCap ? " sl-sortable-cap" : ""),
+                ref: listRef,
+                style: rowCap ? { maxHeight: rowCap + "px" } : null,
+              },
+                txns.map((t, ti) =>
+                  h(
+                    "div",
+                    { key: t.id, "data-sl-idx": ti, className: "sl-txn-row" },
+                    h("span", { className: "sl-txn-side " + (t.qty > 0 ? "sl-up" : "sl-down") }, t.qty > 0 ? "买" : "卖"),
+                    h("span", { className: "sl-txn-date" }, t.date || "-"),
+                    h("span", { className: "sl-txn-num" }, "@" + fmtPrice(t.price)),
+                    h("span", { className: "sl-txn-num" }, Math.abs(t.qty) + "股"),
+                    h("span", { className: "sl-txn-amt" }, fmtMoney(Math.abs(t.price * t.qty), "")),
+                    t.date === today ? h("span", { className: "sl-txn-today" }, "今") : null,
+                    h("button", { className: "sl-x", "data-sltip": "删除该笔成交", onClick: () => removeTxn(panel.code, t.id) }, "✕"),
+                  ),
+                ))),
+      );
+    }
+
+    // ================================================================ 视图：设置
     function SettingsView() {
       const s = useStore();
       const cfg = s.config;
@@ -334,56 +429,3 @@
      * 找不到时回退视口上方居中（保证任何宿主版本下都能显示）。
      * 与 useComposerAnchor 同款做法：轮询 + resize，容忍宿主改版。
      */
-    function useConversationRect(active) {
-      const [rect, setRect] = useState(null);
-      useEffect(() => {
-        if (!active) return undefined;
-        let alive = true;
-        let last = null;
-        const measure = () => {
-          if (!alive) return;
-          let next = null;
-          const seat = document.querySelector("[data-composer-seat]")
-            || document.querySelector('[data-conversation-region="composer"]');
-          if (seat) {
-            // composer 往上找 1~2 层即对话面板容器。
-            // ⚠️ 曾爬 3 层：容易越过对话面板爬到侧边栏/应用根容器，
-            // 那样"对话区内居中"的基准就偏了，弹窗看着不在中间（实测反馈）。
-            // 这里取更保守的 2 层，并对几何做合理性检查（宽度应显著小于视口）。
-            let box = seat;
-            for (let i = 0; i < 2 && box && box.parentElement; i++) box = box.parentElement;
-            const r = box.getBoundingClientRect();
-            if (r.width > 200 && r.height > 120 && r.width <= window.innerWidth) {
-              next = { left: r.left, top: r.top, width: r.width, height: r.height };
-            }
-          }
-          if (!next) {
-            // 回退：**视口居中**（与主路径的居中语义一致）。
-            // ⚠️ 这里曾遗留「贴左」（left: 24）——它是"贴左对齐"那版的产物，
-            // 用户改回居中后仍留着，导致探测不到 composer seat 时弹窗跑偏到
-            // 屏幕左边、看着完全不在中间（实测反馈「中间的没有看到」）。
-            // 两条路径必须给出一致的视觉位置。
-            const w = Math.min(520, Math.max(200, window.innerWidth - 64));
-            next = { left: Math.round((window.innerWidth - w) / 2), top: 72, width: w, height: window.innerHeight - 160 };
-          }
-          // 诊断钩子：浏览器控制台可查「弹窗实际用的几何 + 是否走了回退」。
-          // 排查「弹窗不在中间」这类问题时，比猜宿主 DOM 结构快得多：
-          //   __sl_conv_rect__   → { left, top, width, height, fallback }
-          globalThis.__sl_conv_rect__ = Object.assign({}, next, { fallback: !seat, vw: window.innerWidth, vh: window.innerHeight });
-          if (!last || Math.abs(next.left - last.left) > 1 || Math.abs(next.top - last.top) > 1 || Math.abs(next.width - last.width) > 1) {
-            last = next;
-            setRect(next);
-          }
-        };
-        measure();
-        const iv = setInterval(measure, 500);
-        window.addEventListener("resize", measure);
-        return () => {
-          alive = false;
-          clearInterval(iv);
-          window.removeEventListener("resize", measure);
-        };
-      }, [active]);
-      return rect;
-    }
-
