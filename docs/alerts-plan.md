@@ -25,6 +25,17 @@
 - **弹窗注册为独立 slot**，与悬浮窗开关解耦 —— 曾经挂在 `Overlay` 内部，而它有 `if (!s.open) return null`，导致「不打开悬浮窗就收不到预警」。
 - `states` **必须保留**：它是「每交易日只提示一次」的唯一依据，丢了会在 Host 重启后重复播报。
 
+### 0.1 实施之后又改了两处（本文档其余部分未反映）
+
+| 项 | 本来的样子 | **现在** |
+|---|---|---|
+| 规则启停 | 单条 ●/○ + 组头整组开关 | **整体移除**：规则存在即评估，**删除就是停用**。`sanitizeAlert` 不再产出 `enabled`，Host 侧两处 `enabled !== false` 过滤也去掉了；旧配置残留的该字段被丢弃、不再读取 |
+| 规则列表 | 平铺列表 | **按股票代码分组抽屉**：组头常驻「名称+代码+条数+已触发数」+ `▸/▾`，手风琴单开，新加规则自动展开该组，超 10 组内部滚动 |
+
+两条教训已写入 [docs/development.md](development.md)：中间状态会让"列表里有它"和"它会不会响"变成两件事；把控件收进折叠区时要逐项确认是否仍有常驻入口。
+
+> 五档盘口（`bookLayout` / `bookUnit`）属于**行情详情页**的功能，不在本文范围，见 [docs/configuration.md](configuration.md)。
+
 ---
 
 ## 1. 核心矛盾：为什么评估必须放 Host
@@ -318,22 +329,7 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 
 ---
 
-## 9. 涉及文件与量级
-
-| 文件 | 改动 | 量级 |
-|---|---|---|
-| `lib/shared.js` | `stepAlert` 状态机、`sanitizeAlert`；`marketWindows`/`marketMinutes`/`isMarketOpen` 从 client.js 提上来 | +110 |
-| `index.js` | `cfg.alerts` + sanitize 白名单、独立评估循环、`config.json.alerts` 读写、`/alerts` + `/alert-stream` | +190 |
-| `client.js` | 预警 tab、铃铛角标、右键项、alert-stream 订阅、三级降级、多标签去重；时段函数改引用内联副本 | +290 |
-| `test/config-guard.mjs` | 清理列表加 `p+".alerts"`；断言 alerts 走隔离路径 | +25 |
-| `test/shared-drift.mjs` | 状态机对拍 + 滞回/跨日语义；新迁入的时段函数纳入对拍 | +70 |
-| `test/test-routes.mjs` | sanitize 不吃 `alerts`、两个新端点、脏值回落 | +50 |
-| `test/e2e-render.mjs` | UI 全流程、通知降级（stub `Notification`）、老 Host 吃字段回归 | +100 |
-| `docs/*.md`、`README.md` | 架构决策、配置项、功能说明 | — |
-
----
-
-## 10. 已知的坑（写在这里就是为了别再踩）
+## 9. 已知的坑（写在这里就是为了别再踩）
 
 1. **`sanitizeConfig` 是白名单重建，未知字段静默丢弃**（[index.js:209](../index.js#L209)）。老 Host 进程不认识 `alerts` 会把它吃掉——和当年 `ma` 字段被吃是**同一个坑**。客户端侧要照 [client.js:689](../client.js#L689) / [client.js:908](../client.js#L908) 那样加本地值回填保护，**并且这条必须有 e2e 断言**（当年就是靠断言才发现的）。
 
@@ -351,35 +347,7 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 
 ---
 
-## 11. 实施顺序（4 个提交，每步可独立验证）
-
-| # | 内容 | 完成判据 |
-|---|---|---|
-| 1 | **地基**：shared.js 状态机 + 时段函数上提 + drift 对拍 | `npm test` 全绿；drift 覆盖新函数；时段函数上提后 client.js 行为无变化 |
-| 2 | **Host**：`cfg.alerts` + sanitize + 独立评估循环 + `config.json.alerts` + `/alerts`、`/alert-stream` | config-guard 断言 alerts 走隔离路径；test-routes 覆盖新端点；无规则时零上游请求 |
-| 3 | **UI**：预警 tab + 铃铛角标 + 右键「设为预警」+ 吃字段回填保护 | e2e 覆盖建规则→触发→角标；老 Host 模拟下 `alerts` 不丢 |
-| 4 | **通知**：alert-stream 订阅 + 隐藏保留该流 + 三级降级 + 多标签去重 | e2e stub `Notification` 三种权限状态各一条断言 |
-
-**先写失败测试再改实现**，每个断言都要做一次非空洞验证（把实现改坏，确认该断言变红）。项目已有大量「看着绿其实空转」的教训记录在 [docs/development.md](development.md)。
-
----
-
-## 12. 验收标准
-
-1. 关掉所有标签页（隐藏），触发一条预警 → 回来能看到历史与角标；开了通知则系统通知已弹
-2. 价格停在阈值上方 10 分钟 → **只报 1 次**（滞回）
-3. 次日同样条件 → 重新生效（跨日重置；日界按 §4.2 的行情时间戳日，美股规则在北京时间 00:00 **不得**重置）
-4. 休市/节假日 → 零上游请求（时段门控）、零误报（交易日判据，§4.3）
-5. 未启用任何规则 → 评估循环完全休眠，不打接口
-6. 老版本 Host 进程下新建规则并重载 → 规则不丢（回填保护）
-7. `limit_near` 规则：港股/美股 code 被 UI 禁选、Host sanitize 拒收；A 股 code 正常生效
-8. 持仓清仓移除后，其 `cost_*` 规则保留、评估时静默跳过，不触发、不删除
-9. 重开 `/alert-stream`（含重连）先 `GET /alerts` 对账，冻结期间的事件能补进角标
-10. `npm test` 全绿，且新增断言逐条通过非空洞验证
-
----
-
-## 13. 实施结果（2026-10-15）
+## 10. 实施结果（2026-10-15）
 
 四个提交，每个都独立可验证：
 
@@ -389,7 +357,7 @@ tab 定义在 [client.js:2657](../client.js#L2657)，分发在 [client.js:2667](
 | 2 | `feat(alerts): Host` | `cfg.alerts` 接入清洗、独立评估循环（零规则休眠）、`config.json.alerts`、`/alerts` + `/alert-stream` |
 | 3 | `feat(alerts): UI` | 预警二级页（设置内入口，**不占 tab**）、右键「设为预警」、吃字段回填保护 |
 | 4 | `feat(alerts): 通知层` | 隐藏不断流的破例、三级降级、权限手势申请、`navigator.locks` 去重 |
-| 5+ | 上线联调修复 | §13.2 三个真 bug（美股永不触发 / 休市误报 / 缺交易日判据）、§13.3 两个真 bug（unref 不评估 / 悬浮窗关着不弹）+ UI 打磨（居中定位、视口钳制、最多 3 条叠加、去掉 toast 与触发历史） |
+| 5+ | 上线联调修复 | §10.2 三个真 bug（美股永不触发 / 休市误报 / 缺交易日判据）、§10.3 两个真 bug（unref 不评估 / 悬浮窗关着不弹）+ UI 打磨（居中定位、视口钳制、最多 3 条叠加、去掉 toast 与触发历史） |
 | — | 测试基建 | 新增 `test/alert-loop-ref.mjs`（独立子进程验证定时器自触发）；`package.json` 的 `test` 链纳入 |
 
 验收对照（每条都有承重断言，且做过非空洞验证）：

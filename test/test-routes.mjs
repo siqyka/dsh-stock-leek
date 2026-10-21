@@ -87,9 +87,26 @@ console.log("       ", names);
 // 2b. 五档盘口：买一~买五 / 卖一~卖五
 // 断言要点：字段真的被解析出来、价格有序（买盘递减、卖盘递增）、
 // 且**量的单位是股**（Hands→shares 换算过，否则界面上"挂 9 手"会被读成 9 股）。
+//
+// ⚠️ 这是**时段相关**的：盘前（开盘前、连竞价撮合都还没开始时，实测 09:10）
+// 五档**完全为空**，接口就是不给。所以不能无条件断言 book 存在，
+// 否则这条只在盘中大部分时间成立、盘前必红（踩过两次）。
 {
-  const aShare = (r.json.rows || []).find((x) => /^(sh|sz|bj)/.test(x.code) && x.book);
-  check("A 股行情带五档盘口 book", !!aShare, (r.json.rows || []).map((x) => x.code));
+  const aShare = (r.json.rows || []).find((x) => /^(sh|sz|bj)/.test(x.code) && x.book && (x.book.bids || []).length > 0);
+  const anyAShare = (r.json.rows || []).find((x) => /^(sh|sz|bj)/.test(x.code));
+  // 竞价时段（9:15–9:25）只有 1 档同价同量；正常盘中才有完整 5 档。
+  // 用「是否已开盘」判断：今开 > 0 → 正常盘中，应当有盘口。
+  const marketOpen = anyAShare && Number(anyAShare.open) > 0;
+  if (!aShare) {
+    if (marketOpen) {
+      check("A 股行情带五档盘口 book", false, (r.json.rows || []).map((x) => x.code));
+    } else {
+      console.log("  skip  五档盘口（当前盘前/未开盘，接口不提供盘口，属正常）");
+      check("盘前 book 为 null 或空（结构合法，不崩）",
+        (r.json.rows || []).every((x) => x.book === null || x.book === undefined || (Array.isArray(x.book.bids) && Array.isArray(x.book.asks))),
+        anyAShare && anyAShare.book);
+    }
+  }
   if (aShare) {
     const bids = aShare.book.bids || [];
     const asks = aShare.book.asks || [];
@@ -140,11 +157,16 @@ r = await get("/dsh-stock-leek/minute?code=sh000001");
   check("minute points 是数组", Array.isArray(pts), typeof pts);
   const n = (pts || []).length;
   if (info.open && info.elapsed >= 5) {
-    // 盘中且已开盘 ≥5 分钟：点数应roughly等于已开盘分钟数（允许首尾各差 1~2）
+    // 盘中且已开盘 ≥5 分钟：点数应大致等于已开盘分钟数（允许首尾差几根）
     check("盘中分时点数与已开盘分钟数相符（±3）", n >= info.elapsed - 3, { got: n, elapsed: info.elapsed });
   } else {
-    console.log("  skip  盘中分时点数（当前非交易时段或刚开盘不足 5 分钟，点数少属正常）");
-    check("点数不超当日已交易分钟数+2", n <= info.elapsed + 2, { got: n, elapsed: info.elapsed });
+    // 盘前 / 刚开盘不足 5 分钟 / 休市：**不能**用「今日已交易分钟数」限制点数——
+    // 盘前接口返回的是**上一交易日**的完整分时（实测 09:09 拿到 242 点，elapsed=0）。
+    // 这里只验结构合法，不猜数量。
+    console.log("  skip  分时点数（当前非交易时段或刚开盘不足 5 分钟，数量取决于上一交易日）");
+    check("盘外分时结构合法（points 为数组、元素带 t 与价格）",
+      Array.isArray(pts) && (pts.length === 0 || (typeof pts[0].t === "string" && Number.isFinite(Number(pts[0].price ?? pts[0].c ?? pts[0].p)))),
+      pts && pts[0]);
   }
   // 有数据时时间戳必须单调递增（与时段无关，任何时段都该成立）
   const ts = (pts || []).map((p) => String(p.t || ""));

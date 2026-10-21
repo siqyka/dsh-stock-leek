@@ -47,8 +47,13 @@
 ### 预警规则
 
 ```
-{ id, code, name?, type, value, enabled, createdAt? }
+{ id, code, name?, type, value, createdAt? }
 ```
+
+> **没有 `enabled` 字段**：规则**存在即参与评估，删除就是停用**。
+> 曾有单条 ●/○ 与组头整组两个启停开关，后来整体移除——中间状态会让
+> "列表里有它"和"它会不会响"变成两件事，对着列表看不出哪些在生效。
+> 旧配置里残留的 `enabled` 会被 `sanitizeConfig` 丢弃、不再读取，等于自动全量启用。
 
 - `id`：`[A-Za-z0-9_-]{1,32}`（**`config.json.alerts` 的 `states` 以它为键**，字符集守卫防原型污染键）
 - `type`：8 种——`price_above` / `price_below` / `cost_above` / `cost_below` / `pct_up` / `pct_down` / `limit_near` / `speed_up`

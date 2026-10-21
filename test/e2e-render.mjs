@@ -739,7 +739,17 @@ check("详情已屏蔽「🤖 分析」入口", ovText.indexOf("分析") < 0 && 
     return out;
   };
   const ob = findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
-  check("详情页有五档盘口区块", !!ob, ovText.slice(0, 240));
+  // 盘前（连竞价撮合都没开始时，实测 09:11）接口**不返回盘口**，界面显示"暂无五档盘口数据"。
+  // 这时不能断言"必须有盘口区块"，否则这条只在盘中成立、盘前必红（踩过）。
+  const noBookNow = /暂无五档盘口数据/.test(ovText);
+  if (noBookNow) {
+    console.log("  skip  五档盘口（当前盘前/无盘口，接口不提供，属正常）");
+    // 有意义的负向断言：无数据时**不该**渲染出盘口表格，也不该有买卖档位行
+    check("无盘口时不渲染盘口表格（只给空态提示）",
+      !ob && !/卖1|买1/.test(ovText), { hasBlock: !!ob, text: ovText.slice(0, 120) });
+  } else {
+    check("详情页有五档盘口区块", !!ob, ovText.slice(0, 240));
+  }
   if (ob) {
     // 1) 两列结构：左卖右买（DOM 顺序 = 视觉顺序，flex 行内先出现的在左边）
     const askSide = collect(ob, (n) => String((n.props && n.props.className) || "").indexOf("sl-ob-side-ask") >= 0);
