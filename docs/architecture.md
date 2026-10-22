@@ -14,7 +14,8 @@ Host（index.js，cordis 插件，依赖 webServer）
   ├─ /config  GET/POST  读写配置（含首屏行情快照、版本号、损坏告警）
   ├─ /stream  SSE 行情推送（多标签页共用一次拉取）
   ├─ /quotes  批量实时行情（qt.gtimg.cn，GBK，1.5s TTL + 单飞去重；含五档买卖盘）
-  ├─ /minute  分时   /kline 日/周/月K(前复权)   /search 全市场搜索
+  ├─ /minute  分时（proxy.finance.qq.com，原 web.ifzq 已被 WAF 拦）
+  ├─ /kline  日/周/月K(前复权，web.ifzq)      /search 全市场搜索
   └─ /probe   数据源连通性自检
         ▼
   ~/.dsh/dsh-stock-leek/config.json  ← 自选/持仓/指数栏持久化（换浏览器不丢）

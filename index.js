@@ -33,7 +33,19 @@ const inject = ["webServer"];
 
 const PREFIX = "/dsh-stock-leek";
 const QUOTE_API = "https://qt.gtimg.cn/q=";
-const MINUTE_API = "https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={code}&r={r}";
+/**
+ * 分时数据。
+ *
+ * ⚠️ 原来用的是 `web.ifzq.gtimg.cn/appstock/app/minute/query`，2026-10-22 起
+ * 该路径被腾讯 WAF 拦死：任何参数组合（带/不带 r、带 referer）都返回 **HTTP 501**
+ * 并跳 `waf.tencent.com/501page.html`。表现为「盈亏走势不展示」——
+ * 曲线依赖各持仓分时，拿不到点就直接空着（同一天 K 线接口还是好的，容易误判成代码问题）。
+ *
+ * `proxy.finance.qq.com/ifzqgtimg/...` 是同源的镜像路径，**返回结构与原来完全一致**
+ * （`data[code].data.data` 为 "HHMM 价格 量 金额" 的行数组，`data[code].qt` 里带昨收），
+ * 实测沪深/北/港/美全部可用，所以只换域名、不动解析。
+ */
+const MINUTE_API = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/minute/query?code={code}&r={r}";
 const KLINE_API = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={code},{period},,{end},{count},qfq";
 /** 美股专用 K 线端点：通用 fqkline 对美股只回当天 1 根，usfqkline 才给完整序列（实测） */
 const US_KLINE_API = "https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get?param={code},{period},,{end},{count},qfq";
@@ -1602,7 +1614,9 @@ function apply(ctx) {
       if (!row) throw new Error("无数据");
       return `${row.name} ${row.price} ${row.percent}%`;
     });
-    await probe("分时 web.ifzq.gtimg.cn", async () => {
+    // 标签不写死域名：分时端点换过（web.ifzq → proxy.finance，前者被 WAF 拦了），
+    // 写死会让设置页的自检结果显示一个早已不用的地址，误导排查。
+    await probe("分时 minute", async () => {
       const d = await fetchMinute("sh000001");
       if (d.error) throw new Error(d.error);
       return `${d.points.length} 个分钟点`;

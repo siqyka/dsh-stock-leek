@@ -172,6 +172,19 @@ r = await get("/dsh-stock-leek/minute?code=sh000001");
   const ts = (pts || []).map((p) => String(p.t || ""));
   check("分时时间戳单调不减", ts.every((v, i) => i === 0 || ts[i - 1] <= v), ts.slice(0, 4));
   check("minute prevClose", typeof r.json.prevClose === "number", r.json.prevClose);
+  /**
+   * 上游被拦时**必须报出来**，不能悄悄返回空数组。
+   *
+   * 2026-10-22 腾讯把 `web.ifzq.gtimg.cn/.../minute/query` 用 WAF 拦死（HTTP 501），
+   * 直接表现是「盈亏走势不展示」—— 曲线依赖各持仓分时，拿不到点就空着。
+   * 而 K 线接口同一天是好的，很容易被误判成前端/代码问题，查半天。
+   *
+   * 这里断言：拿不到点时必须同时有 error，不允许"既没数据也不报错"的静默失败。
+   */
+  if ((r.json.points || []).length === 0) {
+    check("分时拿不到点时必须有 error（不许静默返回空）",
+      typeof r.json.error === "string" && r.json.error.length > 0, r.json.error);
+  }
 }
 
 // 4. kline
