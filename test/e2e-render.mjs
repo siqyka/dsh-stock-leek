@@ -1002,6 +1002,47 @@ ovNode = ov.render({});
 errs = renderTree(ovNode);
 check("日K 渲染无错误", errs.length === 0, errs[0] && (errs[0].error.stack || errs[0].error));
 
+// ---------- 五档盘口**只在分时展示** ----------
+// 用户要求：切到日K/周K/月K 时不显示盘口。
+// 理由：盘口是"此刻"的撮合队列，与分时同属实时视角；K 线在看历史走势，
+// 底下挂实时盘口既不对应所选周期、又白占地方。
+{
+  const obInDay = findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
+  const dayText = textOf(ovNode).join(" ");
+  check("日K 视图不再显示五档盘口", !obInDay, obInDay && obInDay.props.className);
+  // 也不能只藏了表格却留下空态文案
+  check("日K 视图没有五档相关文案（卖1/买1/暂无五档）",
+    !/卖1|买1|暂无五档盘口/.test(dayText), dayText.slice(-160));
+
+  // 切回分时 → 盘口必须回来（否则就等于把功能删了）
+  //
+  // ⚠️ 这段会改变周期，**必须还原回日K**：后面一大串用例（日K 跟随 tick、
+  // MA 切换、成本线、滚轮绑定）都假定当前停在日K。不还原会把它们全部带崩
+  // （实测连带 14 条红，看起来像功能坏了）。
+  const minBtn = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "分时");
+  check("能切回分时（前置）", !!minBtn);
+  if (minBtn) {
+    click(minBtn);
+    await until(() => {
+      ovNode = ov.render({}); renderTree(ovNode);
+      return !!findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
+    }, 6000);
+    ovNode = ov.render({}); renderTree(ovNode);
+    const obBack = findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
+    check("切回分时后五档盘口重新出现", !!obBack, obBack && obBack.props.className);
+
+    // 还原到日K，交还给后续用例
+    const dayBack = findNode(ovNode, (n) => n.type === "button" && String(n.children && n.children[0]) === "日K");
+    if (dayBack) {
+      click(dayBack);
+      await until(() => {
+        ovNode = ov.render({}); renderTree(ovNode);
+        return !findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-ob") >= 0);
+      }, 6000);
+    }
+  }
+}
+
 // 日K 必须**跟着行情 tick 重拉**，否则「今天那根」永远不出现。
 // 回归：effect 原来只依赖 [code, period] → 切到日K 拉一次就再也不更新，
 // 盘前打开的人会一直看到"最后一根是昨天"（用户报的正是这个）。

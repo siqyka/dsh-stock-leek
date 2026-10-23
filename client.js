@@ -4025,8 +4025,15 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               : null),
         ),
         h("div", { className: "sl-chartbox" }, chart),
-        // 五档盘口：跟行情快照一起来，不额外请求；放在图下方，避免挤压 K 线主视图
-        h(OrderBook, { q, cfg }),
+        /**
+         * 五档盘口：**只在分时视图展示**（用户要求）。
+         *
+         * 理由：盘口是"此刻"的撮合队列，跟分时同属实时视角；切到日/周/月K
+         * 时用户在看历史走势，底下挂一个实时盘口既不对应所选周期、又占地方。
+         *
+         * 数据仍来自行情快照（不额外请求），只是按周期决定显不显示。
+         */
+        period === "minute" ? h(OrderBook, { q, cfg }) : null,
       );
     }
 
