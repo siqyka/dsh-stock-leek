@@ -699,6 +699,46 @@ check("大盘 tab 标题", /上证指数/.test(ovText), ovText.slice(0, 120));
 check("大盘 tab 有行情数字", /\d{3,6}\.\d/.test(ovText), ovText.slice(0, 120));
 check("大盘含左下角勾选列", /栏/.test(ovText));
 
+// ---------- 大盘底部栏：涨跌家数 + 大A成交额 ----------
+// 成交额走腾讯（/quotes 里三个 A 股指数快照的 [37] 字段，
+// 单位万元，需合计）；涨跌家数走 Host 的 /breadth（东财兜底，
+// 腾讯没有现成的家数接口）。
+{
+  // 家数是**异步**拿的（/breadth 走 fetch），必须先等它渲染出来再断言；
+  // 否则量到的是首帧——那时只有同步的成交额，家数还是空的（踩过）。
+  await until(() => {
+    ovNode = ov.render({});
+    renderTree(ovNode);
+    const b0 = findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-breadth") >= 0);
+    if (!b0) return false;
+    return !!findNode(b0, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-breadth-up") >= 0);
+  }, 6000);
+  ovNode = ov.render({}); renderTree(ovNode);
+  const bar = findNode(ovNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-breadth") >= 0);
+  check("大盘页有底部栏（涨跌家数 + 成交额）", !!bar, textOf(ovNode).join(" ").slice(-160));
+
+  if (bar) {
+    const bt = textOf(bar).join(" ");
+    // 涨跌家数：形如「涨跌 590 / 4991」——必须两个数字都在
+    const upNode = findNode(bar, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-breadth-up") >= 0);
+    const downNode = findNode(bar, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-breadth-down") >= 0);
+    const upTxt = upNode ? textOf(upNode).join("") : "";
+    const downTxt = downNode ? textOf(downNode).join("") : "";
+    check("底部栏显示上涨家数（数字）", /^\d+$/.test(upTxt), { upTxt, bt: bt.slice(0, 120) });
+    check("底部栏显示下跌家数（数字）", /^\d+$/.test(downTxt), { downTxt });
+    // 强弱条：宽度按上涨占比
+    const barUp = findNode(bar, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-breadth-bar-up") >= 0);
+    check("涨跌家数带强弱条（按上涨占比）", !!barUp && /%$/.test(String((barUp.props && barUp.props.style && barUp.props.style.width) || "")),
+      barUp && barUp.props.style);
+
+    // 成交额：必须出现「亿 / 万亿」这类量级单位（万元直接显示会是巨大裸数字）
+    check("底部栏显示大A成交额（带亿/万亿单位）", /大A成交/.test(bt) && /亿|万亿/.test(bt), bt.slice(0, 160));
+    // 不能把「万元」原样吐出来 —— 三个指数成交额相加是几千万「万元」，
+    // 若漏了 ×1e4 会显示成一个荒唐的大数（曾担心过的量级错误）
+    check("成交额不是未换算的裸万元数", !/大A成交\s*\d{7,}/.test(bt), bt.slice(0, 160));
+  }
+}
+
 // ---------- 2b. 列表超过 10 行时内部出现滚动条 ----------
 // 默认配置有 12 个指数，正好超过阈值；测试桩里假行高为 28px，
 // 因此期望上限 = 28 * 10 + 1 = 281px（+1 容纳行间分隔线）。

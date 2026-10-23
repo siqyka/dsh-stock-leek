@@ -204,6 +204,31 @@ check("search 茅台", (r.json.rows || []).some((x) => x.code === "sh600519"), r
 r = await get("/dsh-stock-leek/search?q=" + encodeURIComponent("恒生"));
 check("search 恒生 has index", (r.json.rows || []).some((x) => x.code === "hkHSI" || x.type === "ZS"), r.json.rows?.slice(0, 5));
 
+// 5b. /breadth：大盘底部栏的涨跌家数
+//
+// 数据源是东财（腾讯没有现成的涨跌家数接口，试过 mktHs/mktLimit/mktOverview
+// /getBoardRankList 都不可用）。这里断言结构与口径，不硬编码具体数值。
+r = await get("/dsh-stock-leek/breadth");
+const bRows = r.json.rows || [];
+if (bRows.length > 0) {
+  check("breadth 返回沪/深/北三行", bRows.length >= 2, bRows.map((x) => x.code));
+  check("breadth 每行都有 up/down/flat 且为非负整数",
+    bRows.every((x) => Number.isInteger(x.up) && Number.isInteger(x.down) && Number.isInteger(x.flat)
+      && x.up >= 0 && x.down >= 0 && x.flat >= 0), bRows[0]);
+  const totUp = bRows.reduce((a, x) => a + x.up, 0);
+  const totDown = bRows.reduce((a, x) => a + x.down, 0);
+  const totFlat = bRows.reduce((a, x) => a + x.flat, 0);
+  // 大A 约 5000+ 只：合计落在合理区间，防「只取到一个市场」这类错
+  check("breadth 合计家数在 3000~8000 之间（大A 全市场量级）",
+    totUp + totDown + totFlat >= 3000 && totUp + totDown + totFlat <= 8000,
+    { up: totUp, down: totDown, flat: totFlat, total: totUp + totDown + totFlat });
+  check("breadth 声明成交额单位（amountUnit=wan）", r.json.amountUnit === "wan", r.json.amountUnit);
+} else {
+  // 上游挂了不该静默：必须有 error
+  check("breadth 拿不到数据时有 error（不许静默返回空）",
+    typeof r.json.error === "string" && r.json.error.length > 0, r.json.error);
+}
+
 // 6. POST config
 r = await post("/dsh-stock-leek/config", { config: { watchlist: [{ code: "600519", name: "x" }], pollMs: 999999, barIndices: ["sh000001"], ma: [5, 20, 60] } });
 check("config POST ok", r.json.ok === true);

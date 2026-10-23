@@ -179,6 +179,21 @@ window.__ModuleLoader__.load({
 .sl-foot{display:flex;justify-content:space-between;gap:8px;padding:5px 10px;border-top:1px solid var(--sl-border-soft);color:var(--sl-muted);font-size:10px;flex:none}
 .sl-sec{display:flex;align-items:center;justify-content:space-between;padding:6px 6px 2px;color:var(--sl-dim);font-weight:700}
 .sl-addbar{display:flex;gap:6px;padding:6px;border-top:1px solid var(--sl-border-soft);flex:none;position:relative}
+/* 大盘页底部栏：涨跌家数 + 大A成交额 */
+.sl-breadth{display:flex;align-items:center;gap:14px;flex:none;flex-wrap:wrap;
+  padding:5px 10px;border-top:1px solid var(--sl-border-soft);
+  font-size:11px;color:var(--sl-muted);line-height:16px}
+.sl-breadth-item{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.sl-breadth-k{color:var(--sl-muted)}
+.sl-breadth-up{color:var(--sl-up);font-weight:600;font-variant-numeric:tabular-nums}
+.sl-breadth-down{color:var(--sl-down);font-weight:600;font-variant-numeric:tabular-nums}
+.sl-breadth-sep{color:var(--sl-muted);opacity:.6}
+.sl-breadth-flat{color:var(--sl-flat);font-variant-numeric:tabular-nums}
+/* 强弱条：宽度按上涨占比，红绿对半，直观看出今天偏强还是偏弱 */
+.sl-breadth-bar{position:relative;display:inline-block;width:44px;height:4px;border-radius:2px;
+  background:var(--sl-down);overflow:hidden;flex:none;opacity:.85}
+.sl-breadth-bar-up{display:block;height:100%;background:var(--sl-up)}
+.sl-breadth-amt b{color:var(--sl-text);font-weight:600;font-variant-numeric:tabular-nums}
 .sl-input{flex:1;min-width:0;background:var(--sl-bg2);border:1px solid var(--sl-accent-border);color:var(--sl-text);border-radius:6px;padding:4px 8px;font:inherit;outline:none}
 .sl-input:focus{border-color:var(--sl-accent)}
 .sl-btn{background:var(--sl-accent-soft);border:1px solid var(--sl-accent-border);color:var(--sl-accent);border-radius:6px;padding:3px 10px;cursor:pointer;font:inherit;white-space:nowrap}
@@ -2799,6 +2814,89 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             placeholder: "搜索添加指数（恒生科技、纳斯达克、北证50…）",
             onPick: (row) => { addIndex(row); toast("已添加 " + row.name); },
           })),
+        h(MarketBreadthBar),
+      );
+    }
+
+    /**
+     * 大盘页底部栏：涨跌家数 + 大A 成交额。
+     *
+     * ## 两个数据来源不同（故意的）
+     * - **成交额**：直接合计 `/quotes` 里三个 A 股指数快照的成交额（腾讯 `[37]`，
+     *   单位万元）。不额外请求——指数的成交额本来就等于该市场总额，
+     *   而且这份数据已经在推送里，跟着刷新间隔一起动。
+     * - **涨跌家数**：腾讯没有现成接口（试过 mktHs/mktLimit/mktOverview/getBoardRankList
+     *   都不可用），所以走 Host 的 `/breadth`（东财兜底）。
+     *
+     * 两个源各自独立失败：家数挂了只隐藏家数，成交额照常显示，反之亦然。
+     */
+    const BREADTH_CODES = ["sh000001", "sz399001", "bj899050"];
+
+    function MarketBreadthBar() {
+      const s = useStore();
+      const [breadth, setBreadth] = useState(null);
+      // 跟着行情 tick 重取，但用 20s 的粗窗口：家数是慢变量，跟着 1.5s 跑没意义
+      const pollMs = s.config && Number.isFinite(s.config.pollMs) ? s.config.pollMs : 5000;
+      const tick = Math.floor((s.updatedAt || 0) / Math.max(20000, pollMs));
+      useEffect(() => {
+        let alive = true;
+        api("/breadth")
+          .then((r) => { if (alive) setBreadth(r); })
+          .catch(() => { if (alive) setBreadth({ rows: [], error: "获取失败" }); });
+        return () => { alive = false; };
+      }, [tick]);
+
+      // 成交额：三个 A 股指数快照相加（q.amount 单位「万元」）
+      let amountWan = 0;
+      let amountOk = false;
+      for (const c of BREADTH_CODES) {
+        const q = s.quotes[c];
+        if (q && Number.isFinite(Number(q.amount)) && Number(q.amount) > 0) {
+          amountWan += Number(q.amount);
+          amountOk = true;
+        }
+      }
+
+      // 家数：三地合计
+      const rows = (breadth && breadth.rows) || [];
+      let up = 0, down = 0, flat = 0;
+      for (const r of rows) { up += r.up || 0; down += r.down || 0; flat += r.flat || 0; }
+      const breadthOk = up + down + flat > 0;
+
+      if (!amountOk && !breadthOk) {
+        // 两边都没数据：不占位，免得底部空一条
+        return null;
+      }
+
+      const total = up + down + flat;
+      // 上涨占比：给一个直观的强弱刻度
+      const upRatio = total > 0 ? up / total : 0;
+
+      return h(
+        "div",
+        { className: "sl-breadth" },
+        breadthOk
+          ? h(
+            "span",
+            { className: "sl-breadth-item", "data-sltip": "沪深北三地合计的涨跌家数" },
+            h("span", { className: "sl-breadth-k" }, "涨跌"),
+            h("span", { className: "sl-breadth-up" }, up),
+            h("span", { className: "sl-breadth-sep" }, "/"),
+            h("span", { className: "sl-breadth-down" }, down),
+            flat > 0 ? h("span", { className: "sl-breadth-flat" }, " 平" + flat) : null,
+            // 强弱条：上涨占比，红绿对半
+            h("span", { className: "sl-breadth-bar", "aria-hidden": "true" },
+              h("span", { className: "sl-breadth-bar-up", style: { width: (upRatio * 100).toFixed(1) + "%" } })),
+          )
+          : null,
+        amountOk
+          ? h(
+            "span",
+            { className: "sl-breadth-item sl-breadth-amt", "data-sltip": "沪 + 深 + 北大A 实时成交额" },
+            h("span", { className: "sl-breadth-k" }, "大A成交"),
+            h("b", null, fmtMoney(amountWan, "sh000001")),
+          )
+          : null,
       );
     }
 

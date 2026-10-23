@@ -1178,6 +1178,74 @@ async function fetchKline(code, period, count, end) {
 
 const searchCache = new Map(); // q -> { at, rows }
 
+/**
+ * 大盘底部栏用的「市场宽度」数据：涨跌家数 + 大A 成交额。
+ *
+ * ## 成交额：走腾讯（与其它行情同源）
+ * 腾讯行情快照里 `[37]` 就是成交额，单位**万元**（实测 sh000001 = 4142 亿）。
+ * 所以成交额不需要额外请求——`/quotes` 里已经有，客户端直接合计即可。
+ *
+ * ## 涨跌家数：腾讯没有现成接口
+ * 试过 proxy.finance.qq.com 的 mktHs / mktLimit / mktOverview / getBoardRankList，
+ * 分别返回 "Can't load controller" 或 "参数错误"，都不可用。
+ * 所以这一项用东财 ulist 的 f104/f105/f106（涨/跌/平家数）兜底：
+ *   f104 = 上涨家数、f105 = 下跌家数、f106 = 平盘家数
+ * 取上证指数 / 深证成指 / 北证50 三行，客户端合计成「大A」。
+ *
+ * 两个数据源各自独立：东财挂了只是不显示家数，成交额照常（反之亦然）。
+ * 响应里用 `sources` 标明哪几项可用，前端据此决定显示什么。
+ *
+ * TTL 20s：涨跌家数是慢变量（几秒内几乎不动），比行情快照（1.5s）松得多，
+ * 避免为一个底部栏把上游打成高频。
+ */
+const BREADTH_API = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+  + "?fltt=2&secids=1.000001,0.399001,0.899050"
+  + "&fields=f2,f3,f6,f12,f14,f104,f105,f106";
+const BREADTH_TTL = 20000;
+const breadthCache = { at: 0, data: null };
+let breadthFlight = null;
+
+/**
+ * 取涨跌家数快照。
+ * @returns {Promise<{rows: Array, at: number, error?: string}>}
+ *   rows 每项 `{ code, name, up, down, flat }`（家数）。
+ */
+async function fetchBreadth() {
+  const now = Date.now();
+  if (breadthCache.data && now - breadthCache.at < BREADTH_TTL) return breadthCache.data;
+  // 单飞：底部栏可能和别处同时要，别打两次
+  if (breadthFlight) return breadthFlight;
+  breadthFlight = (async () => {
+    try {
+      const r = await fetch(BREADTH_API, {
+        headers: { "user-agent": UA, referer: "https://quote.eastmoney.com/" },
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      const diff = (j && j.data && j.data.diff) || [];
+      if (!diff.length) throw new Error("无数据");
+      const rows = diff.map((d) => ({
+        code: String(d.f12 || ""),
+        name: String(d.f14 || ""),
+        up: Number(d.f104) || 0,
+        down: Number(d.f105) || 0,
+        flat: Number(d.f106) || 0,
+      })).filter((x) => x.up + x.down + x.flat > 0);
+      if (!rows.length) throw new Error("无有效家数");
+      const data = { rows, at: Date.now() };
+      breadthCache.at = data.at;
+      breadthCache.data = data;
+      return data;
+    } catch (e) {
+      // 失败**不写缓存**：下次立刻重试；带 error 让前端能区分「没数据」与「请求失败」
+      return { rows: [], at: Date.now(), error: String((e && e.message) || e) };
+    } finally {
+      breadthFlight = null;
+    }
+  })();
+  return breadthFlight;
+}
+
 const TYPE_LABEL = {
   "GP-A": "A股",
   "GP-A-CYB": "创业板",
@@ -1565,6 +1633,26 @@ function apply(ctx) {
     }
     const data = await fetchKline(code, period, count, end);
     sendJson(res, 200, Object.assign({ code, period, count, updatedAt: Date.now() }, data));
+  });
+
+  /**
+   * 涨跌家数（大A 三地分列）。成交额不在这里——它来自腾讯行情快照，
+   * 客户端用 `/quotes` 里已有的 `[37]` 字段合计，不额外打一次上游。
+   */
+  register(PREFIX + "/breadth", async (_req, res) => {
+    try {
+      const d = await fetchBreadth();
+      sendJson(res, 200, {
+        ok: !d.error,
+        rows: d.rows || [],
+        at: d.at,
+        error: d.error || null,
+        // 报价里成交额的单位是「万元」，这里明说，免得前端按元误解一个数量级
+        amountUnit: "wan",
+      });
+    } catch (e) {
+      sendJson(res, 200, { ok: false, rows: [], error: String((e && e.message) || e) });
+    }
   });
 
   register(PREFIX + "/search", async (req, res) => {
