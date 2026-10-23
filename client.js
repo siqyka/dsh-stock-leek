@@ -2205,6 +2205,48 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         return { x: xOf(i), label: t.slice(0, 2) + ":" + t.slice(2, 4) };
       });
       const lastP = points[points.length - 1].p;
+      /**
+       * 当日最高 / 最低点：找出**第一个**取到极值的下标，在图上点一个小圆点 + 标数值。
+       *
+       * 几个刻意的取舍：
+       * - 只标**成交价极值**（不是 k 线那种波动区间），分时图看的就是成交价走势；
+       * - 取第一个命中而非最后一个：同一极值常出现多次，标最早那次更有"什么时候发生"的意义；
+       * - 标签纵向略微外扩（高点文字在点上方、低点在下方）并 clamp 进绘图区，
+       *   避免顶到画布边缘被裁；
+       * - 与右侧「最新价 / 昨收」标签共用 padR 那片留白，不会互相压。
+       */
+      let hiIdx = -1, loIdx = -1;
+      for (let i = 0; i < points.length; i++) {
+        const v = points[i].p;
+        if (hiIdx < 0 || v > points[hiIdx].p) hiIdx = i;
+        if (loIdx < 0 || v < points[loIdx].p) loIdx = i;
+      }
+      const hiP = hiIdx >= 0 ? points[hiIdx].p : null;
+      const loP = loIdx >= 0 ? points[loIdx].p : null;
+      // 极值点与最新价重合时不重复标注（收盘那一刻常见），省得两个标签打架
+      const showHi = hiIdx >= 0 && hiIdx !== points.length - 1;
+      const showLo = loIdx >= 0 && loIdx !== points.length - 1 && loIdx !== hiIdx;
+      const extMark = (idx, val, isHigh) => {
+        const x = xOf(idx);
+        const y = yOf(val);
+        // 标签放在极值点内侧（高点往下、低点往上），避免顶到画布边缘被裁
+        const ly = clamp(y + (isHigh ? -4 : 9), padT + 7, padT + ih);
+        // 靠右侧的极值点标签改为左对齐，否则会伸进右侧留白压住最新价
+        const nearRight = x > padL + iw - 34;
+        return h(
+          "g",
+          { key: isHigh ? "hi" : "lo" },
+          h("circle", { cx: x, cy: y, r: 1.8, fill: isHigh ? "var(--sl-up)" : "var(--sl-down)", opacity: 0.9 }),
+          h("text", {
+            x: nearRight ? x - 4 : x + 4,
+            y: ly,
+            fontSize: 8.5,
+            fill: isHigh ? "var(--sl-up)" : "var(--sl-down)",
+            textAnchor: nearRight ? "end" : "start",
+            "data-slext": isHigh ? "high" : "low",
+          }, fmtPrice(val)),
+        );
+      };
       return h(
         "svg",
         { viewBox: "0 0 " + W + " " + H, width: "100%", height: H, preserveAspectRatio: "none", style: { display: "block" } },
@@ -2212,6 +2254,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         base !== null ? h("line", { x1: padL, x2: padL + iw, y1: base, y2: base, stroke: "var(--sl-muted)", strokeDasharray: "3 3", strokeWidth: 1 }) : null,
         base !== null ? h("text", { x: W - padR + 3, y: base + 3, fontSize: 9, fill: "var(--sl-muted)" }, fmtPrice(prevClose)) : null,
         h("polyline", { points: line, fill: "none", stroke: color, strokeWidth: 1.4 }),
+        // 最高/最低标注画在折线之上、最新价之前：极值比末端点更值得看
+        showHi ? extMark(hiIdx, hiP, true) : null,
+        showLo ? extMark(loIdx, loP, false) : null,
         h("circle", { cx: xOf(points.length - 1), cy: yOf(lastP), r: 2.2, fill: color }),
         h("line", { x1: padL + iw, x2: W, y1: yOf(lastP), y2: yOf(lastP), stroke: color, strokeDasharray: "2 2", strokeWidth: 0.8, opacity: 0.6 }),
         h("text", { x: W - padR + 3, y: yOf(lastP) + 3, fontSize: 9, fill: color }, fmtPrice(lastP)),

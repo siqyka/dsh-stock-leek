@@ -94,15 +94,33 @@ console.log("       ", names);
 {
   const aShare = (r.json.rows || []).find((x) => /^(sh|sz|bj)/.test(x.code) && x.book && (x.book.bids || []).length > 0);
   const anyAShare = (r.json.rows || []).find((x) => /^(sh|sz|bj)/.test(x.code));
-  // 竞价时段（9:15–9:25）只有 1 档同价同量；正常盘中才有完整 5 档。
-  // 用「是否已开盘」判断：今开 > 0 → 正常盘中，应当有盘口。
-  const marketOpen = anyAShare && Number(anyAShare.open) > 0;
+  /**
+   * 判断「现在是否处在**真正会披露盘口**的时段」。
+   *
+   * 不能用「今开 > 0」：收盘后今开仍是正常值（今天开过盘），但盘口已经归零 ——
+   * 15:00 收盘那一刻实测买卖各 0 档，而 marketOpen 仍为 true，断言必红（踩过）。
+   *
+   * 改用**行情时间戳的时分**判断：
+   *   9:15–11:30 / 13:00–15:00 才是披露盘口的时段
+   *   （9:15–9:25 竞价只给 1 档同价同量，9:25–9:30 逐步正常化）
+   * 其余（盘前、午休、收盘后）盘口为空都属正常，允许 skip。
+   */
+  const hm = (() => {
+    const t = String((anyAShare && anyAShare.time) || "");
+    const m = /(\d{2}):?(\d{2})/.exec(t.length >= 14 ? t.slice(8, 12) : t);
+    if (!m) return null;
+    return Number(m[1]) * 60 + Number(m[2]);
+  })();
+  const inSession = hm !== null && (
+    (hm >= 9 * 60 + 15 && hm <= 11 * 60 + 30) ||
+    (hm >= 13 * 60 && hm <= 15 * 60)
+  );
   if (!aShare) {
-    if (marketOpen) {
-      check("A 股行情带五档盘口 book", false, (r.json.rows || []).map((x) => x.code));
+    if (inSession) {
+      check("A 股行情带五档盘口 book", false, { time: anyAShare && anyAShare.time, hm, rows: (r.json.rows || []).map((x) => x.code) });
     } else {
-      console.log("  skip  五档盘口（当前盘前/未开盘，接口不提供盘口，属正常）");
-      check("盘前 book 为 null 或空（结构合法，不崩）",
+      console.log("  skip  五档盘口（当前非披露时段：盘前/午休/收盘后，接口不提供盘口，属正常）");
+      check("非披露时段 book 为 null 或空（结构合法，不崩）",
         (r.json.rows || []).every((x) => x.book === null || x.book === undefined || (Array.isArray(x.book.bids) && Array.isArray(x.book.asks))),
         anyAShare && anyAShare.book);
     }
