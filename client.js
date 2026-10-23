@@ -179,8 +179,8 @@ window.__ModuleLoader__.load({
 .sl-foot{display:flex;justify-content:space-between;gap:8px;padding:5px 10px;border-top:1px solid var(--sl-border-soft);color:var(--sl-muted);font-size:10px;flex:none}
 .sl-sec{display:flex;align-items:center;justify-content:space-between;padding:6px 6px 2px;color:var(--sl-dim);font-weight:700}
 .sl-addbar{display:flex;gap:6px;padding:6px;border-top:1px solid var(--sl-border-soft);flex:none;position:relative}
-/* 大盘页底部栏：涨跌家数 + 大A成交额 */
-.sl-breadth{display:flex;align-items:center;gap:14px;flex:none;flex-wrap:wrap;
+/* 大盘页底部栏：涨跌家数 + 实时成交额 */
+.sl-breadth{display:flex;align-items:center;gap:14px;flex:none;flex-wrap:nowrap;
   padding:5px 10px;border-top:1px solid var(--sl-border-soft);
   font-size:11px;color:var(--sl-muted);line-height:16px}
 .sl-breadth-item{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
@@ -193,6 +193,9 @@ window.__ModuleLoader__.load({
 .sl-breadth-bar{position:relative;display:inline-block;width:44px;height:4px;border-radius:2px;
   background:var(--sl-down);overflow:hidden;flex:none;opacity:.85}
 .sl-breadth-bar-up{display:block;height:100%;background:var(--sl-up)}
+/* 实时成交额：margin-left:auto 把它顶到整栏最右（左侧家数靠左，中间自然留白）。
+   同时禁用换行（flex-wrap:nowrap 在上面），窄窗口下宁可压缩也不会把成交额挤到第二行。 */
+.sl-breadth-amt{margin-left:auto;flex:none}
 .sl-breadth-amt b{color:var(--sl-text);font-weight:600;font-variant-numeric:tabular-nums}
 .sl-input{flex:1;min-width:0;background:var(--sl-bg2);border:1px solid var(--sl-accent-border);color:var(--sl-text);border-radius:6px;padding:4px 8px;font:inherit;outline:none}
 .sl-input:focus{border-color:var(--sl-accent)}
@@ -2889,12 +2892,18 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               h("span", { className: "sl-breadth-bar-up", style: { width: (upRatio * 100).toFixed(1) + "%" } })),
           )
           : null,
+        /**
+         * 实时成交额：**固定在整栏最右**（左侧家数自然靠左，中间留白）。
+         * 单位固定「亿」——不随量级切到「万亿」，底部栏这一格宽度稳定，
+         * 数字也不会在万亿/亿 之间跳来跳去影响扫读。
+         * amountWan 是「万元」，先换成元再除以 1e8 得亿。
+         */
         amountOk
           ? h(
             "span",
-            { className: "sl-breadth-item sl-breadth-amt", "data-sltip": "沪 + 深 + 北大A 实时成交额" },
-            h("span", { className: "sl-breadth-k" }, "大A成交"),
-            h("b", null, fmtMoney(amountWan, "sh000001")),
+            { className: "sl-breadth-item sl-breadth-amt", "data-sltip": "沪 + 深 + 北 实时成交额（单位：亿）" },
+            h("span", { className: "sl-breadth-k" }, "实时成交"),
+            h("b", null, (amountWan * 1e4 / 1e8).toFixed(0) + "亿"),
           )
           : null,
       );

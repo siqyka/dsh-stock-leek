@@ -731,11 +731,15 @@ check("大盘含左下角勾选列", /栏/.test(ovText));
     check("涨跌家数带强弱条（按上涨占比）", !!barUp && /%$/.test(String((barUp.props && barUp.props.style && barUp.props.style.width) || "")),
       barUp && barUp.props.style);
 
-    // 成交额：必须出现「亿 / 万亿」这类量级单位（万元直接显示会是巨大裸数字）
-    check("底部栏显示大A成交额（带亿/万亿单位）", /大A成交/.test(bt) && /亿|万亿/.test(bt), bt.slice(0, 160));
+    // 实时成交额：文案为「实时成交」、单位**固定亿**（不再按量级切万亿）、贴最右
+    const amtNode = findNode(bar, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-breadth-amt") >= 0);
+    check("底部栏有实时成交额（文案：实时成交）", /实时成交/.test(bt), bt.slice(0, 160));
+    check("成交额单位固定为「亿」", /实时成交\s*\d+(\.\d+)?亿/.test(bt), bt.slice(0, 160));
     // 不能把「万元」原样吐出来 —— 三个指数成交额相加是几千万「万元」，
     // 若漏了 ×1e4 会显示成一个荒唐的大数（曾担心过的量级错误）
-    check("成交额不是未换算的裸万元数", !/大A成交\s*\d{7,}/.test(bt), bt.slice(0, 160));
+    check("成交额不是未换算的裸万元数", !/实时成交\s*\d{6,}/.test(bt), bt.slice(0, 160));
+    // 贴最右：靠 CSS 的 margin-left:auto 实现，这里断言元素上确实挂了该类
+    check("成交额元素带右对齐样式类（sl-breadth-amt）", !!amtNode, amtNode && amtNode.props.className);
   }
 }
 
