@@ -4097,12 +4097,40 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                   candle.amp !== null ? ["振幅", fmtPct(candle.amp)] : null,
                 ].filter(Boolean).map(([k, v]) => h("span", { key: k }, k + " ", h("b", { style: k === "涨跌" || k === "幅" ? { color: candle.close >= candle.open ? "var(--sl-up)" : "var(--sl-down)" } : null }, v)))
               : q
-                ? [
-                    ["今开", fmtPrice(q.open)], ["昨收", fmtPrice(q.yestclose)], ["最高", fmtPrice(q.high)], ["最低", fmtPrice(q.low)],
-                    ["成交", fmtQty(q.volume, code)], ["金额", fmtMoney(q.amount, code)],
-                    q.turnover !== null && q.turnover !== undefined ? ["换手", q.turnover + "%"] : null,
-                    q.pe ? ["PE", q.pe] : null, q.pb ? ["PB", q.pb] : null,
-                  ].filter(Boolean).map(([k, v]) => h("span", { key: k }, k + " ", h("b", null, v)))
+                ? (() => {
+                    /**
+                     * 分时视图下，「最高/最低」改用**分时点的极值**，与图上的标注保持一致。
+                     *
+                     * 起因（用户反馈）：头部显示的最高 18.880、图上标 18.860，差一点。
+                     * 原因是两个口径不同 ——
+                     *   头部原来取 `q.high/q.low`（行情快照，全天真实极值）；
+                     *   图上标的是分时点极值（**分钟粒度**，可能错过瞬时极值）。
+                     * 实测差 0.02 属于常态（瞬时高低点落在两分钟采样之间）。
+                     *
+                     * 分时数据本来就是分钟粒度，用它标极值合理；但**两个地方必须同一个口径**，
+                     * 否则用户会觉得"数据不对"。所以分时视图下头部也改用分时极值。
+                     *
+                     * 日/周/月K 不受影响：那时头部显示的是选中 K 线或行情快照，不涉及分时。
+                     */
+                    const mp = minute && Array.isArray(minute.points) ? minute.points : null;
+                    let hi = q.high, lo = q.low;
+                    if (mp && mp.length >= 2) {
+                      let a = Infinity, b = -Infinity;
+                      for (const pt of mp) {
+                        const v = Number(pt.p);
+                        if (!Number.isFinite(v) || v <= 0) continue;
+                        if (v < a) a = v;
+                        if (v > b) b = v;
+                      }
+                      if (Number.isFinite(a) && Number.isFinite(b)) { hi = b; lo = a; }
+                    }
+                    return [
+                      ["今开", fmtPrice(q.open)], ["昨收", fmtPrice(q.yestclose)], ["最高", fmtPrice(hi)], ["最低", fmtPrice(lo)],
+                      ["成交", fmtQty(q.volume, code)], ["金额", fmtMoney(q.amount, code)],
+                      q.turnover !== null && q.turnover !== undefined ? ["换手", q.turnover + "%"] : null,
+                      q.pe ? ["PE", q.pe] : null, q.pb ? ["PB", q.pb] : null,
+                    ].filter(Boolean).map(([k, v]) => h("span", { key: k }, k + " ", h("b", null, v)));
+                  })()
                 : h("span", null, "行情获取中…"),
             h("span", { style: { width: "100%" } }, candle ? "已选中该根 K 线 · 双击图表或点击空白处取消" : "更新时间：" + fmtTime(q && q.time)),
           ),

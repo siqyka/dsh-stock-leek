@@ -892,6 +892,27 @@ check("详情含分时/K线切换", /分时/.test(ovText) && /日K/.test(ovText)
     check("最高/最低标注都是合法价格", Number.isFinite(hiV) && hiV > 0 && Number.isFinite(loV) && loV > 0,
       { hiV, loV });
     check("最高点数值 ≥ 最低点数值", !(Number.isFinite(hiV) && Number.isFinite(loV)) || hiV >= loV, { hiV, loV });
+
+    // ---------- 头部「最高/最低」必须与图上标注一致 ----------
+    // 用户反馈：头部显示最高 18.880、图上标 18.860，差一点。
+    // 原因是口径不同：头部原来取行情快照（全天真实极值），图上是分时点极值
+    // （分钟粒度，可能错过瞬时极值）。实测差 0.02 属常态。
+    // 现在分时视图下头部也改用分时极值 —— 两个地方必须同一个口径。
+    {
+      const headMinute = (() => {
+        const mk = ovNode && findNode(ovNode, (n) => /最高/.test(String((n.children && n.children[0]) || "")));
+        return mk;
+      })();
+      if (hiEl && loEl) {
+        const hiTxt2 = String((hiEl.children && hiEl.children[0]) || "");
+        const loTxt2 = String((loEl.children && loEl.children[0]) || "");
+        const allText = textOf(ovNode).join(" ");
+        // 用正则容忍标签与数值之间的空白差异（渲染是 "最高 " + 值，拼接后可能双空格）
+        const hasPair = (label, val) => new RegExp(label + "\\s+" + val.replace(/\./g, "\\.") ).test(allText);
+        check("头部最高价与图上标注一致（同一口径）", hasPair("最高", hiTxt2), { 图上: hiTxt2, 片段: allText.slice(0, 200) });
+        check("头部最低价与图上标注一致（同一口径）", hasPair("最低", loTxt2), { 图上: loTxt2 });
+      }
+    }
   }
 }
 // ---------- 五档盘口**只在分时展示** ----------
