@@ -2340,6 +2340,47 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         const t = pts[i].t;
         return { x: xOf(i), label: t.slice(0, 2) + ":" + t.slice(2, 4) };
       });
+      /**
+       * 当日盈亏的最高 / 最低点（金额）。
+       *
+       * 与分时图那套的区别：盈亏是**钱**，不是价格 ——
+       * 所以标签要带正负号和千分位（fmtSigned），且极值可能为负（亏损峰值）。
+       *
+       * 同样取**第一个**命中下标；与末点重合时不重复标注。
+       * 注意 min/max 已经被 Math.min(min,0)/Math.max(max,0) 拉过零轴，
+       * 所以这里必须从**原始 pts** 重新求极值，否则永远至少有一个是 0。
+       */
+      let hiIdx = -1, loIdx = -1;
+      for (let i = 0; i < pts.length; i++) {
+        if (hiIdx < 0 || pts[i].p > pts[hiIdx].p) hiIdx = i;
+        if (loIdx < 0 || pts[i].p < pts[loIdx].p) loIdx = i;
+      }
+      const hiP = hiIdx >= 0 ? pts[hiIdx].p : null;
+      const loP = loIdx >= 0 ? pts[loIdx].p : null;
+      const showHi = hiIdx >= 0 && hiIdx !== pts.length - 1;
+      const showLo = loIdx >= 0 && loIdx !== pts.length - 1 && loIdx !== hiIdx;
+      const extMark = (idx, val, isHigh) => {
+        const x = xOf(idx);
+        const y = yOf(val);
+        const ly = clamp(y + (isHigh ? -4 : 9), padT + 7, padT + ih);
+        // 靠右侧的标签改左对齐，避免伸进右侧留白压住末值
+        const nearRight = x > padL + iw - 40;
+        const c = isHigh ? "var(--sl-up)" : "var(--sl-down)";
+        return h(
+          "g",
+          { key: isHigh ? "ph" : "pl" },
+          h("circle", { cx: x, cy: y, r: 1.8, fill: c, opacity: 0.9 }),
+          h("text", {
+            x: nearRight ? x - 4 : x + 4,
+            y: ly,
+            fontSize: 8.5,
+            fill: c,
+            textAnchor: nearRight ? "end" : "start",
+            "data-slpxt": isHigh ? "high" : "low",
+          }, fmtSigned(Math.round(val))),
+        );
+      };
+
       return h(
         "svg",
         { viewBox: "0 0 " + W + " " + H, width: "100%", height: H, preserveAspectRatio: "none", style: { display: "block" } },
@@ -2347,6 +2388,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         h("line", { x1: padL, x2: padL + iw, y1: zero, y2: zero, stroke: "var(--sl-muted)", strokeDasharray: "3 3", strokeWidth: 1 }),
         h("text", { x: W - padR + 3, y: zero + 3, fontSize: 9, fill: "var(--sl-muted)" }, "0"),
         h("polyline", { points: line, fill: "none", stroke: col, strokeWidth: 1.4 }),
+        // 最高/最低盈亏标注：画在折线之上、末值之前
+        showHi ? extMark(hiIdx, hiP, true) : null,
+        showLo ? extMark(loIdx, loP, false) : null,
         h("circle", { cx: xOf(pts.length - 1), cy: yOf(last.p), r: 2.2, fill: col }),
         h("text", { x: W - padR + 3, y: yOf(last.p) + 3, fontSize: 9, fill: col }, fmtSigned(Math.round(last.p))),
         ticks.map((t, i) => h("text", { key: i, x: clamp(t.x, 10, W - 20), y: H - 3, fontSize: 8.5, fill: "var(--sl-muted)", textAnchor: "middle" }, t.label)),

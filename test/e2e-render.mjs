@@ -1863,6 +1863,41 @@ if (txnMi) {
       })(svg);
       check("曲线含零轴/折线/填充", hasZero && hasPoly && hasArea, JSON.stringify({ hasZero, hasPoly, hasArea }));
       check("曲线带时间刻度", /09:|10:|11:|13:|14:|15:/.test(textOf(svg).join(" ")), textOf(svg).join(" ").slice(0, 120));
+
+      // ---------- 盈亏曲线标注最高 / 最低点 ----------
+      // 用户要求"盈亏走势也标记上高点和低点"。
+      // 判据用 data-slpxt 标记（high/low），并交叉验证数值：
+      // 盈亏是**金额**，极值可能为负（亏损峰值），所以不能只验"有数字"。
+      {
+        const markOf = (which) => findNode(svg, (n) => n.type === "text"
+          && String((n.props && n.props["data-slpxt"]) || "") === which);
+        const hiMark = markOf("high");
+        const loMark = markOf("low");
+        check("盈亏曲线标出了最高点", !!hiMark, hiMark && String((hiMark.children && hiMark.children[0]) || ""));
+        check("盈亏曲线标出了最低点", !!loMark, loMark && String((loMark.children && loMark.children[0]) || ""));
+
+        if (hiMark && loMark) {
+          const hiTxt = String((hiMark.children && hiMark.children[0]) || "");
+          const loTxt = String((loMark.children && loMark.children[0]) || "");
+          // 必须带量级或符号（fmtSigned 会给 +/− 和 万/亿）
+          check("盈亏极值标注是带符号的金额",
+            /^[+-]/.test(hiTxt) && /^[+-]/.test(loTxt), { hiTxt, loTxt });
+          // 解析回数字比较（去掉万/亿后缀与正负号）
+          const parse = (s) => {
+            const m = /^([+-]?)([\d.]+)(万|亿)?$/.exec(s);
+            if (!m) return null;
+            const n = Number(m[2]) * (m[3] === "亿" ? 1e8 : m[3] === "万" ? 1e4 : 1);
+            return m[1] === "-" ? -n : n;
+          };
+          const hiV = parse(hiTxt), loV = parse(loTxt);
+          check("最高盈亏 ≥ 最低盈亏（方向不能反）",
+            Number.isFinite(hiV) && Number.isFinite(loV) && hiV >= loV, { hiV, loV });
+          // 极值必须包住零轴：当日盈亏通常上下穿 0，至少有一个点落在真实极值上
+          // （min/max 被强制拉过 0 是绘图需要，但标注取的是原始 pts 的极值）
+          check("两个极值不都是 0（说明取的是真实极值而非被零轴夹过的）",
+            !(hiV === 0 && loV === 0), { hiV, loV });
+        }
+      }
     }
 
     // ---------- 曲线必须跟随行情刷新 ----------
