@@ -528,6 +528,37 @@ check("指数栏含上证/深证", /上证/.test(barText) && /深证/.test(barTe
 check("指数栏含点位数字", /\d{4}\.\d|\d{3}\.\d/.test(barText), barText.slice(0, 160));
 // 需求③：左下角用简称（不显示「上证指数/深证成指」全称）
 check("指数栏用简称（无全称）", !/上证指数/.test(barText) && !/深证成指/.test(barText), barText.slice(0, 160));
+
+// ---------- 指数胶囊显示「相对昨收的涨跌点数」 ----------
+// 用户要求"相较于昨收点数也添加上"。
+// 格式 `+1.23` / `-18.63`：带符号、两位小数，与涨跌幅同色同向。
+{
+  const chip = findNode(barNode, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-chip") >= 0);
+  const chgEl = chip ? findNode(chip, (n) => String((n.props && n.props.className) || "").split(" ").indexOf("sl-chip-chg") >= 0) : null;
+  check("指数胶囊里有涨跌点数元素（sl-chip-chg）", !!chgEl, chip && chip.props.className);
+  if (chgEl) {
+    const txt = String((chgEl.children && chgEl.children[0]) || "");
+    check("涨跌点数带正负号且是数字", /^[+-]?\d+(\.\d+)?$/.test(txt), { txt, barText: barText.slice(0, 120) });
+    // 顺序：点位 → 点数 → 涨跌幅
+    const kids = (chip && chip.children) || [];
+    const iChg = kids.findIndex((k) => String((k && k.props && k.props.className) || "").indexOf("sl-chip-chg") >= 0);
+    const iPct = kids.findIndex((k) => String((k && k.props && k.props.className) || "").indexOf("sl-chip-pct") >= 0);
+    check("点数排在涨跌幅之前（点位→点数→涨跌幅）", iChg >= 0 && iPct >= 0 && iChg < iPct, { iChg, iPct });
+    // 数值必须与行情一致（拿 quotes 里的 change 交叉验证）
+    const st = global.__sl_test_state__ || {};
+    const firstCode = ((st.config || {}).barIndices || [])[0];
+    const q = firstCode && (st.quotes || {})[firstCode];
+    if (q && Number.isFinite(Number(q.change))) {
+      const got = Number(txt);
+      check("点数数值与行情的 change 一致", Math.abs(Math.abs(got) - Math.abs(Number(q.change))) < 0.02,
+        { 显示: txt, 行情: q.change });
+      // 方向也要对：正涨负跌，与 percent 一致
+      check("点数符号与涨跌幅方向一致", (got > 0) === (Number(q.percent) > 0) || got === 0,
+        { 点数: got, 涨跌幅: q.percent });
+    }
+  }
+}
+
 // 需求①：可自由移动 —— ⚙ 设置按钮即拖动手柄（无独立 📈 按钮）
 const gear = findNode(barNode, (n) => n.type === "button" && String((n.props && n.props.className) || "").indexOf("sl-gear") >= 0);
 check("⚙ 设置按钮存在且为拖动手柄", !!gear && typeof gear.props.onPointerDown === "function");

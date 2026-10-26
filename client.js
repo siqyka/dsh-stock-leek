@@ -87,6 +87,8 @@ window.__ModuleLoader__.load({
 .sl-chip:hover{border-color:var(--sl-accent-border);background:var(--sl-accent-soft)}
 .sl-chip-name{color:var(--sl-dim);font-weight:600}
 .sl-chip-price{font-weight:700}
+/* 涨跌点数：比点位弱一点、比名称强一点，夹在「点位」和「涨跌幅」之间不抢焦点 */
+.sl-chip-chg{font-weight:600;font-size:11px;font-variant-numeric:tabular-nums}
 .sl-chip-pct{font-weight:700;font-size:11px}
 .sl-chip.sl-flash-up{animation:slFlashUp 1.1s ease-out}
 .sl-chip.sl-flash-down{animation:slFlashDown 1.1s ease-out}
@@ -4857,6 +4859,22 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         el.classList.add(lastPrice > prev ? "sl-flash-up" : "sl-flash-down");
       }, [lastPrice]);
       const compact = cfg && cfg.barStyle === "compact";
+      /**
+       * 涨跌点数（相对昨收）：用户要求"相较于昨收点数也添加上"。
+       *
+       * `q.change` 是 Host 解析好的（腾讯快照 f[31]，或是 live - yestclose 的兜底），
+       * 与 `q.percent` 同源，所以两者方向永远一致，不会打架。
+       *
+       * 带正负号：+1.23 / -4.56。指数点位变化通常是个位数，
+       * 用 `fmtPrice` 会吃掉符号（它只管格式化数字），所以这里自己拼符号。
+       */
+      const chgTxt = (() => {
+        if (!q) return "--";
+        const c = Number(q.change);
+        if (!Number.isFinite(c)) return "--";
+        const sign = c > 0 ? "+" : c < 0 ? "-" : "";
+        return sign + fmtPrice(Math.abs(c));
+      })();
       return h(
         "span",
         {
@@ -4869,6 +4887,8 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         },
         h("span", { className: "sl-chip-name" }, shortIndexName(idx.name, idx.code)),
         !compact ? h("span", { className: "sl-chip-price", style: { color: col } }, q ? fmtPrice(q.price) : "--") : null,
+        // 涨跌点数：紧跟在点位后面，与涨跌幅同色（同一方向的信息放一起）
+        h("span", { className: "sl-chip-chg", style: { color: col } }, chgTxt),
         h("span", { className: "sl-chip-pct", style: { color: col } }, q ? fmtPct(q.percent) : "--"),
       );
     }
