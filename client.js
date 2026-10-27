@@ -2710,7 +2710,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             txnEls.push(h("text", {
               key: "tx" + abs,
               x: x, y: clamp(yBase, padT + 6, padT + priceH - 2),
-              fontSize: 8, fontWeight: 700, fill: color, textAnchor: "middle",
+              // 10px + 描边：8px 在 200px 高的图里偏小、贴着 K 线时容易看不清
+              fontSize: 10, fontWeight: 700, fill: color, textAnchor: "middle",
+              stroke: "var(--sl-bg)", strokeWidth: 2.5, paintOrder: "stroke",
               "data-sltxn": mk,
             }, mk));
           } else {
@@ -2759,8 +2761,8 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               lines.map((ln, li) => h("text", {
                 key: ln.k,
                 x: clamp(x, padL + 26, padL + iw - 26), y: gTop + li * 10,
-                fontSize: 8, fontWeight: 700, fill: ln.c, textAnchor: "middle",
-                stroke: "var(--sl-bg)", strokeWidth: 2.5, paintOrder: "stroke",
+                fontSize: 9, fontWeight: 700, fill: ln.c, textAnchor: "middle",
+                stroke: "var(--sl-bg)", strokeWidth: 3, paintOrder: "stroke",
                 "data-sltxn-detail": ln.k,
               }, ln.k + (ln.avg !== null ? " " + fmtPrice(ln.avg) : "") + "×" + ln.qty))));
           }

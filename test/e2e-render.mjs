@@ -1794,6 +1794,36 @@ if (txnMi) {
       check("悬停无交易的 K 线时不显示「该根无交易」", noTxnTxt.indexOf("该根无交易") < 0, noTxnTxt.slice(-120));
       // 也不能画空占位（字母标记只应出现在有交易的根上）
       check("悬停无交易的 K 线时不出现价格×股数明细", noTxnTxt.indexOf("×") < 0, noTxnTxt.slice(-120));
+
+      // ---------- **点击钉住**路径（之前只测了 hover，漏了这条）----------
+      // 用户反馈："钉住后没有展示买卖数据"。
+      // onDown 会 preventDefault 并置 dragRef，onUp 写 slDragStamp 抑制 click，
+      // 所以必须按真实顺序 down → up → click 走一遍。
+      {
+        wrap.props.onPointerLeave && wrap.props.onPointerLeave({});
+        renderTree(node);
+        check("清掉 hover 后不含明细（前置）", textOf(node).join(" ").indexOf("×") < 0);
+
+        const ev = mkEvt(181); // 第 3 根：有买有卖 → T
+        wrap.props.onPointerDown && wrap.props.onPointerDown(ev);
+        wrap.props.onPointerUp && wrap.props.onPointerUp(ev);
+        wrap.props.onClick && wrap.props.onClick(ev);
+        renderTree(node);
+
+        const pinDetails = [];
+        (function walkP(n) {
+          if (!n || typeof n !== "object") return;
+          if (Array.isArray(n)) { n.forEach(walkP); return; }
+          if (n.type === "text" && n.props && n.props["data-sltxn-detail"]) pinDetails.push(n);
+          if (n.__rendered) walkP(n.__rendered);
+          (n.children || []).forEach(walkP);
+        })(node);
+
+        const afterPin = textOf(node).join(" ");
+        check("点击钉住后展开出买卖明细", pinDetails.length > 0, { n: pinDetails.length, text: afterPin.slice(-140) });
+        const pinTxt = pinDetails.map(el => textOf(el).join("")).join(" ");
+        check("钉住明细里 B 与 S 都在", /B\s*\d/.test(pinTxt) && /S\s*\d/.test(pinTxt), pinTxt);
+      }
       check("买方向显示 价格×200（股数）", /B\s*10\.2\d*×200(?!\d)/.test(infoTxt), infoTxt);
       // fmtPrice 输出三位小数（12.000），正则要写 12\.\d+ 而不是 12\.00
       check("卖方向显示 价格×300（股数）", /S\s*12\.\d+×300(?!\d)/.test(infoTxt), infoTxt);
