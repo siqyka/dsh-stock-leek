@@ -2766,35 +2766,6 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           }
         }
       }
-      /**
-       * 钉住时的交易明细提示。
-       *
-       * 之前只在「有交易的根」上展开 B/S 明细，用户钉住一根没交易的 K 线时
-       * 什么都看不到，会以为"展开功能没做"。
-       * 这里在价格区左下角给一行说明：有交易就列明细，没交易也明确说没有。
-       */
-      const selTxnInfo = (() => {
-        if (selAbs === null) return null;
-        const slot = txnByCandle.get(selAbs);
-        if (!slot) {
-          return h("text", {
-            key: "txinfo", x: padL + 2, y: padT + 8, fontSize: 8,
-            fill: "var(--sl-muted)", "data-sltxn-info": "none",
-          }, "该根无交易");
-        }
-        const agg = (arr) => {
-          let sumPV = 0, sumQ = 0;
-          for (const t of arr) { if (t.price === null) continue; sumPV += t.price * t.qty; sumQ += t.qty; }
-          return { avg: sumQ > 0 ? sumPV / sumQ : null, qty: sumQ };
-        };
-        const parts = [];
-        if (slot.buys.length) { const a = agg(slot.buys); parts.push("B " + (a.avg !== null ? fmtPrice(a.avg) : "--") + "×" + a.qty); }
-        if (slot.sells.length) { const a = agg(slot.sells); parts.push("S " + (a.avg !== null ? fmtPrice(a.avg) : "--") + "×" + a.qty); }
-        return h("text", {
-          key: "txinfo", x: padL + 2, y: padT + 8, fontSize: 8,
-          fill: "var(--sl-accent)", "data-sltxn-info": "has",
-        }, parts.join("  "));
-      })();
       const crossEls = si < 0 ? [] : [
         h("rect", { key: "hl", x: padL + step * si, y: padT, width: Math.max(1, step), height: priceH, fill: "var(--sl-accent)", opacity: 0.08 }),
         h("line", { key: "vx", x1: xOf(si), x2: xOf(si), y1: padT, y2: H - padB - VH, stroke: "var(--sl-accent)", strokeWidth: 0.7, strokeDasharray: "3 2", opacity: 0.8 }),
@@ -2818,7 +2789,6 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           costEls,
           maEls,
           crossEls,
-          selTxnInfo,
           txnEls,
           maLabels,
           h("line", { x1: padL, x2: padL + iw, y1: H - padB - VH - 2, y2: H - padB - VH - 2, stroke: "var(--sl-border-soft)", strokeWidth: 0.6 }),

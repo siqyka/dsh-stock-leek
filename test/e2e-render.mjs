@@ -1769,14 +1769,31 @@ if (txnMi) {
       // 关键：倍数必须是**股数**
       // 第 3 根：买 100+100=200 股（加权均价 10.2）、卖 300 股
       //
-      // ⚠️ 必须只看 **selTxnInfo**（data-sltxn-info="has"）那一处的文本。
-      // 图上的 txnEls 在钉住时也会输出明细，两处内容相同；
-      // 用整棵树做正则时，任一处匹配就算过 —— 我曾在别处写死 "×9 9 9"
-      // 而断言照样全绿（踩过）。取唯一权威节点才能真守住。
-      const infoEl = findNode(node, (n) => n.type === "text"
-        && String((n.props && n.props["data-sltxn-info"]) || "") === "has");
-      const infoTxt = infoEl ? textOf(infoEl).join("") : "";
-      check("钉住明细节点存在（data-sltxn-info=has）", !!infoEl, infoTxt);
+      // 明细现在**只画在对应 K 线上**（txnEls 里的 data-sltxn-detail），
+      // 左上角那处「明细提示」已被用户要求去掉（不再有 data-sltxn-info）。
+      // 明细节点在 <g> 里，而 g 是组件返回的**渲染产物**（__rendered），
+      // 不是 children —— 遍历必须同时走 __rendered 和 children（踩过：
+      // 只走 children 会得到 0 个，但文本里明明有内容）。
+      const detailEls = [];
+      (function walkD(n) {
+        if (!n || typeof n !== "object") return;
+        if (Array.isArray(n)) { n.forEach(walkD); return; }
+        if (n.type === "text" && n.props && n.props["data-sltxn-detail"]) detailEls.push(n);
+        if (n.__rendered) walkD(n.__rendered);
+        (n.children || []).forEach(walkD);
+      })(node);
+      check("明细画在 K 线上（data-sltxn-detail 节点存在）", detailEls.length > 0, detailEls.length);
+      const infoTxt = detailEls.map(el => textOf(el).join("")).join(" ");
+      // 「该根无交易」这类占位提示必须已经移除。
+      // **必须悬停一根真的没有交易的 K 线**才测得到 —— 上面悬停的那根有交易，
+      // 走不到"无交易"分支，断言会永远绿（踩过）。
+      // 第 1 根（index 0）没有任何交易：x ≈ padL + (iw/5)*0.5 = 4 + 7.08 ≈ 11
+      wrap.props.onPointerMove(mkEvt(11));
+      renderTree(node);
+      const noTxnTxt = textOf(node).join(" ");
+      check("悬停无交易的 K 线时不显示「该根无交易」", noTxnTxt.indexOf("该根无交易") < 0, noTxnTxt.slice(-120));
+      // 也不能画空占位（字母标记只应出现在有交易的根上）
+      check("悬停无交易的 K 线时不出现价格×股数明细", noTxnTxt.indexOf("×") < 0, noTxnTxt.slice(-120));
       check("买方向显示 价格×200（股数）", /B\s*10\.2\d*×200(?!\d)/.test(infoTxt), infoTxt);
       // fmtPrice 输出三位小数（12.000），正则要写 12\.\d+ 而不是 12\.00
       check("卖方向显示 价格×300（股数）", /S\s*12\.\d+×300(?!\d)/.test(infoTxt), infoTxt);
