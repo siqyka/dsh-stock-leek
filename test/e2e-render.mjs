@@ -1712,6 +1712,78 @@ if (txnMi) {
   check("qty=0 的流水被忽略", groupMarks(times, [{ date: "2026-10-27", qty: 0 }]).length === 0);
 }
 
+// ---------- 7e. 钉住 K 线时展开「价格×股数」 ----------
+// 用户反馈：钉住时没展示 价格×股数。
+// 上一轮只测了规则层、没测 UI 接线，所以这里**直接渲染 KlineChart 组件**
+// 并模拟点击钉住，验证展开态真的出现明细、且倍数用的是**股数**。
+{
+  const KC = globalThis.__sl_kline_chart__;
+  check("KlineChart 已暴露供测试（前置）", typeof KC === "function", typeof KC);
+
+  if (typeof KC === "function") {
+    // 造 5 根 K 线 + 3 笔交易（第 3 根：买 200@10 + 卖 300@12）
+    const candles = [
+      { time: "2026-10-01", open: 10, close: 11, high: 11.5, low: 9.5, volume: 100 },
+      { time: "2026-10-02", open: 11, close: 12, high: 12.5, low: 10.5, volume: 120 },
+      { time: "2026-10-03", open: 12, close: 11, high: 12.8, low: 10.2, volume: 140 },
+      { time: "2026-10-04", open: 11, close: 13, high: 13.5, low: 10.8, volume: 160 },
+      { time: "2026-10-05", open: 13, close: 12, high: 13.8, low: 11.5, volume: 180 },
+    ];
+    const txns = [
+      { date: "2026-10-03", price: 10, qty: 100 },
+      { date: "2026-10-03", price: 10.4, qty: 100 },
+      { date: "2026-10-03", price: 12, qty: -300 },
+    ];
+
+    // 注意：本文件里 `h` 被路由查找函数占用了（L28），所以这里用 react.createElement
+    const node = React.createElement(KC, { candles, period: "day", height: 200, txns });
+    renderTree(node);
+
+    // 常态：只有字母，没有 ×
+    const textOfAll = (n, acc = []) => textOf(n, acc);
+    let before = textOfAll(node).join(" ");
+    check("未钉住时只有字母（无 ×）", before.indexOf("×") < 0, before.slice(0, 120));
+
+    // 找可点击的容器（带 onWheel / onClick 的 div）并点最后一根位置
+    const wrap = findNode(node, (n) => n.props && typeof n.props.onClick === "function" && typeof n.props.onWheel === "function");
+    check("找到图表可点击容器（前置）", !!wrap);
+
+    if (wrap) {
+      // 触发 hover 到第 3 根（有交易那根）：x 落在它的中心
+      // W=404, padL=4, padR=46, 5 根 → step=(404-4-46)/5=70.8，第3根中心 x≈4+70.8*2+35.4≈181
+      // idxAt 依赖 e.currentTarget.getBoundingClientRect()，必须补上
+      // （真实环境由 DOM 提供；测试里手造一个与 viewBox 等宽的假 rect）
+      const fakeRect = { left: 0, width: 404, top: 0, height: 200 };
+      const mkEvt = (clientX) => ({
+        clientX,
+        currentTarget: { getBoundingClientRect: () => fakeRect },
+        preventDefault() {}, stopPropagation() {},
+      });
+      // 第 3 根（index 2）中心：padL + (iw/5)*(2+0.5) = 4 + 70.8*2.5 ≈ 181
+      wrap.props.onPointerMove && wrap.props.onPointerMove(mkEvt(181));
+      renderTree(node);
+      let after = textOf(node).join(" ");
+      // 悬停也会展开（selAbs = pin ?? hover），能拿到明细就说明展开分支通
+      check("悬停/钉住时展开出明细（含 ×）", after.indexOf("×") >= 0, after.slice(-160));
+
+      // 关键：倍数必须是**股数**
+      // 第 3 根：买 100+100=200 股（加权均价 10.2）、卖 300 股
+      //
+      // ⚠️ 必须只看 **selTxnInfo**（data-sltxn-info="has"）那一处的文本。
+      // 图上的 txnEls 在钉住时也会输出明细，两处内容相同；
+      // 用整棵树做正则时，任一处匹配就算过 —— 我曾在别处写死 "×9 9 9"
+      // 而断言照样全绿（踩过）。取唯一权威节点才能真守住。
+      const infoEl = findNode(node, (n) => n.type === "text"
+        && String((n.props && n.props["data-sltxn-info"]) || "") === "has");
+      const infoTxt = infoEl ? textOf(infoEl).join("") : "";
+      check("钉住明细节点存在（data-sltxn-info=has）", !!infoEl, infoTxt);
+      check("买方向显示 价格×200（股数）", /B\s*10\.2\d*×200(?!\d)/.test(infoTxt), infoTxt);
+      // fmtPrice 输出三位小数（12.000），正则要写 12\.\d+ 而不是 12\.00
+      check("卖方向显示 价格×300（股数）", /S\s*12\.\d+×300(?!\d)/.test(infoTxt), infoTxt);
+    }
+  }
+}
+
 // ---------- 8. 收益胶囊 hover 浮层（市值/累计收益+%/每只持仓今日盈亏+当日涨幅） ----------
 {
   // 重新渲染悬浮指数栏（此时已有持仓 + 行情）

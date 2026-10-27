@@ -2718,17 +2718,39 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
              * 钉住时展开：每个方向一行「价格×笔数」。
              * 价格取该方向的**成交价加权均值**（多笔时比取第一笔更有意义）。
              */
-            const avg = (arr) => {
+            /**
+             * 汇总某方向的「成交价加权均值 + 总股数」。
+             *
+             * 用户要的是 **价格 × 股数**（原来我写成 ×笔数，理解错了）。
+             * 股数取该方向所有成交的绝对值之和；价格用加权均值，
+             * 多笔成交时比取第一笔更有代表性。
+             */
+            const agg = (arr) => {
               let sumPV = 0, sumQ = 0;
-              for (const t of arr) { if (t.price !== null) { sumPV += t.price * t.qty; sumQ += t.qty; } }
-              return sumQ > 0 ? sumPV / sumQ : null;
+              for (const t of arr) {
+                if (t.price === null) continue;
+                sumPV += t.price * t.qty;
+                sumQ += t.qty;
+              }
+              return { avg: sumQ > 0 ? sumPV / sumQ : null, qty: sumQ };
             };
             const lines = [];
-            if (slot.buys.length) lines.push({ k: "B", c: "var(--sl-up)", avg: avg(slot.buys), n: slot.buys.length });
-            if (slot.sells.length) lines.push({ k: "S", c: "var(--sl-down)", avg: avg(slot.sells), n: slot.sells.length });
+            if (slot.buys.length) {
+              const a = agg(slot.buys);
+              lines.push({ k: "B", c: "var(--sl-up)", avg: a.avg, qty: a.qty });
+            }
+            if (slot.sells.length) {
+              const a = agg(slot.sells);
+              lines.push({ k: "S", c: "var(--sl-down)", avg: a.avg, qty: a.qty });
+            }
             /**
-             * 展开态：同样跟随该根 K 线，多行向下（或向上）依次排开。
-             * 有卖点时整体上移，避免两行都堆在下方压到成交量区。
+             * 展开态跟随该根 K 线，多行依次排开；有卖点时整体上移。
+             *
+             * 文字比单个字母宽很多（"B 18.85×2000" ≈ 60px），而相邻 K 线间距
+             * 默认只有 ~3px。所以：
+             * - 用 textAnchor="middle" 并 clamp x 进绘图区，避免左右溢出被裁；
+             * - 展开态改用**白描边**（stroke 同背景色）压住底下的 K 线，
+             *   保证文字可读 —— 这是密集图上唯一能看清的办法。
              */
             const gTop = isBuySide
               ? clamp(yBase, padT + 6, padT + priceH - 20)
@@ -2736,12 +2758,43 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             txnEls.push(h("g", { key: "txg" + abs, "data-sltxn": mk },
               lines.map((ln, li) => h("text", {
                 key: ln.k,
-                x: x, y: gTop + li * 9,
+                x: clamp(x, padL + 26, padL + iw - 26), y: gTop + li * 10,
                 fontSize: 8, fontWeight: 700, fill: ln.c, textAnchor: "middle",
-              }, ln.k + (ln.avg !== null ? " " + fmtPrice(ln.avg) : "") + "×" + ln.n))));
+                stroke: "var(--sl-bg)", strokeWidth: 2.5, paintOrder: "stroke",
+                "data-sltxn-detail": ln.k,
+              }, ln.k + (ln.avg !== null ? " " + fmtPrice(ln.avg) : "") + "×" + ln.qty))));
           }
         }
       }
+      /**
+       * 钉住时的交易明细提示。
+       *
+       * 之前只在「有交易的根」上展开 B/S 明细，用户钉住一根没交易的 K 线时
+       * 什么都看不到，会以为"展开功能没做"。
+       * 这里在价格区左下角给一行说明：有交易就列明细，没交易也明确说没有。
+       */
+      const selTxnInfo = (() => {
+        if (selAbs === null) return null;
+        const slot = txnByCandle.get(selAbs);
+        if (!slot) {
+          return h("text", {
+            key: "txinfo", x: padL + 2, y: padT + 8, fontSize: 8,
+            fill: "var(--sl-muted)", "data-sltxn-info": "none",
+          }, "该根无交易");
+        }
+        const agg = (arr) => {
+          let sumPV = 0, sumQ = 0;
+          for (const t of arr) { if (t.price === null) continue; sumPV += t.price * t.qty; sumQ += t.qty; }
+          return { avg: sumQ > 0 ? sumPV / sumQ : null, qty: sumQ };
+        };
+        const parts = [];
+        if (slot.buys.length) { const a = agg(slot.buys); parts.push("B " + (a.avg !== null ? fmtPrice(a.avg) : "--") + "×" + a.qty); }
+        if (slot.sells.length) { const a = agg(slot.sells); parts.push("S " + (a.avg !== null ? fmtPrice(a.avg) : "--") + "×" + a.qty); }
+        return h("text", {
+          key: "txinfo", x: padL + 2, y: padT + 8, fontSize: 8,
+          fill: "var(--sl-accent)", "data-sltxn-info": "has",
+        }, parts.join("  "));
+      })();
       const crossEls = si < 0 ? [] : [
         h("rect", { key: "hl", x: padL + step * si, y: padT, width: Math.max(1, step), height: priceH, fill: "var(--sl-accent)", opacity: 0.08 }),
         h("line", { key: "vx", x1: xOf(si), x2: xOf(si), y1: padT, y2: H - padB - VH, stroke: "var(--sl-accent)", strokeWidth: 0.7, strokeDasharray: "3 2", opacity: 0.8 }),
@@ -2765,6 +2818,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           costEls,
           maEls,
           crossEls,
+          selTxnInfo,
           txnEls,
           maLabels,
           h("line", { x1: padL, x2: padL + iw, y1: H - padB - VH - 2, y2: H - padB - VH - 2, stroke: "var(--sl-border-soft)", strokeWidth: 0.6 }),
@@ -5156,6 +5210,17 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         try { console.error("[dsh-stock-leek] 插件页配置卡片注册失败：", e); } catch { /* ignore */ }
       }
     }
+
+    /**
+     * 测试钩子：暴露 KlineChart 组件，供 e2e 直接渲染验证
+     * 「钉住后展开 价格×股数」这类**纯 UI 接线**。
+     *
+     * 为什么不靠整链路（进详情 → 点行 → 再点图）：
+     * store 里的 txns 会被配置保存/回填冲掉，链路太脆。
+     * 直接渲染组件 + 传受控 props 是最可靠的验证方式，与
+     * __sl_notify_test__ 同一惯例（globalThis 暴露，不进 module.exports）。
+     */
+    globalThis.__sl_kline_chart__ = KlineChart;
 
     exports.apply = apply;
     exports.inject = inject;
