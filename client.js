@@ -2572,61 +2572,6 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       const atDefault = win[0] === Math.max(0, total - DEF) && win[1] === total;
       // 选中的 K 线：优先钉住的，其次悬浮的；超出当前窗口则忽略
       const inWin = (i) => i !== null && i !== undefined && i >= win[0] && i < win[1];
-      /**
-       * 交易标记（B / S / T）。
-       *
-       * ## 数据口径
-       * 流水的方向**藏在 qty 的正负里**（正=买入、负=卖出），没有 side 字段。
-       *
-       * ## 日期 → K 线的映射
-       * K 线的 time 是**周期末日**（日K=当天，周K=该周最后交易日，月K=该月最后交易日），
-       * 所以一笔交易要落到「第一根 time >= 交易日期」的 K 线上。
-       * 遍历时用二分不合适（K 线最多几百根），直接线性找也够快。
-       *
-       * ## 标记规则（用户要求）
-       * - 只有买 → B；只有卖 → S；有买有卖 → T
-       * - 常态只显示字母；**钉住/悬停该根时才展开显示 价格×笔数**
-       *
-       * ## 为什么按"根"聚合而不是按天
-       * 周K/月K 一根 K 线覆盖多个交易日。若按天分别标，同一根上会叠一堆字母；
-       * 按根聚合后一根最多一个标记，规则与日K 完全一致（用户不用学两套）。
-       */
-      const txnList = Array.isArray(props.txns) ? props.txns : [];
-      // dateIdx: K 线绝对索引 -> { buys:[], sells:[] }
-      const txnByCandle = new Map();
-      if (txnList.length && all.length) {
-        // 预取每根 K 线的 time（升序），用于找到"覆盖该日期"的那根
-        for (const t of txnList) {
-          const d = String(t.date || "");
-          if (!d) continue;
-          const qty = Number(t.qty);
-          if (!Number.isFinite(qty) || qty === 0) continue;
-          // 第一根 time >= d 的 K 线
-          let k = -1;
-          for (let i = 0; i < all.length; i++) {
-            if (String(all[i].time || "") >= d) { k = i; break; }
-          }
-          // 交易日期晚于最后一根（K 线还没更新到今天的周/月）→ 挂到最后一根，
-          // 否则这笔交易会凭空消失，用户会以为没记上
-          if (k < 0) k = all.length - 1;
-          const slot = txnByCandle.get(k) || { buys: [], sells: [] };
-          const price = Number(t.price);
-          (qty > 0 ? slot.buys : slot.sells).push({ price: Number.isFinite(price) ? price : null, qty: Math.abs(qty) });
-          txnByCandle.set(k, slot);
-        }
-      }
-      /**
-       * 判断某根 K 线的标记字母：B / S / T / null（无交易）。
-       * 有买有卖 = T（含同日双向、以及周/月内的双向）。
-       */
-      const markOf = (absIdx) => {
-        const slot = txnByCandle.get(absIdx);
-        if (!slot) return null;
-        const hasB = slot.buys.length > 0;
-        const hasS = slot.sells.length > 0;
-        if (hasB && hasS) return "T";
-        return hasB ? "B" : "S";
-      };
       const selAbs = inWin(pinIdx) ? pinIdx : inWin(hoverIdx) ? hoverIdx : null;
       const sel = selAbs === null ? null : all[selAbs];
       const si = selAbs === null ? -1 : selAbs - win[0];
@@ -2664,110 +2609,6 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
        * 缩放到每根 K 线过窄（step < 7px）时字母会糊成一片，
        * 这时整批隐藏——比画一堆重叠字符有用。
        */
-      const txnEls = [];
-      /**
-       * 只在**每根 K 线足够宽**时才画——但门槛不能设太高。
-       *
-       * 日K 默认显示 90 根，宽 404px 时 step ≈ 3.4px，
-       * 原先写 `step >= 7` 会把整批跳过（实测标记数恒为 0，看起来像功能没做）。
-       * 3px 时字母仍有 8px 字号，虽然偏挤但看得清；真正糊掉是 2px 以下，
-       * 那时 K 线本身也已经挤成一片了，标记跟着消失是合理的。
-       */
-      if (txnByCandle.size && step >= 3) {
-        for (let abs = win[0]; abs < win[1]; abs++) {
-          const mk = markOf(abs);
-          if (!mk) continue;
-          const i = abs - win[0];
-          const c = candles[i];
-          if (!c) continue;
-          const x = xOf(i);
-          /**
-           * 标记**不贴 K 线**，而是画在独立的标记带里：
-           *   S → 上带（价格区上方，y 固定为 padT 之内）
-           *   B/T → 下带（价格区下方、成交量区之上，y 固定）
-           *
-           * 这样无论 K 线高低，标记都排成整齐的一行/一行，
-           * 不会因为某根 K 线特别长而把标记推到别处、也不会压在邻线上。
-           */
-          const isBuySide = mk !== "S"; // B / T 放下方，S 放上方
-          /**
-           * 标记**跟随该根 K 线**（按它的高价/低价定位），但与 K 线保留间距。
-           *
-           * 间距从原来的「低点 +10 / 高点 -4」拉到「+16 / -10」：
-           * - 原值太贴，标记会压在相邻 K 线的实体上（用户反馈）
-           * - 16px ≈ 两根字号的高度，足够和本根 K 线、邻根 K 线都分开
-           * 最后仍 clamp 进价格区，避免超出画布被裁。
-           */
-          const GAP = 16;
-          const yBase = isBuySide
-            ? yOf(c.low) + GAP
-            : yOf(c.high) - (GAP - 6);
-          const color = mk === "B" ? "var(--sl-up)" : mk === "S" ? "var(--sl-down)" : "var(--sl-warn)";
-          const slot = txnByCandle.get(abs);
-          const isSel = selAbs === abs;
-          if (!isSel) {
-            // 常态：只画字母
-            txnEls.push(h("text", {
-              key: "tx" + abs,
-              x: x, y: clamp(yBase, padT + 6, padT + priceH - 2),
-              // 10px + 描边：8px 在 200px 高的图里偏小、贴着 K 线时容易看不清
-              fontSize: 10, fontWeight: 700, fill: color, textAnchor: "middle",
-              stroke: "var(--sl-bg)", strokeWidth: 2.5, paintOrder: "stroke",
-              "data-sltxn": mk,
-            }, mk));
-          } else {
-            /**
-             * 钉住时展开：每个方向一行「价格×笔数」。
-             * 价格取该方向的**成交价加权均值**（多笔时比取第一笔更有意义）。
-             */
-            /**
-             * 汇总某方向的「成交价加权均值 + 总股数」。
-             *
-             * 用户要的是 **价格 × 股数**（原来我写成 ×笔数，理解错了）。
-             * 股数取该方向所有成交的绝对值之和；价格用加权均值，
-             * 多笔成交时比取第一笔更有代表性。
-             */
-            const agg = (arr) => {
-              let sumPV = 0, sumQ = 0;
-              for (const t of arr) {
-                if (t.price === null) continue;
-                sumPV += t.price * t.qty;
-                sumQ += t.qty;
-              }
-              return { avg: sumQ > 0 ? sumPV / sumQ : null, qty: sumQ };
-            };
-            const lines = [];
-            if (slot.buys.length) {
-              const a = agg(slot.buys);
-              lines.push({ k: "B", c: "var(--sl-up)", avg: a.avg, qty: a.qty });
-            }
-            if (slot.sells.length) {
-              const a = agg(slot.sells);
-              lines.push({ k: "S", c: "var(--sl-down)", avg: a.avg, qty: a.qty });
-            }
-            /**
-             * 展开态跟随该根 K 线，多行依次排开；有卖点时整体上移。
-             *
-             * 文字比单个字母宽很多（"B 18.85×2000" ≈ 60px），而相邻 K 线间距
-             * 默认只有 ~3px。所以：
-             * - 用 textAnchor="middle" 并 clamp x 进绘图区，避免左右溢出被裁；
-             * - 展开态改用**白描边**（stroke 同背景色）压住底下的 K 线，
-             *   保证文字可读 —— 这是密集图上唯一能看清的办法。
-             */
-            const gTop = isBuySide
-              ? clamp(yBase, padT + 6, padT + priceH - 20)
-              : clamp(yBase - 9, padT + 6, padT + priceH - 20);
-            txnEls.push(h("g", { key: "txg" + abs, "data-sltxn": mk },
-              lines.map((ln, li) => h("text", {
-                key: ln.k,
-                x: clamp(x, padL + 26, padL + iw - 26), y: gTop + li * 10,
-                fontSize: 9, fontWeight: 700, fill: ln.c, textAnchor: "middle",
-                stroke: "var(--sl-bg)", strokeWidth: 3, paintOrder: "stroke",
-                "data-sltxn-detail": ln.k,
-              }, ln.k + (ln.avg !== null ? " " + fmtPrice(ln.avg) : "") + "×" + ln.qty))));
-          }
-        }
-      }
       const crossEls = si < 0 ? [] : [
         h("rect", { key: "hl", x: padL + step * si, y: padT, width: Math.max(1, step), height: priceH, fill: "var(--sl-accent)", opacity: 0.08 }),
         h("line", { key: "vx", x1: xOf(si), x2: xOf(si), y1: padT, y2: H - padB - VH, stroke: "var(--sl-accent)", strokeWidth: 0.7, strokeDasharray: "3 2", opacity: 0.8 }),
@@ -2791,7 +2632,6 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           costEls,
           maEls,
           crossEls,
-          txnEls,
           maLabels,
           h("line", { x1: padL, x2: padL + iw, y1: H - padB - VH - 2, y2: H - padB - VH - 2, stroke: "var(--sl-border-soft)", strokeWidth: 0.6 }),
           h("text", { x: W - padR + 3, y: yOf(max) + 8, fontSize: 9, fill: "var(--sl-muted)" }, fmtPrice(max)),
@@ -4240,7 +4080,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             : h(MinuteChart, { points: minute.points, prevClose: minute.prevClose, color: col, height: 180 })
           : kline === null
             ? h("div", { className: "sl-empty" }, "K线加载中…")
-            : h(KlineChart, { candles: kline.candles, error: kline.error, symbol: code, period: period, height: 200, riseColor: cfg ? cfg.riseColor : null, fallColor: cfg ? cfg.fallColor : null, ma: maList, cost: pos ? pos.cost || null : null, txns: pos && Array.isArray(pos.txns) ? pos.txns : [], onCandle: setCandle });
+            : h(KlineChart, { candles: kline.candles, error: kline.error, symbol: code, period: period, height: 200, riseColor: cfg ? cfg.riseColor : null, fallColor: cfg ? cfg.fallColor : null, ma: maList, cost: pos ? pos.cost || null : null, onCandle: setCandle });
       return h(
         "div",
         { style: { display: "flex", flexDirection: "column", minHeight: 0 } },
@@ -5200,16 +5040,6 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       }
     }
 
-    /**
-     * 测试钩子：暴露 KlineChart 组件，供 e2e 直接渲染验证
-     * 「钉住后展开 价格×股数」这类**纯 UI 接线**。
-     *
-     * 为什么不靠整链路（进详情 → 点行 → 再点图）：
-     * store 里的 txns 会被配置保存/回填冲掉，链路太脆。
-     * 直接渲染组件 + 传受控 props 是最可靠的验证方式，与
-     * __sl_notify_test__ 同一惯例（globalThis 暴露，不进 module.exports）。
-     */
-    globalThis.__sl_kline_chart__ = KlineChart;
 
     exports.apply = apply;
     exports.inject = inject;
