@@ -1733,6 +1733,9 @@ if (txnMi) {
       { date: "2026-10-03", price: 10, qty: 100 },
       { date: "2026-10-03", price: 10.4, qty: 100 },
       { date: "2026-10-03", price: 12, qty: -300 },
+      // 最后一根（10-05）也要有交易：用户场景是"钉住最后一根、当天只有买入"
+      { date: "2026-10-05", price: 11.6, qty: 400 },
+      { date: "2026-10-05", price: 11.8, qty: 400 },
     ];
 
     // 注意：本文件里 `h` 被路由查找函数占用了（L28），所以这里用 react.createElement
@@ -1823,6 +1826,33 @@ if (txnMi) {
         check("点击钉住后展开出买卖明细", pinDetails.length > 0, { n: pinDetails.length, text: afterPin.slice(-140) });
         const pinTxt = pinDetails.map(el => textOf(el).join("")).join(" ");
         check("钉住明细里 B 与 S 都在", /B\s*\d/.test(pinTxt) && /S\s*\d/.test(pinTxt), pinTxt);
+
+      // ---------- 复现用户场景：钉住**最后一根**且该根**只有买入** ----------
+      // 用户截图：日K，钉住 10-27（当天仅两笔买入），标记显示 B，
+      // 但展开后看不到明细。这里精确复现。
+      {
+        // 第 5 根（最后）只有买：x ≈ padL + (iw/5)*4.5 = 4 + 70.8*4.5 ≈ 323
+        const ev5 = mkEvt(323);
+        wrap.props.onPointerLeave && wrap.props.onPointerLeave({});
+        renderTree(node);
+        wrap.props.onPointerDown && wrap.props.onPointerDown(ev5);
+        wrap.props.onPointerUp && wrap.props.onPointerUp(ev5);
+        wrap.props.onClick && wrap.props.onClick(ev5);
+        renderTree(node);
+
+        const d5 = [];
+        (function walk5(n) {
+          if (!n || typeof n !== "object") return;
+          if (Array.isArray(n)) { n.forEach(walk5); return; }
+          if (n.type === "text" && n.props && n.props["data-sltxn-detail"]) d5.push(n);
+          if (n.__rendered) walk5(n.__rendered);
+          (n.children || []).forEach(walk5);
+        })(node);
+        const t5 = textOf(node).join(" ");
+        check("钉住最后一根（只有买）也展开明细", d5.length > 0, { n: d5.length, text: t5.slice(-140) });
+        const txt5 = d5.map(el => textOf(el).join("")).join(" ");
+        check("只有买入时展开的是 B 行（无 S）", /B\s*\d/.test(txt5) && !/S\s*\d/.test(txt5), txt5);
+      }
       }
       check("买方向显示 价格×200（股数）", /B\s*10\.2\d*×200(?!\d)/.test(infoTxt), infoTxt);
       // fmtPrice 输出三位小数（12.000），正则要写 12\.\d+ 而不是 12\.00
@@ -1848,7 +1878,10 @@ if (txnMi) {
     console.log("   hover 浮层文本:", popText.slice(0, 220));
     check("浮层含 市值/累计收益/今日收益", /市值/.test(popText) && /累计收益/.test(popText) && /今日收益/.test(popText), popText.slice(0, 220));
     check("浮层列出持仓股（贵州茅台）", /贵州茅台/.test(popText), popText.slice(0, 220));
-    check("汇总今日收益带当日涨幅%", /今日收益\s*[+\-][\d.]+[亿万]?\s*（[+\-]\d+\.\d+%）/.test(popText), popText.slice(0, 220));
+    // 收益已改为**完整数值**（不缩写万/亿），带千分位逗号，所以正则要允许逗号
+    check("汇总今日收益带当日涨幅%", /今日收益\s*[+\-][\d,]+\s*（[+\-]\d+\.\d+%）/.test(popText), popText.slice(0, 220));
+    // 用户要求：收益不要进位成"万/亿"，必须是完整数字
+    check("今日收益不使用万/亿缩写", !/今日收益\s*[+\-][\d.]+[万亿]/.test(popText), popText.slice(0, 200));
     // 每只持仓行：今日盈亏金额 + 当日涨幅%（不再展示累计，累计在悬浮提示里）
     check("持仓行展示今日盈亏 + 现价 + 当日涨幅", /贵州茅台\s+[+\-][\d.,]+[亿万]?\s+[\d.]+\s+[+\-]\d+\.\d+%/.test(popText), popText.slice(0, 220));
     const cumCount = (popText.match(/累计/g) || []).length;

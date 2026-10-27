@@ -4707,7 +4707,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           onMouseLeave: scheduleHide,
         },
           h("span", { className: "sl-chip-name" }, "💰收益"),
-          h("span", { className: "sl-chip-pct " + (detail.today > 0 ? "sl-up" : detail.today < 0 ? "sl-down" : "sl-flat") }, "今" + fmtSigned(detail.today))),
+          h("span", { className: "sl-chip-pct " + (detail.today > 0 ? "sl-up" : detail.today < 0 ? "sl-down" : "sl-flat") }, "今" + fmtSignedExact(detail.today))),
         hover && rect
           ? h("div", {
               className: "sl-root sl-pop" + (props.theme === "light" ? " sl-light" : ""),
@@ -4720,10 +4720,10 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                 h("b", null, fmtSigned0(detail.value))),
               h("div", { className: "sl-pop-head" },
                 h("span", null, "累计收益"),
-                h("b", { className: sign(detail.pnl) }, fmtSigned(detail.pnl) + (detail.pnlPct !== null ? "（" + fmtPct(detail.pnlPct) + "）" : ""))),
+                h("b", { className: sign(detail.pnl) }, fmtSignedExact(detail.pnl) + (detail.pnlPct !== null ? "（" + fmtPct(detail.pnlPct) + "）" : ""))),
               h("div", { className: "sl-pop-head" },
                 h("span", null, "今日收益"),
-                h("b", { className: sign(detail.today) }, fmtSigned(detail.today) + (detail.todayPct !== null ? "（" + fmtPct(detail.todayPct) + "）" : ""))),
+                h("b", { className: sign(detail.today) }, fmtSignedExact(detail.today) + (detail.todayPct !== null ? "（" + fmtPct(detail.todayPct) + "）" : ""))),
               detail.rows.length > 0 ? h("div", { className: "sl-pop-sep" }) : null,
               // 每只持仓：今日盈亏 + 当日涨幅（累计与成本/市值等明细见行悬浮提示）
               detail.rows.map((r) =>
@@ -4737,7 +4737,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
                     + "\n成本 " + (r.cost ? fmtPrice(r.cost) : "—") + " × " + r.qty + " 股 · 现价 " + fmtPrice(r.price) + " · 市值 " + fmtExact(r.mv) + " 元",
                 },
                   h("span", { className: "sl-pop-nm" }, r.name + (r.closed ? "（已清仓）" : "")),
-                  h("span", { className: "sl-pop-pnl " + sign(r.today) }, fmtSigned(r.today) + " " + fmtPrice(r.price) + (r.todayPct !== null ? " " + fmtPct(r.todayPct) : "")))),
+                  h("span", { className: "sl-pop-pnl " + sign(r.today) }, fmtSignedExact(r.today) + " " + fmtPrice(r.price) + (r.todayPct !== null ? " " + fmtPct(r.todayPct) : "")))),
               h("div", { className: "sl-pop-foot" }, "点击管理持仓"),
             )
           : null,
@@ -4761,6 +4761,23 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       return sign + a.toLocaleString("en-US");
     }
     /** 精确金额（无符号 + 千分位，元）：用于市值/成本等恒正金额 */
+    /**
+     * 带符号的**完整**金额（不缩写为万/亿）。
+     *
+     * 用户要求：指数悬浮窗里的收益要显示完整数值，不要进位成"1.23万"。
+     * 收益金额通常在几千到几万区间，缩写后反而看不出准确值
+     * （"1.23万"到底是 12250 还是 12349？）。
+     *
+     * 与 fmtSigned 的区别：后者会按量级切到 万/亿，适合空间紧张的表格单元格；
+     * 这里是给悬浮窗浮层/胶囊用的，优先精确。
+     */
+    function fmtSignedExact(v) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "--";
+      const sign = n > 0 ? "+" : n < 0 ? "-" : "";
+      return sign + Math.round(Math.abs(n)).toLocaleString("en-US");
+    }
+
     function fmtExact(v) {
       const n = Number(v);
       if (!Number.isFinite(n)) return "--";
