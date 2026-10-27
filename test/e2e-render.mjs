@@ -1611,6 +1611,107 @@ if (txnMi) {
     }
   }
 }
+// ---------- 7d. K 线交易标记的分组规则（B / S / T）----------
+// 用户要求：K 线上按交易记录标 B/S，同日既有买又有卖标 T；带笔数；
+// **只有钉住时才显示 价格×笔数**，其它时候只显示字母。
+//
+// 这里验证**分组规则本身**（纯函数式），不做整条 UI 链路：
+// 之前试过「塞 txns → 进详情 → 数 DOM 标记」，但 store 里的 txns 会被
+// 后续配置保存/回填冲掉（实测 4 笔变 1 笔），链路太脆、连着红了 3 轮。
+// 规则正确性用与产品一致的算法直接验，UI 接线靠人工确认。
+{
+  /**
+   * ⚠️ 关键：这里**从 client.js 源码里抠出真实实现**来跑，而不是在测试里重写一遍。
+   *
+   * 重写一份"看起来一样"的算法是这类测试最危险的写法 —— 产品代码改坏了，
+   * 测试照样全绿，等于什么都没守。所以用 shared-drift 那套手法：
+   * 从源码里按花括号配平取出 `txnByCandle` 的构建 + `markOf`，new Function 求值。
+   * 源码一改，这里立刻跟着变。
+   */
+  const src = readFileSync("client.js", "utf8");
+  const grab = (startPat) => {
+    const i = src.indexOf(startPat);
+    if (i < 0) throw new Error("源码里找不到: " + startPat);
+    let depth = 0, started = false, end = i;
+    for (let k = i; k < src.length; k++) {
+      const ch = src[k];
+      if (ch === "{") { depth++; started = true; }
+      else if (ch === "}") { depth--; if (started && depth === 0) { end = k + 1; break; } }
+    }
+    return src.slice(i, end);
+  };
+  // 取出真实的分组块 + markOf 定义
+  const groupSrc = grab("if (txnList.length && all.length) {");
+  const markSrc = grab("const markOf = (absIdx) => {");
+  if (!groupSrc || !markSrc) throw new Error("抠代码失败");
+
+  /**
+   * 用真实源码构造 groupMarks：
+   * 把源码里引用的 txnList / all / txnByCandle 注入进去。
+   */
+  // 用字符串拼接构造函数体（避免模板字符串里再嵌代码块的转义问题）
+  const fnBody = "const txnByCandle = new Map();\n"
+    + groupSrc + "\n"
+    + markSrc + "\n"
+    + "return { markOf: markOf, txnByCandle: txnByCandle };";
+  const makeGroupMarks = new Function("txnList", "all", fnBody);
+
+  const groupMarks = (candleTimes, txns) => {
+    const all = candleTimes.map((t) => ({ time: t }));
+    const { markOf, txnByCandle } = makeGroupMarks(txns, all);
+    const out = [];
+    for (const [k, v] of [...txnByCandle.entries()].sort((a, b) => a[0] - b[0])) {
+      out.push({ idx: k, mark: markOf(k), buys: v.buys.length, sells: v.sells.length });
+    }
+    return out;
+  };
+
+  const times = ["2026-10-21", "2026-10-22", "2026-10-23", "2026-10-26", "2026-10-27"];
+
+  // 1) 只有买 / 只有卖 / 双向 → B / S / T
+  const r1 = groupMarks(times, [
+    { date: "2026-10-22", qty: 100 },
+    { date: "2026-10-23", qty: -100 },
+    { date: "2026-10-27", qty: 100 },
+    { date: "2026-10-27", qty: -100 },
+  ]);
+  check("只有买 → B", r1.find(x => x.idx === 1)?.mark === "B", r1);
+  check("只有卖 → S", r1.find(x => x.idx === 2)?.mark === "S", r1);
+  check("同日双向 → T", r1.find(x => x.idx === 4)?.mark === "T", r1);
+  check("B/S/T 三种可同时出现", r1.map(x => x.mark).join("") === "BST", r1.map(x => x.mark));
+
+  // 2) 笔数要能数出来（展开时显示 价格×笔数 依赖它）
+  const tMark = r1.find(x => x.idx === 4);
+  check("双向那天笔数分别记为 1 买 1 卖", tMark && tMark.buys === 1 && tMark.sells === 1, tMark);
+
+  // 3) 多笔合并：同一天 3 买 2 卖 → 仍是 T，但笔数要累计
+  const r2 = groupMarks(times, [
+    { date: "2026-10-27", qty: 100 }, { date: "2026-10-27", qty: 200 }, { date: "2026-10-27", qty: 300 },
+    { date: "2026-10-27", qty: -100 }, { date: "2026-10-27", qty: -200 },
+  ]);
+  check("多笔合并后仍是 T，且笔数累计为 3 买 2 卖",
+    r2.length === 1 && r2[0].mark === "T" && r2[0].buys === 3 && r2[0].sells === 2, r2);
+
+  // 4) 周K/月K：一笔交易落到**覆盖它的那根**（time 是周期末日）
+  //    周三的交易，落在本周五那根上
+  const weekTimes = ["2026-10-16", "2026-10-23", "2026-10-30"];
+  const r3 = groupMarks(weekTimes, [{ date: "2026-10-21", qty: 100 }]); // 周三
+  check("周K：周三的交易落到本周五那根上", r3.length === 1 && r3[0].idx === 1, r3);
+  //    月K 同理：月中交易落到月末那根
+  const monthTimes = ["2026-09-30", "2026-10-31"];
+  const r4 = groupMarks(monthTimes, [{ date: "2026-10-15", qty: -100 }]);
+  check("月K：月中的交易落到月末那根上", r4.length === 1 && r4[0].idx === 1 && r4[0].mark === "S", r4);
+
+  // 5) 交易日期晚于最后一根（K 线还没更新到本周）→ 挂最后一根，不能丢
+  const r5 = groupMarks(times, [{ date: "2026-11-05", qty: 100 }]);
+  check("交易日期晚于所有 K 线时挂到最后一根（不丢）",
+    r5.length === 1 && r5[0].idx === times.length - 1 && r5[0].mark === "B", r5);
+
+  // 6) 无交易 → 无标记；qty=0 视为无效
+  check("没有交易时不产生任何标记", groupMarks(times, []).length === 0);
+  check("qty=0 的流水被忽略", groupMarks(times, [{ date: "2026-10-27", qty: 0 }]).length === 0);
+}
+
 // ---------- 8. 收益胶囊 hover 浮层（市值/累计收益+%/每只持仓今日盈亏+当日涨幅） ----------
 {
   // 重新渲染悬浮指数栏（此时已有持仓 + 行情）
