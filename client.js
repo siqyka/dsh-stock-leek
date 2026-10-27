@@ -2681,8 +2681,27 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           const c = candles[i];
           if (!c) continue;
           const x = xOf(i);
+          /**
+           * 标记**不贴 K 线**，而是画在独立的标记带里：
+           *   S → 上带（价格区上方，y 固定为 padT 之内）
+           *   B/T → 下带（价格区下方、成交量区之上，y 固定）
+           *
+           * 这样无论 K 线高低，标记都排成整齐的一行/一行，
+           * 不会因为某根 K 线特别长而把标记推到别处、也不会压在邻线上。
+           */
           const isBuySide = mk !== "S"; // B / T 放下方，S 放上方
-          const yBase = isBuySide ? yOf(c.low) + 10 : yOf(c.high) - 4;
+          /**
+           * 标记**跟随该根 K 线**（按它的高价/低价定位），但与 K 线保留间距。
+           *
+           * 间距从原来的「低点 +10 / 高点 -4」拉到「+16 / -10」：
+           * - 原值太贴，标记会压在相邻 K 线的实体上（用户反馈）
+           * - 16px ≈ 两根字号的高度，足够和本根 K 线、邻根 K 线都分开
+           * 最后仍 clamp 进价格区，避免超出画布被裁。
+           */
+          const GAP = 16;
+          const yBase = isBuySide
+            ? yOf(c.low) + GAP
+            : yOf(c.high) - (GAP - 6);
           const color = mk === "B" ? "var(--sl-up)" : mk === "S" ? "var(--sl-down)" : "var(--sl-warn)";
           const slot = txnByCandle.get(abs);
           const isSel = selAbs === abs;
@@ -2690,7 +2709,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             // 常态：只画字母
             txnEls.push(h("text", {
               key: "tx" + abs,
-              x: x, y: clamp(yBase, padT + 8, H - padB - VH - 4),
+              x: x, y: clamp(yBase, padT + 6, padT + priceH - 2),
               fontSize: 8, fontWeight: 700, fill: color, textAnchor: "middle",
               "data-sltxn": mk,
             }, mk));
@@ -2707,10 +2726,17 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             const lines = [];
             if (slot.buys.length) lines.push({ k: "B", c: "var(--sl-up)", avg: avg(slot.buys), n: slot.buys.length });
             if (slot.sells.length) lines.push({ k: "S", c: "var(--sl-down)", avg: avg(slot.sells), n: slot.sells.length });
+            /**
+             * 展开态：同样跟随该根 K 线，多行向下（或向上）依次排开。
+             * 有卖点时整体上移，避免两行都堆在下方压到成交量区。
+             */
+            const gTop = isBuySide
+              ? clamp(yBase, padT + 6, padT + priceH - 20)
+              : clamp(yBase - 9, padT + 6, padT + priceH - 20);
             txnEls.push(h("g", { key: "txg" + abs, "data-sltxn": mk },
               lines.map((ln, li) => h("text", {
                 key: ln.k,
-                x: x, y: clamp(yBase + li * 9, padT + 8, H - padB - VH - 4),
+                x: x, y: gTop + li * 9,
                 fontSize: 8, fontWeight: 700, fill: ln.c, textAnchor: "middle",
               }, ln.k + (ln.avg !== null ? " " + fmtPrice(ln.avg) : "") + "×" + ln.n))));
           }
