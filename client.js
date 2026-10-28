@@ -1230,6 +1230,17 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       const body = name + " " + cond + "，现价 " + fmtPrice(ev.price);
       const hidden = typeof document !== "undefined" && document.hidden;
 
+      /**
+       * 跨标签页去重：**必须在所有通道之前**。
+       *
+       * 曾经只在「隐藏 + 已授权系统通知」时才对系统通知去重，而应用内弹窗
+       * （下面的 pushAlertPopup）是无条件执行的 —— 于是开 N 个标签页时，
+       * 同一条预警会收到 N 次、弹 N 个窗，看起来就是「一天触发了好多次」。
+       * 而 Host 侧的账本其实只记了一次（它按交易日去重，本来是对的）。
+       */
+      const mine = await claimEvent(String(ev.ruleId || "") + ":" + String(ev.at || ""));
+      if (!mine) return; // 另一个标签页已经弹过了
+
       // ① 应用内弹窗：唯一的**保证通道**，可见与否都弹
       pushAlertPopup(ev);
 
@@ -1237,12 +1248,8 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       //    top 处再飘一条「⚠ 苹果 现价上穿…」属于重复打扰（截图反馈）。
       //    去掉后预警只剩「弹窗」一种可见通道（+可选系统通知）。
 
-      // ③ 系统通知：能力具备就发（用户点过「开启桌面通知」）；隐藏时去重防三连弹
+      // ③ 系统通知：能力具备就发（用户点过「开启桌面通知」）
       if (notifyPermission() === "granted") {
-        if (hidden) {
-          const mine = await claimEvent(String(ev.ruleId || "") + ":" + String(ev.at || ""));
-          if (!mine) return; // 另一个标签页已弹过
-        }
         try {
           const n = new Notification("🔔 预警 · " + name, { body, tag: "sl-" + (ev.ruleId || "") + "-" + (ev.at || "") });
           n.onclick = () => { try { window.focus(); } catch { /* ignore */ } openAlertPanel(); };
@@ -1278,7 +1285,16 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         // 隐藏期间不推进，否则弹窗会在用户看不见时过期——那等于没弹。
         shownAt: hidden ? 0 : Date.now(),
       };
-      const list = (state.alertPopups || []).filter((x) => x.id !== item.id);
+      /**
+       * 同一条事件重复投递 → 直接忽略，不要"删了再加"。
+       *
+       * id 是 `ruleId:at`，同一触发时刻就是同一件事。之前用
+       * `filter(x => x.id !== item.id)` 之后再 push —— 看着像去重，实际是
+       * **把旧卡片挪到队尾**：用户看到"又弹了一次"（而且倒计时被重置、
+       * 卡片永远关不掉）。SSE 断线重连、多标签页同时收流都会走这条路径。
+       */
+      if ((state.alertPopups || []).some((x) => x.id === item.id)) return;
+      const list = (state.alertPopups || []).slice();
       if (list.length >= ALERT_POPUP_MAX) {
         // 满了：叠加到**最早那条**（index 0），不新增卡片
         const head = list[0];
