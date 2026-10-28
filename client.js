@@ -537,9 +537,13 @@ window.__ModuleLoader__.load({
       return n >= 100 ? n.toFixed(2) : n.toFixed(3);
     }
     function fmtPct(v) {
-      const n = Number(v);
+      let n = Number(v);
       if (!Number.isFinite(n)) return "--";
-      return (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+      // -0.00 会被 n >= 0 判成真 → 显示成 "+0.00%"，而实际是微跌（腾讯盘前给 [32] = -0.00）。
+      // 先按显示精度归零，再决定符号，否则同一行里会出现「-0.100  +0.00%」的自相矛盾。
+      n = Number(n.toFixed(2));
+      if (n === 0) return "0.00%";
+      return (n > 0 ? "+" : "") + n.toFixed(2) + "%";
     }
     /** 涨速/换手等纯百分比数值（无正号，保留 2 位 + %）；null/NaN → — */
     function fmtTurn(v) {
@@ -642,6 +646,28 @@ window.__ModuleLoader__.load({
       return new Date();
     }
     /** 该市场当前是否交易时段（本地近似判断，用于状态点） */
+    /**
+     * 交易日、但**尚未开盘**（含 9:15–9:25 竞价）。
+     *
+     * 用来区分两种"没数据"：
+     *   - 盘前：今天有交易，只是还没开始 → 该说"未开盘"
+     *   - 周末/假日：本来就不交易 → 才说"休市"
+     *
+     * 之前两种情况都显示"休市或该市场不支持"，交易日早上会误导用户。
+     */
+    function isPreOpen(code, now) {
+      now = now || marketNow();
+      const c = String(code || "").toLowerCase();
+      const wd = now.getDay();
+      if (wd === 0 || wd === 6) return false; // 周末不算"未开盘"，是休市
+      const t = marketMinutes(c, now);
+      const wins = marketWindows(c);
+      if (!wins.length) return false;
+      const first = wins[0][0];
+      // 竞价从开盘前 15 分钟算起（A股 9:15）
+      return t >= first - 15 && t < first;
+    }
+
     function isMarketOpen(code, now) {
       now = now || marketNow();
       const c = String(code || "").toLowerCase();
@@ -2195,12 +2221,18 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
 
     // ================================================================ 组件：图表（自绘 SVG）
     function MinuteChart(props) {
-      const { points, prevClose, color, width, height } = props;
+      const { points, prevClose, color, width, height, code } = props;
       const W = width || 404;
       const H = height || 170;
       const padL = 4, padR = 46, padT = 8, padB = 16;
       if (!Array.isArray(points) || points.length < 2) {
-        return h("div", { className: "sl-empty" }, "暂无分时数据（休市或该市场不支持）");
+        // 三种情形分开说，否则交易日早上会显示"休市"，误导用户以为今天不交易
+        const msg = isPreOpen(code)
+          ? "尚未开盘 · 开盘后自动显示"
+          : isMarketOpen(code)
+            ? "分时数据加载中…"
+            : "暂无分时数据（休市或该市场不支持）";
+        return h("div", { className: "sl-empty" }, msg);
       }
       let min = Infinity, max = -Infinity;
       for (const p of points) { if (p.p < min) min = p.p; if (p.p > max) max = p.p; }
@@ -2298,14 +2330,21 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       // 这样每次行情推送（按设置的刷新间隔）曲线末端都会跟着动，
       // 不必等 /minute 重拉——曲线是「随行情刷新」的，不是「随分时刷新」的。
       const quotes = (props.quotes) || {};
+      // 三态区分：盘前 / 盘中加载中 / 真休市（否则交易日早上会误报"休市"）
+      const emptyMsg = (() => {
+        const c = (rows[0] && rows[0].code) || "";
+        if (c && isPreOpen(c)) return "尚未开盘 · 开盘后自动显示今日盈亏走势";
+        if (c && isMarketOpen(c)) return "盈亏曲线加载中…";
+        return "暂无当日盈亏曲线（休市或该市场不支持分时）";
+      })();
       if (!rows.length || !rows.some((r) => r.series && r.series.length >= 2)) {
-        return h("div", { className: "sl-empty" }, "暂无当日盈亏曲线（休市或该市场不支持分时）");
+        return h("div", { className: "sl-empty" }, emptyMsg);
       }
       // 按时间对齐各持仓的分时点（各市场交易时段可能不同，取并集后逐点求和）
       const timeSet = new Set();
       for (const r of rows) for (const pt of r.series || []) timeSet.add(pt.t);
       const times = [...timeSet].sort();
-      if (times.length < 2) return h("div", { className: "sl-empty" }, "暂无当日盈亏曲线（休市或该市场不支持分时）");
+      if (times.length < 2) return h("div", { className: "sl-empty" }, emptyMsg);
       // 每股价格 → 该分钟价格（取不晚于该分钟的最后一个点）
       const at = (r, t) => {
         const s = r.series || [];
@@ -4093,7 +4132,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         period === "minute"
           ? minute === null
             ? h("div", { className: "sl-empty" }, "分时加载中…")
-            : h(MinuteChart, { points: minute.points, prevClose: minute.prevClose, color: col, height: 180 })
+            : h(MinuteChart, { points: minute.points, prevClose: minute.prevClose, color: col, height: 180, code: code })
           : kline === null
             ? h("div", { className: "sl-empty" }, "K线加载中…")
             : h(KlineChart, { candles: kline.candles, error: kline.error, symbol: code, period: period, height: 200, riseColor: cfg ? cfg.riseColor : null, fallColor: cfg ? cfg.fallColor : null, ma: maList, cost: pos ? pos.cost || null : null, onCandle: setCandle });

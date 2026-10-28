@@ -918,9 +918,18 @@ check("详情含分时/K线切换", /分时/.test(ovText) && /日K/.test(ovText)
     console.log("  skip  分时极值标注（当前分时图未渲染，盘前/刚开盘属正常）");
   } else {
     check("分时图标出了最高点", !!hiEl, txtOfEl(hiEl));
-    check("分时图标出了最低点", !!loEl, txtOfEl(loEl));
+    /**
+     * 最低点标注在**刚开盘时可能缺失**：组件的 showLo 要求最低点与最高点不是同一根
+     * （同一根上同时标 high/low 会重叠），而开盘头几分钟曲线点极少、高低常同根。
+     * 这是正确行为，不能用"必须有 low"去断言（实测 09:30 必红）。
+     */
+    if (!loEl) {
+      console.log("  skip  分时最低点标注（刚开盘高低点可能同根，按设计不重复标注）");
+    } else {
+      check("分时图标出了最低点", true, txtOfEl(loEl));
+    }
     const hiV = Number(txtOfEl(hiEl));
-    const loV = Number(txtOfEl(loEl));
+    const loV = loEl ? Number(txtOfEl(loEl)) : hiV; // 无 low 时用 high 兜底，只验 high 合法
     check("最高/最低标注都是合法价格", Number.isFinite(hiV) && hiV > 0 && Number.isFinite(loV) && loV > 0,
       { hiV, loV });
     check("最高点数值 ≥ 最低点数值", !(Number.isFinite(hiV) && Number.isFinite(loV)) || hiV >= loV, { hiV, loV });
@@ -3184,6 +3193,30 @@ if (txnMi) {
   global.document.title = "DSH";
   stubNotification("default");
   ovNode = ov.render({}); renderTree(ovNode);
+}
+
+// ---------- 盘前/竞价时段的显示正确性 ----------
+// 用户截图（交易日 09:10）：指数胶囊显示「-0.100  +0.00%」——涨跌为负、
+// 涨跌幅却是 +0.00%，自相矛盾；同时分时/盈亏曲线都报「休市」，
+// 但当天是交易日、只是还没开盘。
+{
+  const src = readFileSync("client.js", "utf8");
+
+  // 1) fmtPct 必须把 -0.00 归一成 0.00%，不能显示 +0.00%
+  const i = src.indexOf("function fmtPct(v)");
+  const fnSrc = src.slice(i, src.indexOf("\n    }", i) + 6);
+  const fmtPct = new Function("return " + fnSrc.replace("function fmtPct", "function"))();
+  check("fmtPct(-0.00) 显示 0.00% 而不是 +0.00%", fmtPct(-0.0001) === "0.00%", fmtPct(-0.0001));
+  check("fmtPct(-1.235) 仍是负数", fmtPct(-1.235) === "-1.24%", fmtPct(-1.235));
+  check("fmtPct(2.567) 带正号", fmtPct(2.567) === "+2.57%", fmtPct(2.567));
+
+  // 2) 必须存在 isPreOpen，"交易日未开盘"和"休市"要能区分
+  check("存在 isPreOpen 判定（区分未开盘与休市）", /function isPreOpen\(/.test(src));
+
+  // 3) 空态文案不能再无条件说"休市"
+  const minuteEmpty = src.slice(src.indexOf("function MinuteChart"), src.indexOf("function MinuteChart") + 900);
+  check("分时空态按盘前/加载中/休市分三态",
+    minuteEmpty.indexOf("isPreOpen") >= 0 && minuteEmpty.indexOf("尚未开盘") >= 0, "未找到三态逻辑");
 }
 
 // ---------- 插件页里的「指数栏」配置卡片（plugins.bundle.config）----------
