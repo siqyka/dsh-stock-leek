@@ -2352,13 +2352,47 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         for (const pt of s) { if (pt.t <= t) v = pt.p; else break; }
         return v;
       };
+      /**
+       * 计算某只持仓在时刻 t 的「今日盈亏」——**只计入 t 之前已发生的流水**。
+       *
+       * 原来的实现直接用收盘后的 r.qty / r.sellAmt / r.buyAmt / r.heldYest
+       * 套到每个历史分钟上，导致加仓/减仓后的数字倒灌回更早的时间点：
+       * 用户 10:30 加仓，10:00 那个点的盈亏也跟着变了（用户反馈的问题）。
+       *
+       * 正确口径（与 todayPnl 的现金流公式同源，只是持仓量取"当时"的值）：
+       *
+       *   pnl(t) = qty(t) × price(t) + sellAmt(t) − buyAmt(t) − heldYest(t) × yest
+       *
+       *   qty(t)      = 昨仓 + 截至 t 的净买卖股数
+       *   heldYest(t) = 昨仓（固定，指昨天收盘时的持仓，与 t 无关）
+       *
+       * 昨仓 = 当前持仓 − 当日净流水（这个减式与时间无关，可直接用汇总值）。
+       */
+      const pnlAt = (r, t, price) => {
+        if (price === null || r.yest === null || !Number.isFinite(r.yest)) return null;
+        const heldYest = r.heldYest;
+        if (!Array.isArray(r.txnAt) || !r.txnAt.length) {
+          // 当日无流水：qty 恒等于昨仓，公式退化为 (price − yest) × qty
+          return (price - r.yest) * heldYest;
+        }
+        let qty = heldYest;
+        let buyAmt = 0, sellAmt = 0;
+        for (const x of r.txnAt) {
+          // 无时间的流水视为"当日已发生"（不能凭空丢一笔）
+          if (x.t !== null && x.t > t) continue;
+          qty += x.qty;
+          if (x.qty > 0) buyAmt += x.price * x.qty;
+          else sellAmt += x.price * -x.qty;
+        }
+        return qty * price + sellAmt - buyAmt - heldYest * r.yest;
+      };
+
       const pts = times.map((t) => {
         let sum = 0;
         for (const r of rows) {
           const p = at(r, t);
-          if (p !== null && r.yest !== null && Number.isFinite(r.yest)) {
-            sum += p * r.qty + r.sellAmt - r.buyAmt - r.heldYest * r.yest;
-          }
+          const v = pnlAt(r, t, p);
+          if (v !== null) sum += v;
         }
         return { t, p: sum };
       });
@@ -2367,14 +2401,18 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       // 用当前报价替换末点价格，使曲线末值 ≡ 持仓页的今日盈亏（同一口径）。
       if (pts.length) {
         let lastSum = 0, any = false;
+        // 末点用最后一个分时的时刻（所有当日流水都已发生），配合实时价
+        const lastT = pts[pts.length - 1].t;
         for (const r of rows) {
           const q = quotes[r.code];
           const live = q && Number.isFinite(q.price) ? q.price : null;
-          if (live === null || r.yest === null || !Number.isFinite(r.yest)) continue;
-          lastSum += live * r.qty + r.sellAmt - r.buyAmt - r.heldYest * r.yest;
+          if (live === null) continue;
+          const v = pnlAt(r, lastT, live);
+          if (v === null) continue;
+          lastSum += v;
           any = true;
         }
-        if (any) pts[pts.length - 1] = { t: pts[pts.length - 1].t, p: lastSum };
+        if (any) pts[pts.length - 1] = { t: lastT, p: lastSum };
       }
       let min = Infinity, max = -Infinity;
       for (const p of pts) { if (p.p < min) min = p.p; if (p.p > max) max = p.p; }
@@ -3232,6 +3270,25 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
             if (yest === null) continue;
             let buyAmt = 0, sellAmt = 0, net = 0;
             for (const t of txns) { net += t.qty; if (t.qty > 0) buyAmt += t.price * t.qty; else sellAmt += t.price * -t.qty; }
+            /**
+             * **逐笔流水**（带时间），供曲线按"当时已发生的交易"逐点计算。
+             *
+             * 为什么不能只传汇总值：qty / buyAmt / sellAmt 都是**收盘后的最终值**，
+             * 套到每个历史分钟上会让"加仓之后的盈亏"倒灌回加仓之前的时间点 ——
+             * 用户看到的是一条整体被抬升/压低的历史曲线（用户反馈的正是这个）。
+             *
+             * 正确口径：t 时刻的盈亏，只计入**时间 <= t** 的流水。
+             * 时间用 HHMM（与分时点的 t 同格式）；缺失时间的流水按"当日已发生"处理
+             * （宁可算进去也不能凭空丢一笔）。
+             */
+            const txnAt = txns.map((t) => {
+              const hm = String(t.time || "").replace(":", "");
+              return {
+                t: /^\d{4}$/.test(hm) ? hm : null,
+                qty: Number(t.qty) || 0,
+                price: Number(t.price) || 0,
+              };
+            });
             // 注意：这里**不存实时价**。curve 只放 /minute 的形状（分钟粒度，很少变）；
             // 实时价由 PnlCurve 在渲染时从 quotes 现取，
             // 这样曲线末端才能跟着刷新间隔每次推送都动，而不是等下次重拉分时才更新。
@@ -3243,6 +3300,7 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
               heldYest: (p.qty || 0) - net,
               buyAmt,
               sellAmt,
+              txnAt,
             });
           }
           setCurve(rows);

@@ -3195,6 +3195,57 @@ if (txnMi) {
   ovNode = ov.render({}); renderTree(ovNode);
 }
 
+// ---------- 盈亏曲线：加仓/减仓后，操作时刻**之前**的点不变 ----------
+// 用户反馈：加仓减仓后，时间点之前的数据也跟着变了。
+// 根因：旧实现把收盘后的汇总值（qty / buyAmt / sellAmt）套到每个历史分钟，
+// 于是"10:30 加仓"会把 10:00 那个点也改掉。
+// 正确口径：t 时刻只计入**时间 <= t** 的流水。
+//
+// 这里直接从 client.js 里抠出真实的 pnlAt 实现来测（不在测试里重写一份，
+// 否则产品代码改坏了测试照样绿）。
+{
+  const src = readFileSync("client.js", "utf8");
+  const i = src.indexOf("const pnlAt = (r, t, price) => {");
+  if (i < 0) throw new Error("源码里找不到 pnlAt");
+  // 花括号配平取出整个箭头函数
+  let depth = 0, started = false, end = i;
+  for (let k = i; k < src.length; k++) {
+    const ch = src[k];
+    if (ch === "{") { depth++; started = true; }
+    else if (ch === "}") { depth--; if (started && depth === 0) { end = k + 1; break; } }
+  }
+  const fnSrc = src.slice(i + "const pnlAt = ".length, end);
+  const pnlAt = new Function("return " + fnSrc)();
+
+  // 场景：昨仓 1000 股、昨收 10；10:30 加仓 1000 股 @ 10.2（当日净 +1000 → heldYest = 1000）
+  const withTxn = {
+    yest: 10,
+    heldYest: 1000,
+    txnAt: [{ t: "1030", qty: 1000, price: 10.2 }],
+  };
+  const noTxn = { yest: 10, heldYest: 1000, txnAt: [] };
+
+  // 10:00（加仓之前）：持仓仍视为 1000 股 → (10.5-10)*1000 = 500
+  const at10 = pnlAt(withTxn, "1000", 10.5);
+  check("加仓后，加仓前的时间点盈亏不变（仍按当时持仓算）",
+    Math.abs(at10 - 500) < 0.01, { got: at10, want: 500 });
+  // 与"当天根本没有这笔流水"时的同一时刻取值必须一致
+  const at10NoTxn = pnlAt(noTxn, "1000", 10.5);
+  check("加仓前后，同一历史时间点的值完全一致",
+    Math.abs(at10 - at10NoTxn) < 0.01, { withTxn: at10, noTxn: at10NoTxn });
+
+  // 11:00（加仓之后）：qty=2000，buyAmt=10200 → 2000*10.5 - 10200 - 1000*10 = 800
+  const at11 = pnlAt(withTxn, "1100", 10.5);
+  check("加仓后，加仓之后的时间点按新持仓算",
+    Math.abs(at11 - 800) < 0.01, { got: at11, want: 800 });
+
+  // 减仓同理：昨仓 2000、10:30 卖 1000 @10.2
+  const sellCase = { yest: 10, heldYest: 2000, txnAt: [{ t: "1030", qty: -1000, price: 10.2 }] };
+  const sellBefore = pnlAt(sellCase, "1000", 10.5);   // (10.5-10)*2000 = 1000
+  const sellAfter = pnlAt(sellCase, "1100", 10.5);    // 1000*10.5 + 10200 - 2000*10 = 700
+  check("减仓后，减仓前的点仍按原持仓算", Math.abs(sellBefore - 1000) < 0.01, sellBefore);
+  check("减仓后，减仓后的点按新持仓算", Math.abs(sellAfter - 700) < 0.01, sellAfter);
+}
 // ---------- 盘前/竞价时段的显示正确性 ----------
 // 用户截图（交易日 09:10）：指数胶囊显示「-0.100  +0.00%」——涨跌为负、
 // 涨跌幅却是 +0.00%，自相矛盾；同时分时/盈亏曲线都报「休市」，
