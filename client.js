@@ -1921,6 +1921,14 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
       const b = replayPosition(p.baseQty, p.baseCost, p.txns, p.baseAt);
       p.qty = b.qty;
       p.cost = b.cost;
+      /**
+       * 摊薄法下 cost 只是**单价**，卖出已经冲减过成本总额，
+       * 所以 (现价 − cost) × qty 天然等于「总盈亏（含已实现）」。
+       * 但清仓后 qty=0 这个式子归零，需要单独把已实现部分记下来
+       * （否则「累计」会在清仓瞬间从 +X 跳成 0）。
+       */
+      p.costTotal = b.total;
+      p.realized = b.realized;
     }
     /**
      * 从交易流水重算「持仓股数 + 成本价」（加权平均法）。
@@ -1932,23 +1940,32 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
      */
     function costBasisFromTxns(txns) {
       let qty = 0;
-      let cost = 0;
+      let total = 0;    // 成本总额（元），不是单价 —— 摊薄法必须按总额算
+      let realized = 0; // 已实现盈亏（卖出收入 − 当期成本）
       for (const t of txns || []) {
         const q = Number(t && t.qty);
         const price = Number(t && t.price);
         if (!Number.isFinite(q) || q === 0 || !Number.isFinite(price) || price <= 0) continue;
         if (q > 0) {
-          const newQty = qty + q;
-          // qty 为 0 时 `cost*qty` 自然是 0，清仓后重新建仓不会被旧成本污染
-          cost = Math.round(((cost * qty + price * q) / newQty) * 10000) / 10000;
-          qty = newQty;
+          total += price * q;
+          qty += q;
         } else {
-          qty = Math.max(0, qty + q);
-          // 刻意不清零 cost：realizedPnl 要用它算已实现盈亏，
-          // 清零会让「清仓瞬间累计盈亏暴涨」（实测 37000 → 140000）
+          const sellQty = Math.min(qty, -q);
+          if (sellQty <= 0) continue;
+          const unit = qty > 0 ? total / qty : 0;
+          const costOfSold = unit * sellQty;
+          const income = price * sellQty;
+          realized += income - costOfSold;
+          // 摊薄：卖出收入从成本总额里冲减（不是只冲成本价×股数）
+          total -= income;
+          qty -= sellQty;
+          if (qty <= 0) { qty = 0; total = 0; }
+          // 卖价远高于成本时 total 可能变负 → 钳到 0（负成本无意义）
+          else if (total < 0) total = 0;
         }
       }
-      return { qty, cost };
+      const cost = qty > 0 ? Math.round((total / qty) * 10000) / 10000 : 0;
+      return { qty, cost, total: Math.round(total * 100) / 100, realized: Math.round(realized * 100) / 100 };
     }
     /**
      * 基准（最后一次手动修正）+ 交易流水 → 当前持仓。lib/shared.js 的内联副本。
@@ -2054,11 +2071,26 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
      *   卖出前 (12−10)×100 = 200；清仓后 1200 − 0 − 100×10 = 200
      * lib/shared.js 的内联副本，两端由 test/shared-drift.mjs 对拍。
      */
+    /**
+     * 已实现盈亏 —— **摊薄法下直接读 applyReplay 存下的值**。
+     *
+     * 为什么不再自己算一遍：旧实现用 `sellAmt - buyAmt - heldFromYesterday × cost`，
+     * 而摊薄法把 cost 冲减过（清仓后 cost=0），于是式子退化成
+     * `卖出收入 − 买入金额`，把"本金"也算成了盈利 —— 实测清仓后
+     * 累计盈亏从 −265,886 跳到 +710,000，方向都反了。
+     *
+     * costBasisFromTxns 里已经逐笔累计了 realized（卖出收入 − 当期成本），
+     * 直接用它才是自洽的。
+     */
     function realizedPnl(p, q) {
       if (!q || !Number.isFinite(q.price)) return 0;
       const today = quoteDate(q);
       const txns = (p.txns || []).filter((t) => t.date === today);
       if (txns.length === 0) return 0;
+      // 有摊薄法存下的权威值就直接用（applyReplay 每次重算都会更新它）。
+      // 没有时（老配置 / 未重算过）退回旧公式，保证兼容 —— 不能返回 0，
+      // 那会把已实现盈亏凭空抹掉。
+      if (Number.isFinite(p.realized)) return Number(p.realized) || 0;
       const qty = p.qty || 0;
       const cost = Number.isFinite(p.cost) ? p.cost : 0;
       let net = 0, buyAmt = 0, sellAmt = 0;
@@ -3317,6 +3349,9 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
         const mv = price !== null && qty ? price * qty : 0;
         // 清仓（qty=0）：市值与浮盈都归零，但累计盈亏要接住已实现部分，
         // 否则「累计」会在清仓瞬间从 +X 跳成 0，与顶部总览口径也对不上。
+        // 摊薄法：(现价 − 摊薄成本) × 股数 **已经包含已实现盈亏**，
+        // 因为卖出收入已经从成本总额里冲减过了 —— 不能再叠加 realizedPnl（会翻倍）。
+        // 只有清仓时 qty=0 式子归零，才用流水算出的已实现盈亏接住。
         const rp = qty ? 0 : realizedPnl(p, q);
         const pnl = cost && qty && price !== null ? (price - cost) * qty : rp;
         const pnlPct = cost && price !== null && qty ? ((price - cost) / cost) * 100 : null;
@@ -4762,9 +4797,13 @@ const CFG_CHANNEL = "dsh-stock-leek.config";
           continue;
         }
         has = true;
-        cost += c * qty;
+        // 用**成本总额**而不是「单价 × 股数」：摊薄后两者相等，但 cost 是四舍五入到
+        // 4 位小数的单价，乘回股数会引入几分钱误差；总额是精确值。
+        cost += Number.isFinite(p.costTotal) ? p.costTotal : c * qty;
         value += q.price * qty;
       }
+      // 摊薄法：持仓部分的 (市值 − 成本总额) 已含该股已实现盈亏，
+      // realized 只累加**已清仓**那部分的已实现（否则重复计入）
       const pnl = value - cost + realized;
       return { has, cost, value, today, realized, pnl, pnlPct: cost > 0 ? (pnl / cost) * 100 : null };
     }

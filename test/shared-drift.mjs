@@ -287,17 +287,18 @@ for (const [name, samples] of FORMATTERS) {
     [[{ qty: 1000, price: 10 }], { qty: 1000, cost: 10 }],
     // 两笔买入：加权平均
     [[{ qty: 1000, price: 10 }, { qty: 1000, price: 20 }], { qty: 2000, cost: 15 }],
-    // 买入后部分卖出：成本不变、股数减少
-    [[{ qty: 1000, price: 10 }, { qty: -400, price: 12 }], { qty: 600, cost: 10 }],
-    // 清仓后再买：新仓成本**只由新买入决定**，不被旧成本污染
+    // 买入后部分卖出（**摊薄法**）：卖出收入冲减成本总额
+    //   成本总额 10000 − 卖出收入 4800 = 5200，剩 600 股 → 成本价 8.6667
+    [[{ qty: 1000, price: 10 }, { qty: -400, price: 12 }], { qty: 600, cost: 8.6667 }],
+    // 清仓后再买：新仓成本**只由新买入决定**（清仓时 qty/total 归零，不污染）
     [[{ qty: 1000, price: 10 }, { qty: -1000, price: 12 }, { qty: 500, price: 20 }], { qty: 500, cost: 20 }],
     // 空流水
     [[], { qty: 0, cost: 0 }],
-    // 卖出多于持仓（脏数据）：股数夹到 0，**成本保留**——realizedPnl 还要用它算已实现盈亏，
-    // 清零会导致「清仓瞬间累计盈亏暴涨」（实测 37000 → 140000）
-    [[{ qty: 100, price: 10 }, { qty: -300, price: 12 }], { qty: 0, cost: 10 }],
-    // 清仓（不留超卖）后成本同样保留
-    [[{ qty: 100, price: 10 }, { qty: -100, price: 12 }], { qty: 0, cost: 10 }],
+    // 卖出多于持仓（脏数据）：股数夹到 0；**清仓后 cost 归 0**（摊薄法下没有剩余股，
+    // 单价无从谈起），已实现盈亏改由返回的 realized 字段承担
+    [[{ qty: 100, price: 10 }, { qty: -300, price: 12 }], { qty: 0, cost: 0 }],
+    // 清仓（不留超卖）后 cost 同样归 0
+    [[{ qty: 100, price: 10 }, { qty: -100, price: 12 }], { qty: 0, cost: 0 }],
   ];
   const bad = [];
   for (const [txns, want] of cases) {
@@ -306,7 +307,7 @@ for (const [name, samples] of FORMATTERS) {
     const okCost = Math.abs(got.cost - want.cost) < 1e-6;
     if (!okQty || !okCost) bad.push({ txns, want, got });
   }
-  check("costBasisFromTxns 口径正确（含清仓后重买、超卖夹紧）", bad.length === 0, bad.slice(0, 3));
+  check("costBasisFromTxns 口径正确（摊薄法：卖出冲减成本总额）", bad.length === 0, bad.slice(0, 3));
 
   // 用户实际流水：超卖部分被夹紧，但**结果必须自洽**（qty 不为负、成本落在买入价区间内）
   const real = [
@@ -316,9 +317,11 @@ for (const [name, samples] of FORMATTERS) {
   const r = cb(real);
   const buyPrices = real.filter((t) => t.qty > 0).map((t) => t.price);
   check("用户流水：qty 不为负（超卖被夹紧）", r.qty >= 0, r);
-  check("用户流水：成本落在买入价区间内（不再低于最低买入价）",
-    r.qty === 0 ? r.cost === 0 : (r.cost >= Math.min(...buyPrices) - 1e-6 && r.cost <= Math.max(...buyPrices) + 1e-6),
-    { cost: r.cost, minBuy: Math.min(...buyPrices), maxBuy: Math.max(...buyPrices) });
+  // 摊薄法下成本价**可以低于历史最低买入价**（卖出盈利冲减了剩余成本），
+  // 所以不能再断言"落在买入价区间内"，改为断言"非负且有限"。
+  check("用户流水：成本价非负且有限（摊薄法允许低于买入价）",
+    r.qty === 0 ? r.cost === 0 : (Number.isFinite(r.cost) && r.cost >= 0),
+    { cost: r.cost, minBuy: Math.min(...buyPrices) });
 
   // replayPosition：期初 + 流水。这是「手工录入」与「逐笔记账」共存的核心模型。
   const rp = shared.replayPosition;
@@ -328,8 +331,9 @@ for (const [name, samples] of FORMATTERS) {
     [200, 100, [], { qty: 200, cost: 100 }],
     // 期初 200@100，买入 100@130 → 300 股，成本 (100*200+130*100)/300
     [200, 100, [{ qty: 100, price: 130 }], { qty: 300, cost: Math.round(((100 * 200 + 130 * 100) / 300) * 10000) / 10000 }],
-    // 期初 200@100，卖出 50@150 → 150 股，成本**不变** 100
-    [200, 100, [{ qty: -50, price: 150 }], { qty: 150, cost: 100 }],
+    // 期初 200@100，卖出 50@150（**摊薄法**）→ 成本总额 20000 − 卖出收入 7500 = 12500，
+    // 剩 150 股 → 成本价 83.3333（盈利卖出会降低剩余持仓成本）
+    [200, 100, [{ qty: -50, price: 150 }], { qty: 150, cost: Math.round((12500 / 150) * 10000) / 10000 }],
     // 期初空仓 + 买入 → 只看买入
     [0, 0, [{ qty: 100, price: 20 }], { qty: 100, cost: 20 }],
     // 期初有量但没成本（手填了股数没填价）→ 期初不参与加权，只按流水算
@@ -340,7 +344,7 @@ for (const [name, samples] of FORMATTERS) {
     const got = rp(bq, bc, txns);
     if (got.qty !== want.qty || Math.abs(got.cost - want.cost) > 1e-6) rbad.push({ bq, bc, txns, want, got });
   }
-  check("replayPosition 口径正确（期初+流水，卖出不改成本）", rbad.length === 0, rbad.slice(0, 3));
+  check("replayPosition 口径正确（期初+流水，摊薄法：卖出冲减成本总额）", rbad.length === 0, rbad.slice(0, 3));
 
   // 「**几笔交易之后**再改成本/股数」——用户明确指出的场景。
   // 那次修改等于宣告「此刻持仓就是这样」，之前的流水已被吸收，不能再叠加一遍。

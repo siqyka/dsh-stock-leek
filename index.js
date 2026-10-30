@@ -208,6 +208,18 @@ function sanitizeItem(raw, withPosition) {
       const ba = Number(raw.baseAt);
       out.baseAt = Number.isFinite(ba) && ba > 0 ? Math.round(ba) : 0;
     }
+    // 摊薄成本法的两个派生字段（客户端 applyReplay 写入）：
+    //   costTotal —— 成本总额（元），累计盈亏要用精确值，避免用四舍五入的单价乘回去
+    //   realized  —— 已实现盈亏，清仓后 qty=0 时靠它接住累计盈亏
+    // 白名单重建**必须放行**，否则每次保存都被丢弃，清仓股的累计盈亏会跳成 0。
+    if (raw.costTotal !== undefined) {
+      const ct = Number(raw.costTotal);
+      out.costTotal = Number.isFinite(ct) && ct >= 0 ? Math.round(ct * 100) / 100 : 0;
+    }
+    if (raw.realized !== undefined) {
+      const rz = Number(raw.realized);
+      out.realized = Number.isFinite(rz) ? Math.round(rz * 100) / 100 : 0;
+    }
     // 变动记录（买入 qty>0 / 卖出 qty<0）：今日收益据此计算，可多条
     if (Array.isArray(raw.txns)) {
       const txns = [];
